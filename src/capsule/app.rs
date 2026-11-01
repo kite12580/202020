@@ -130,6 +130,7 @@ const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 const GUID_CONSOLE_DISPLAY_STATE: GUID = GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
 
 const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
+const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 const EVENT_OBJECT_CLOAKED: u32 = 0x8017;
 const EVENT_OBJECT_UNCLOAKED: u32 = 0x8018;
 
@@ -407,7 +408,7 @@ unsafe extern "system" fn on_winevent(
     _thread: u32,
     _time: u32,
 ) {
-    if object != 0 || child != 0 || h.is_invalid() {
+    if h.is_invalid() || (event != EVENT_OBJECT_FOCUS && (object != 0 || child != 0)) {
         return;
     }
     if with_app(|a| a.on_winevent(event, h)).is_none() {
@@ -594,9 +595,11 @@ impl App {
 
         unsafe {
             let _ = RegisterShellHookWindow(h);
-            for (min, max) in
-                [(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND), (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED)]
-            {
+            for (min, max) in [
+                (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
+                (EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS),
+                (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
+            ] {
                 let hook = SetWinEventHook(
                     min,
                     max,
@@ -1104,6 +1107,9 @@ impl App {
             EVENT_SYSTEM_FOREGROUND => self.on_foreground(h),
             EVENT_OBJECT_CLOAKED => self.remove_window(h),
             EVENT_OBJECT_UNCLOAKED => self.add_window(h),
+            EVENT_OBJECT_FOCUS => unsafe {
+                SetTimer(Some(self.hwnd), TIMER_KEYBOARD, 100, None);
+            },
             _ => {}
         }
     }
@@ -1226,7 +1232,6 @@ impl App {
         if self.hidden {
             return;
         }
-        self.refresh_keyboard();
         self.guard_tray_order();
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if !self.slow_ticks.is_multiple_of(PRUNE_EVERY) {
@@ -1260,6 +1265,7 @@ impl App {
         }
         if !now {
             self.refresh_clock();
+            self.refresh_keyboard();
             self.slow_tick();
         }
     }
