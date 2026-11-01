@@ -1,0 +1,216 @@
+/// Axis-aligned rectangle in DIPs, relative to the capsule's client area.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Rect {
+    pub fn right(&self) -> f32 {
+        self.x + self.w
+    }
+
+    pub fn center_x(&self) -> f32 {
+        self.x + self.w / 2.0
+    }
+
+    pub fn contains_x(&self, x: f32) -> bool {
+        x >= self.x && x < self.right()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hit {
+    Grip,
+    Window(usize),
+    Chevron,
+    Tray(usize),
+    Keyboard,
+    Volume,
+    Clock,
+}
+
+pub struct Metrics {
+    pub height: f32,
+    pub pad: f32,
+    pub grip: f32,
+    pub window_item: f32,
+    pub tray_item: f32,
+    pub chevron: f32,
+    pub separator: f32,
+    pub text_pad: f32,
+}
+
+pub const METRICS: Metrics = Metrics {
+    height: 32.0,
+    pad: 4.0,
+    grip: 14.0,
+    window_item: 30.0,
+    tray_item: 24.0,
+    chevron: 22.0,
+    separator: 9.0,
+    text_pad: 6.0,
+};
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Input {
+    pub windows: usize,
+    pub tray: usize,
+    pub chevron: bool,
+    pub keyboard_w: f32,
+    pub volume_w: f32,
+    pub clock_w: f32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Layout {
+    pub width: f32,
+    pub items: Vec<(Hit, Rect)>,
+    /// X coordinates of separator lines.
+    pub separators: Vec<f32>,
+}
+
+impl Layout {
+    pub fn compute(m: &Metrics, input: &Input) -> Layout {
+        let mut out = Layout::default();
+        let mut x = m.pad;
+        let push = |out: &mut Layout, hit, w: f32, x: &mut f32| {
+            out.items.push((hit, Rect { x: *x, y: 0.0, w, h: m.height }));
+            *x += w;
+        };
+        let sep = |out: &mut Layout, x: &mut f32| {
+            out.separators.push(*x + m.separator / 2.0);
+            *x += m.separator;
+        };
+
+        push(&mut out, Hit::Grip, m.grip, &mut x);
+        if input.windows > 0 {
+            sep(&mut out, &mut x);
+            for i in 0..input.windows {
+                push(&mut out, Hit::Window(i), m.window_item, &mut x);
+            }
+        }
+        if input.chevron || input.tray > 0 {
+            sep(&mut out, &mut x);
+            if input.chevron {
+                push(&mut out, Hit::Chevron, m.chevron, &mut x);
+            }
+            for i in 0..input.tray {
+                push(&mut out, Hit::Tray(i), m.tray_item, &mut x);
+            }
+        }
+        sep(&mut out, &mut x);
+        push(&mut out, Hit::Keyboard, input.keyboard_w + 2.0 * m.text_pad, &mut x);
+        push(&mut out, Hit::Volume, input.volume_w + 2.0 * m.text_pad, &mut x);
+        push(&mut out, Hit::Clock, input.clock_w + 2.0 * m.text_pad, &mut x);
+        out.width = x + m.pad;
+        out
+    }
+
+    pub fn hit(&self, x: f32) -> Option<Hit> {
+        self.items.iter().find(|(_, r)| r.contains_x(x)).map(|(h, _)| *h)
+    }
+
+    pub fn rect(&self, hit: Hit) -> Option<Rect> {
+        self.items.iter().find(|(h, _)| *h == hit).map(|(_, r)| *r)
+    }
+}
+
+/// Screen rectangle in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PxRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl PxRect {
+    pub fn width(&self) -> i32 {
+        self.right - self.left
+    }
+
+    pub fn height(&self) -> i32 {
+        self.bottom - self.top
+    }
+}
+
+/// Top-left corner for a `w`×`h` capsule anchored at `center_x` (a fraction
+/// of the monitor width) and `bottom_gap` pixels above the monitor bottom.
+pub fn place(monitor: PxRect, w: i32, h: i32, center_x: f32, bottom_gap: i32) -> (i32, i32) {
+    let cx = monitor.left + (center_x.clamp(0.0, 1.0) * monitor.width() as f32).round() as i32;
+    let x = (cx - w / 2).clamp(monitor.left, (monitor.right - w).max(monitor.left));
+    let y = (monitor.bottom - bottom_gap - h).clamp(monitor.top, (monitor.bottom - h).max(monitor.top));
+    (x, y)
+}
+
+/// Inverse of [`place`]: the anchor for a capsule at `(x, y)`.
+pub fn anchor(monitor: PxRect, x: i32, y: i32, w: i32, h: i32) -> (f32, i32) {
+    let center_x = ((x + w / 2 - monitor.left) as f32 / monitor.width().max(1) as f32).clamp(0.0, 1.0);
+    let bottom_gap = (monitor.bottom - (y + h)).max(0);
+    (center_x, bottom_gap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MON: PxRect = PxRect { left: 0, top: 0, right: 1920, bottom: 1080 };
+
+    #[test]
+    fn layout_sections() {
+        let input = Input { windows: 2, tray: 1, chevron: true, keyboard_w: 10.0, volume_w: 20.0, clock_w: 80.0 };
+        let l = Layout::compute(&METRICS, &input);
+        let hits: Vec<Hit> = l.items.iter().map(|(h, _)| *h).collect();
+        assert_eq!(
+            hits,
+            [
+                Hit::Grip,
+                Hit::Window(0),
+                Hit::Window(1),
+                Hit::Chevron,
+                Hit::Tray(0),
+                Hit::Keyboard,
+                Hit::Volume,
+                Hit::Clock
+            ]
+        );
+        assert_eq!(l.separators.len(), 3);
+        let m = &METRICS;
+        let expected = m.pad * 2.0
+            + m.grip
+            + 3.0 * m.separator
+            + 2.0 * m.window_item
+            + m.chevron
+            + m.tray_item
+            + 110.0
+            + 6.0 * m.text_pad;
+        assert!((l.width - expected).abs() < 0.01);
+        for w in l.items.windows(2) {
+            assert!(w[0].1.right() <= w[1].1.x + 0.001);
+        }
+    }
+
+    #[test]
+    fn empty_sections_are_skipped() {
+        let l = Layout::compute(&METRICS, &Input::default());
+        assert_eq!(l.separators.len(), 1);
+        assert_eq!(l.rect(Hit::Chevron), None);
+        assert_eq!(l.hit(1.0), None);
+        assert_eq!(l.hit(METRICS.pad + 1.0), Some(Hit::Grip));
+    }
+
+    #[test]
+    fn placement_round_trips_and_clamps() {
+        let (x, y) = place(MON, 400, 48, 0.5, 9);
+        assert_eq!((x, y), (760, 1023));
+        let (cx, gap) = anchor(MON, x, y, 400, 48);
+        assert!((cx - 0.5).abs() < 0.001);
+        assert_eq!(gap, 9);
+        assert_eq!(place(MON, 400, 48, 0.0, 9).0, 0);
+        assert_eq!(place(MON, 400, 48, 1.0, 9).0, 1520);
+        assert_eq!(place(MON, 400, 48, 0.5, 5000).1, 0);
+    }
+}
