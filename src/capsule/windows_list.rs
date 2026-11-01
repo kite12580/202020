@@ -21,8 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PWSTR};
 
-use crate::gfx::Image;
-use crate::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, class_name, make_long, process_path, window_ids};
+use crate::capsule::gfx::Image;
+use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, class_name, make_long, process_path, window_ids};
 
 const WM_POPUPSYSTEMMENU: u32 = 0x0313;
 
@@ -203,7 +203,7 @@ impl WindowList {
         let before = self.items.len();
         let diag = self.diag;
         self.items.retain(|w| qualifies(w.hwnd, diag));
-        self.seen.retain(|&h, _| unsafe { IsWindow(Some(crate::util::hwnd(h))) }.as_bool());
+        self.seen.retain(|&h, _| unsafe { IsWindow(Some(crate::capsule::util::hwnd(h))) }.as_bool());
         before != self.items.len()
     }
 }

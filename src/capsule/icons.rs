@@ -11,7 +11,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::core::PCWSTR;
 
-use crate::util::{hwnd, wide};
+use crate::capsule::util::{hwnd, wide};
 
 struct Request {
     id: u64,

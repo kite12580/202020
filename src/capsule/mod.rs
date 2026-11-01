@@ -1,0 +1,100 @@
+mod app;
+mod config_store;
+mod gfx;
+mod icons;
+mod keyboard;
+mod keyhook;
+mod logger;
+mod menu;
+mod pinned;
+mod popup;
+mod shell;
+mod theme;
+mod tooltip;
+mod tray;
+mod util;
+mod volume;
+mod windows_list;
+
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+pub use app::Options;
+pub use config_store::{enabled, set_enabled};
+
+/// The capsule bar running on its own thread.
+pub struct Bar {
+    hwnd: HWND,
+    thread: JoinHandle<()>,
+}
+
+impl Bar {
+    /// Starts the bar. Once it has started, `exited_msg` is posted to
+    /// `opts.owner` when the bar thread is about to finish, after which `join`
+    /// returns promptly.
+    pub fn start(opts: Options, exited_msg: u32) -> Option<Bar> {
+        app::STOP.store(false, Ordering::Relaxed);
+        let owner = opts.owner;
+        let (tx, rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let mut started = false;
+            app::run(opts, |h| {
+                started = h.is_some();
+                let _ = tx.send(h.map(|h| h.0 as isize));
+            });
+            if started {
+                unsafe {
+                    let _ = PostMessageW(Some(util::hwnd(owner)), exited_msg, WPARAM(0), LPARAM(0));
+                }
+            }
+        });
+        match rx.recv().ok().flatten() {
+            Some(h) => Some(Bar { hwnd: util::hwnd(h), thread }),
+            None => {
+                let _ = thread.join();
+                None
+            }
+        }
+    }
+
+    pub fn stop(&self) {
+        app::STOP.store(true, Ordering::Relaxed);
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), app::WM_APP_STOP, WPARAM(0), LPARAM(0));
+        }
+    }
+
+    pub fn join(self) {
+        let _ = self.thread.join();
+    }
+}
+
+/// Hides the bar while a break overlay is up.
+pub fn set_break(on: bool, bar: Option<&Bar>) {
+    app::BREAK.store(on, Ordering::Relaxed);
+    if let Some(bar) = bar {
+        unsafe {
+            let _ = PostMessageW(Some(bar.hwnd), app::WM_APP_BREAK, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+pub fn edit_config() {
+    config_store::open_in_editor(&config_store::ensure_file());
+}
+
+pub fn init_logging(name: &str, level: log::LevelFilter) {
+    logger::init(&config_store::log_dir(), name, level);
+}
+
+pub fn run_watchdog(args: &[String]) -> i32 {
+    shell::run_watchdog(args)
+}
+
+pub fn restore_taskbar() {
+    shell::force_restore();
+}

@@ -1,7 +1,7 @@
 use capsule_core::layout::Rect;
 use windows::Win32::Foundation::HWND;
 
-use crate::gfx::Surface;
+use crate::capsule::gfx::Surface;
 
 pub const CELL: f32 = 32.0;
 const PAD: f32 = 6.0;

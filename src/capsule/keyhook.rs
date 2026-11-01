@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_USER,
 };
 
-use crate::util::hwnd;
+use crate::capsule::util::hwnd;
 
 static TARGET: AtomicIsize = AtomicIsize::new(0);
 static DIGIT_MSG: AtomicU32 = AtomicU32::new(0);
@@ -42,6 +42,8 @@ impl KeyHook {
         TARGET.store(target.0 as isize, Relaxed);
         DIGIT_MSG.store(digit_msg, Relaxed);
         INPUT_MSG.store(input_msg, Relaxed);
+        SWALLOWED.store(0, Relaxed);
+        INPUT_PENDING.store(false, Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
         let join = std::thread::spawn(move || unsafe {
             let mut msg = MSG::default();

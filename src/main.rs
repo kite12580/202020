@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod capsule;
 mod render;
 
 use std::cell::RefCell;
@@ -51,6 +52,8 @@ const MAIN_CLASS: PCWSTR = w!("202020");
 const OVERLAY_CLASS: PCWSTR = w!("202020Overlay");
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_DISMISS: u32 = WM_APP + 2;
+const WM_BAR_EXITED: u32 = WM_APP + 3;
+const WM_BAR_QUIT: u32 = WM_APP + 4;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
 const TIMER_TICK: usize = 1;
@@ -60,6 +63,8 @@ const CMD_TOGGLE: usize = 1;
 const CMD_BREAK: usize = 2;
 const CMD_RESET: usize = 3;
 const CMD_QUIT: usize = 4;
+const CMD_BAR: usize = 5;
+const CMD_EDIT_CONFIG: usize = 6;
 
 static MAIN_HWND: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -69,7 +74,7 @@ thread_local! {
 }
 
 fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
-    APP.with(|app| app.borrow_mut().as_mut().map(f))
+    APP.with(|app| app.try_borrow_mut().ok().and_then(|mut app| app.as_mut().map(f)))
 }
 
 fn now() -> f64 {
@@ -107,6 +112,11 @@ struct App {
     last_tick: f64,
     last_face: Option<IconFace>,
     brk: Option<Break>,
+    safe: bool,
+    diag: bool,
+    bar: Option<capsule::Bar>,
+    bar_stopping: bool,
+    quitting: bool,
 }
 
 impl App {
@@ -205,6 +215,7 @@ impl App {
             );
             let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0);
             self.brk = Some(Break { hwnd, hook, started_at: now(), overlay });
+            capsule::set_break(true, self.bar.as_ref());
             SetTimer(self.hwnd, TIMER_FRAME, 1000 / 30, None);
             SetTimer(self.hwnd, TIMER_BREAK_END, (BREAK_SECONDS * 1000.0) as u32, None);
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -231,6 +242,7 @@ impl App {
             UnhookWindowsHookEx(brk.hook);
             DestroyWindow(brk.hwnd);
         }
+        capsule::set_break(false, self.bar.as_ref());
         self.deadline = now() + WORK_SECONDS;
         self.refresh_icon();
     }
@@ -250,7 +262,45 @@ impl App {
         }
     }
 
+    fn start_bar(&mut self) {
+        let opts =
+            capsule::Options { safe: self.safe, diag: self.diag, owner: self.hwnd as isize, quit_msg: WM_BAR_QUIT };
+        self.bar = capsule::Bar::start(opts, WM_BAR_EXITED);
+    }
+
+    fn stop_bar(&mut self) {
+        if let Some(bar) = &self.bar
+            && !self.bar_stopping
+        {
+            bar.stop();
+            self.bar_stopping = true;
+        }
+    }
+
+    fn toggle_bar(&mut self) {
+        if self.bar_stopping {
+            return;
+        }
+        let enable = self.bar.is_none();
+        capsule::set_enabled(enable);
+        if enable { self.start_bar() } else { self.stop_bar() }
+    }
+
+    fn on_bar_exited(&mut self) {
+        if let Some(bar) = self.bar.take() {
+            bar.join();
+        }
+        self.bar_stopping = false;
+        if self.quitting {
+            self.quit();
+        }
+    }
+
     fn quit(&mut self) {
+        self.quitting = true;
+        if self.bar.is_some() {
+            return self.stop_bar();
+        }
         self.dismiss_break();
         self.notify(NIM_DELETE);
         unsafe { DestroyWindow(self.hwnd) };
@@ -312,12 +362,24 @@ fn paint_overlay(hdc: HDC, overlay: &Overlay) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let Some(paused) = with_app(|app| app.paused) else { return };
+    let Some((paused, bar, bar_stopping)) = with_app(|app| (app.paused, app.bar.is_some(), app.bar_stopping)) else {
+        return;
+    };
     let cmd = unsafe {
         let menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") });
         AppendMenuW(menu, MF_STRING, CMD_BREAK, w!("Break now"));
         AppendMenuW(menu, MF_STRING, CMD_RESET, w!("Reset timer"));
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let bar_flags = if bar_stopping {
+            MF_GRAYED
+        } else if bar {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+        AppendMenuW(menu, MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar"));
+        AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG, w!("Edit config"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, CMD_QUIT, w!("Quit"));
         let mut pt: POINT = zeroed();
@@ -333,6 +395,11 @@ fn show_menu(hwnd: HWND) {
         CMD_BREAK => with_app(App::show_break),
         CMD_RESET => with_app(App::reset_timer),
         CMD_QUIT => with_app(App::quit),
+        CMD_BAR => with_app(App::toggle_bar),
+        CMD_EDIT_CONFIG => {
+            capsule::edit_config();
+            None
+        }
         _ => None,
     };
 }
@@ -366,6 +433,12 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_DISMISS => {
             with_app(App::dismiss_break);
         }
+        WM_BAR_EXITED => {
+            with_app(App::on_bar_exited);
+        }
+        WM_BAR_QUIT => {
+            with_app(App::quit);
+        }
         WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC as usize => {
             with_app(App::reset_timer);
         }
@@ -376,7 +449,9 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         }
         WM_DESTROY => unsafe { PostQuitMessage(0) },
         _ if msg == TASKBAR_CREATED.load(Ordering::Relaxed) => {
-            with_app(|app| app.notify(NIM_ADD));
+            if with_app(|app| app.notify(NIM_ADD)).is_none() {
+                unsafe { PostMessageW(hwnd, msg, wparam, lparam) };
+            }
         }
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
@@ -419,12 +494,35 @@ fn register_class(instance: HINSTANCE, name: PCWSTR, proc: WNDPROC, background: 
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    let verbose = flag("--verbose");
+    match args.first().map(String::as_str) {
+        Some("--watchdog") => {
+            if verbose {
+                capsule::init_logging("watchdog.txt", log::LevelFilter::Debug);
+            }
+            std::process::exit(capsule::run_watchdog(&args[1..]));
+        }
+        Some("--restore") => {
+            capsule::restore_taskbar();
+            return;
+        }
+        _ => {}
+    }
+    let diag = flag("--diag");
+    if verbose || diag {
+        capsule::init_logging("log.txt", log::LevelFilter::Debug);
+        std::panic::set_hook(Box::new(|info| {
+            log::error!("panic: {info}");
+            log::logger().flush();
+        }));
+    }
     unsafe {
         CreateMutexW(null(), 0, w!("Local\\202020"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return;
         }
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
         register_class(instance, MAIN_CLASS, Some(main_proc), null_mut());
         register_class(instance, OVERLAY_CLASS, Some(overlay_proc), GetStockObject(BLACK_BRUSH) as HBRUSH);
@@ -456,10 +554,18 @@ fn main() {
             last_tick: now,
             last_face: None,
             brk: None,
+            safe: flag("--safe"),
+            diag,
+            bar: None,
+            bar_stopping: false,
+            quitting: false,
         };
         app.refresh_icon();
         app.notify(NIM_ADD);
         APP.with(|cell| *cell.borrow_mut() = Some(app));
+        if capsule::enabled() {
+            with_app(App::start_bar);
+        }
 
         SetTimer(hwnd, TIMER_TICK, 1000, None);
         RegisterHotKey(hwnd, HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);

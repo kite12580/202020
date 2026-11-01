@@ -2,9 +2,10 @@
 //! z-order so `Shell_NotifyIcon` finds it first, records every message, and
 //! forwards everything to the real tray so explorer's state stays complete.
 
+use std::cell::OnceCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use capsule_core::tray_proto::{self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, NIF_ICON, NotifyIconMessage, handle};
@@ -23,8 +24,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, w};
 
 use super::TrayKey;
-use crate::shell::real_tray;
-use crate::util::{hwnd, make_long, window_ids};
+use crate::capsule::shell::real_tray;
+use crate::capsule::util::{hwnd, make_long, window_ids};
 
 pub struct TrayEvent {
     pub msg: NotifyIconMessage,
@@ -49,7 +50,13 @@ pub struct Rects {
     pub icons: Vec<(TrayKey, RECT)>,
 }
 
-static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
+thread_local! {
+    static SHARED: OnceCell<Arc<Shared>> = const { OnceCell::new() };
+}
+
+fn shared() -> Option<Arc<Shared>> {
+    SHARED.with(|s| s.get().cloned())
+}
 
 const SPY_QUIT: u32 = WM_APP + 0x3F0;
 const SPY_RECLAIM: u32 = WM_APP + 0x3F1;
@@ -61,11 +68,11 @@ pub struct Spy {
 
 impl Spy {
     pub fn start(shared: Arc<Shared>, rect: RECT) -> Spy {
-        let _ = SHARED.set(shared);
         let slot = Arc::new(AtomicIsize::new(0));
         let ready = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let (slot2, ready2) = (slot.clone(), ready.clone());
         let thread = std::thread::spawn(move || {
+            SHARED.with(|s| s.set(shared)).ok();
             let h = create(rect);
             slot2.store(h.map_or(0, |h| h.0 as isize), Ordering::Release);
             *ready2.0.lock().unwrap() = true;
@@ -178,7 +185,7 @@ fn forward(msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 }
 
 fn icon_rect(q: &tray_proto::IconRectQuery) -> LRESULT {
-    let Some(shared) = SHARED.get() else { return LRESULT(0) };
+    let Some(shared) = shared() else { return LRESULT(0) };
     let key = TrayKey { hwnd: q.hwnd, uid: q.uid, guid: q.guid };
     let rects = shared.rects.lock().unwrap();
     let r = rects.icons.iter().find(|(k, _)| k.same(&key)).map_or(rects.fallback, |(_, r)| *r);
@@ -207,7 +214,7 @@ fn copy_icon(h: isize) -> isize {
 }
 
 fn record(m: NotifyIconMessage) {
-    let Some(shared) = SHARED.get() else { return };
+    let Some(shared) = shared() else { return };
     let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 { copy_icon(handle(m.data.icon)) } else { 0 };
     let was_empty = {
         let mut q = shared.queue.lock().unwrap();
@@ -255,7 +262,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             unsafe {
                 let _ = SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
             }
-            if let Some(shared) = SHARED.get() {
+            if let Some(shared) = shared() {
                 announce_taskbar(shared.taskbar_created_msg);
             }
             LRESULT(0)
@@ -270,7 +277,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
-        m if SHARED.get().is_some_and(|s| s.taskbar_created_msg == m) => LRESULT(0),
+        m if shared().is_some_and(|s| s.taskbar_created_msg == m) => LRESULT(0),
         WM_ACTIVATEAPP | WM_COMMAND => forward(msg, wparam, lparam),
         m if m >= WM_USER => forward(msg, wparam, lparam),
         _ => unsafe { DefWindowProcW(h, msg, wparam, lparam) },

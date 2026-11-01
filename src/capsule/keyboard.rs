@@ -10,7 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::util::{from_wide, window_ids};
+use crate::capsule::util::{from_wide, window_ids};
 
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
 const IMC_GETCONVERSIONMODE: usize = 1;
@@ -36,7 +36,7 @@ fn locale_name(hkl: isize) -> String {
 }
 
 fn locale_info(name: &str, kind: u32) -> String {
-    let name = crate::util::wide(name);
+    let name = crate::capsule::util::wide(name);
     let mut buf = [0u16; 128];
     unsafe { GetLocaleInfoEx(PCWSTR(name.as_ptr()), kind, Some(&mut buf)) };
     from_wide(&buf)

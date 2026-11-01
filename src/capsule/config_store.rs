@@ -1,13 +1,15 @@
-use capsule_core::config::{self, Config};
+use capsule_core::config::{self, CapsuleBar, Config};
 use std::path::PathBuf;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification,
     FindFirstChangeNotificationW, FindNextChangeNotification,
 };
-use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::{PCWSTR, w};
 
-use crate::util::wide;
+use crate::capsule::util::wide;
 
 pub fn app_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default()
@@ -17,25 +19,59 @@ pub fn log_dir() -> PathBuf {
     app_dir().join("logs")
 }
 
+/// Path of `config.toml`, written with the defaults if missing.
+pub fn ensure_file() -> PathBuf {
+    let path = app_dir().join("config.toml");
+    if !path.exists() {
+        let _ = std::fs::write(&path, config::DEFAULT_TEXT);
+    }
+    path
+}
+
+fn read() -> (PathBuf, String, Config) {
+    let path = ensure_file();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let config = config::parse(&text).unwrap_or_else(|e| {
+        log::error!("config: {e}");
+        Config::default()
+    });
+    (path, text, config)
+}
+
+pub fn enabled() -> bool {
+    read().2.capsule_bar.enabled
+}
+
+pub fn set_enabled(enabled: bool) {
+    let (path, text, _) = read();
+    if let Err(e) = std::fs::write(&path, config::set_enabled(&text, enabled)) {
+        log::error!("config write: {e}");
+    }
+}
+
+pub fn open_in_editor(path: &std::path::Path) {
+    let path = wide(&path.to_string_lossy());
+    let r = unsafe {
+        ShellExecuteW(None, w!("open"), PCWSTR(path.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+    };
+    if r.0 as isize <= 32 {
+        unsafe {
+            ShellExecuteW(None, w!("open"), w!("notepad.exe"), PCWSTR(path.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL);
+        }
+    }
+}
+
 pub struct ConfigStore {
     pub path: PathBuf,
-    pub config: Config,
+    pub config: CapsuleBar,
     last_text: String,
     watch: HANDLE,
 }
 
 impl ConfigStore {
     pub fn open() -> Self {
+        let (path, text, config) = read();
         let dir = app_dir();
-        let path = dir.join("config.toml");
-        if !path.exists() {
-            let _ = std::fs::write(&path, config::DEFAULT_TEXT);
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let config = config::parse(&text).unwrap_or_else(|e| {
-            log::error!("config: {e}");
-            Config::default()
-        });
         let watch = unsafe {
             FindFirstChangeNotificationW(
                 PCWSTR(wide(&dir.to_string_lossy()).as_ptr()),
@@ -44,7 +80,7 @@ impl ConfigStore {
             )
         }
         .unwrap_or_default();
-        Self { path, config, last_text: text, watch }
+        Self { path, config: config.capsule_bar, last_text: text, watch }
     }
 
     pub fn watch_handle(&self) -> HANDLE {
@@ -67,8 +103,8 @@ impl ConfigStore {
         }
         self.last_text = text;
         match config::parse(&self.last_text) {
-            Ok(c) if c != self.config => {
-                self.config = c;
+            Ok(c) if c.capsule_bar != self.config => {
+                self.config = c.capsule_bar;
                 true
             }
             Ok(_) => false,

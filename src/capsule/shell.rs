@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::util::{OwnedHandle, hwnd, primary_monitor, wide, window_ids};
+use crate::capsule::util::{OwnedHandle, hwnd, primary_monitor, wide, window_ids};
 
 const ABS_AUTOHIDE: u32 = 1;
 const ABS_ALWAYSONTOP: u32 = 2;
@@ -138,22 +138,28 @@ pub struct Takeover {
     show_hook: HWINEVENTHOOK,
 }
 
-fn exit_event_name(pid: u32) -> Vec<u16> {
-    wide(&format!("Local\\capsule-bar-exit-{pid}"))
+/// Numbers each takeover so a restarted bar never reuses the previous
+/// watchdog's already-signaled exit event.
+static TAKEOVERS: AtomicU32 = AtomicU32::new(0);
+
+fn exit_event_name(pid: u32, seq: u32) -> Vec<u16> {
+    wide(&format!("Local\\202020-exit-{pid}-{seq}"))
 }
 
 impl Takeover {
     pub fn start(tray: HWND) -> Option<Takeover> {
         let saved = Saved { ab_state: ab_state(tray), work_area: work_area() };
         let pid = unsafe { GetCurrentProcessId() };
-        let name = exit_event_name(pid);
+        let seq = TAKEOVERS.fetch_add(1, Ordering::Relaxed);
+        let name = exit_event_name(pid, seq);
         let exit_event = OwnedHandle(unsafe { CreateEventW(None, true, false, PCWSTR(name.as_ptr())) }.ok()?);
         let r = saved.work_area;
         let exe = std::env::current_exe().ok()?;
         let spawned = std::process::Command::new(exe)
             .arg("--watchdog")
-            .args([pid, saved.ab_state].map(|v| v.to_string()))
+            .args([pid, seq, saved.ab_state].map(|v| v.to_string()))
             .args([r.left, r.top, r.right, r.bottom].map(|v| v.to_string()))
+            .args((log::max_level() != log::LevelFilter::Off).then_some("--verbose"))
             .spawn();
         if let Err(e) = spawned {
             log::error!("watchdog: {e}");
@@ -237,10 +243,10 @@ impl Takeover {
     }
 }
 
-/// `--watchdog <pid> <ab_state> <left> <top> <right> <bottom>`
+/// `--watchdog <pid> <seq> <ab_state> <left> <top> <right> <bottom>`
 pub fn run_watchdog(args: &[String]) -> i32 {
     let nums: Vec<i64> = args.iter().filter_map(|a| a.parse().ok()).collect();
-    let [pid, ab_state, left, top, right, bottom] = nums[..] else {
+    let [pid, seq, ab_state, left, top, right, bottom] = nums[..] else {
         return 2;
     };
     let saved = Saved {
@@ -252,14 +258,14 @@ pub fn run_watchdog(args: &[String]) -> i32 {
         return 1;
     };
     let process = OwnedHandle(process);
-    let name = exit_event_name(pid);
+    let name = exit_event_name(pid, seq as u32);
     let Ok(event) = (unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) }) else {
         return 1;
     };
     let event = OwnedHandle(event);
     let r = unsafe { WaitForMultipleObjects(&[process.0, event.0], false, INFINITE) };
     if r == WAIT_OBJECT_0 && unsafe { WaitForSingleObject(event.0, 0) } != WAIT_OBJECT_0 {
-        log::warn!("capsule-bar {pid} exited without cleanup");
+        log::warn!("202020 {pid} exited without cleanup");
         restore(&saved);
     }
     0

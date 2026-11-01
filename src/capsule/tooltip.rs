@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
-use crate::util::{make_long, primary_monitor, wide};
+use crate::capsule::util::{make_long, primary_monitor, wide};
 
 const GAP: i32 = 6;
 

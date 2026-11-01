@@ -5,6 +5,13 @@ use toml_edit::{Array, DocumentMut, value};
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
+    pub capsule_bar: CapsuleBar,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[serde(default)]
+pub struct CapsuleBar {
+    pub enabled: bool,
     pub position: Position,
     pub appearance: Appearance,
     pub volume: Volume,
@@ -83,44 +90,50 @@ pub struct Tray {
     pub pinned: Vec<String>,
 }
 
-pub const DEFAULT_TEXT: &str = r#"# capsule-bar 配置。保存后自动生效。
+pub const DEFAULT_TEXT: &str = r#"# 202020 settings. Capsule bar changes apply on save while it is running.
 
-[position]
-# 胶囊中心的水平位置，占屏幕宽度的比例（0.0 – 1.0）。拖动后自动更新。
+[capsule_bar]
+# Replace the Windows taskbar with the capsule bar. Toggle it from the tray menu.
+enabled = false
+
+[capsule_bar.position]
+# Horizontal center of the capsule as a fraction of the screen width (0.0 – 1.0). Updated when dragged.
 center_x = 0.5
-# 胶囊到屏幕底边的距离（DIP）。拖动后自动更新。
+# Distance from the capsule to the bottom of the screen (DIPs). Updated when dragged.
 bottom_gap = 6.0
 
-[appearance]
-# "acrylic"（系统亚克力）、"accent"（旧版模糊，亚克力失效时使用）或 "none"（纯透明）。
+[capsule_bar.appearance]
+# "acrylic" (system acrylic), "accent" (legacy blur, for when acrylic doesn't work) or "none" (plain transparent).
 backdrop = "acrylic"
-# 背景色叠加的不透明度（0.0 – 1.0）。
+# Opacity of the background tint (0.0 – 1.0).
 opacity = 0.25
-# "hardware" 或 "software"。
+# "hardware" or "software".
 render = "hardware"
 
-[volume]
-# 每格滚轮调整的音量百分比。
+[capsule_bar.volume]
+# Volume change per wheel notch, in percent.
 step = 2
 
-[keyboard.labels]
-# 按 ISO 639 语言代码覆盖键盘布局标签。内置：zh = "中"、ja = "あ"、ko = "한"，其余显示大写代码。
-# 输入法处于英文模式时固定显示 "英"（中文）或 "A"（日文、韩文）。
+[capsule_bar.keyboard.labels]
+# Override keyboard layout labels by ISO 639 language code. Built in: zh = "中", ja = "あ", ko = "한"; others show the
+# uppercase code. An IME in English mode always shows "英" (Chinese) or "A" (Japanese, Korean).
 # en = "EN"
 
-[tray]
-# 显示在胶囊上的托盘图标。在 ^ 弹窗里右键图标即可固定或取消固定。
+[capsule_bar.tray]
+# Tray icons shown on the capsule. Right-click an icon in the ^ popup to pin or unpin it.
 pinned = []
 "#;
 
 pub fn parse(text: &str) -> Result<Config, String> {
-    let mut c: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut config: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+    let c = &mut config.capsule_bar;
     c.position.center_x = c.position.center_x.clamp(0.0, 1.0);
     c.position.bottom_gap = c.position.bottom_gap.max(0.0);
     c.appearance.opacity = c.appearance.opacity.clamp(0.0, 1.0);
     c.volume.step = c.volume.step.clamp(1, 20);
-    c.keyboard.labels = c.keyboard.labels.into_iter().map(|(k, v)| (k.to_ascii_lowercase(), v)).collect();
-    Ok(c)
+    c.keyboard.labels =
+        std::mem::take(&mut c.keyboard.labels).into_iter().map(|(k, v)| (k.to_ascii_lowercase(), v)).collect();
+    Ok(config)
 }
 
 fn edit(text: &str, f: impl FnOnce(&mut DocumentMut)) -> String {
@@ -132,8 +145,8 @@ fn edit(text: &str, f: impl FnOnce(&mut DocumentMut)) -> String {
 /// Rewrites the position keys, preserving everything else in the file.
 pub fn set_position(text: &str, center_x: f32, bottom_gap: f32) -> String {
     edit(text, |doc| {
-        doc["position"]["center_x"] = value((f64::from(center_x) * 10_000.0).round() / 10_000.0);
-        doc["position"]["bottom_gap"] = value((f64::from(bottom_gap) * 10.0).round() / 10.0);
+        doc["capsule_bar"]["position"]["center_x"] = value((f64::from(center_x) * 10_000.0).round() / 10_000.0);
+        doc["capsule_bar"]["position"]["bottom_gap"] = value((f64::from(bottom_gap) * 10.0).round() / 10.0);
     })
 }
 
@@ -142,8 +155,12 @@ pub fn set_pinned(text: &str, pinned: &[String]) -> String {
     edit(text, |doc| {
         let mut arr: Array = pinned.iter().map(String::as_str).collect();
         arr.set_trailing_comma(false);
-        doc["tray"]["pinned"] = value(arr);
+        doc["capsule_bar"]["tray"]["pinned"] = value(arr);
     })
+}
+
+pub fn set_enabled(text: &str, enabled: bool) -> String {
+    edit(text, |doc| doc["capsule_bar"]["enabled"] = value(enabled))
 }
 
 #[cfg(test)]
@@ -158,30 +175,41 @@ mod tests {
     #[test]
     fn empty_and_partial() {
         assert_eq!(parse("").unwrap(), Config::default());
-        let c = parse("[appearance]\nbackdrop = \"accent\"\nopacity = 3\n[keyboard.labels]\nEN = \"英\"").unwrap();
+        let c = parse(
+            "[capsule_bar.appearance]\nbackdrop = \"accent\"\nopacity = 3\n[capsule_bar.keyboard.labels]\nEN = \"英\"",
+        )
+        .unwrap()
+        .capsule_bar;
+        assert!(!c.enabled);
         assert_eq!(c.appearance.backdrop, Backdrop::Accent);
         assert_eq!(c.appearance.opacity, 1.0);
         assert_eq!(c.keyboard.labels["en"], "英");
-        assert!(parse("[appearance]\nbackdrop = \"bogus\"").is_err());
+        assert!(parse("[capsule_bar.appearance]\nbackdrop = \"bogus\"").is_err());
     }
 
     #[test]
     fn edits_preserve_comments() {
         let t = set_position(DEFAULT_TEXT, 0.123456, 12.34);
-        assert!(t.contains("# 胶囊中心"));
-        let c = parse(&t).unwrap();
+        assert!(t.contains("# Horizontal center"));
+        let c = parse(&t).unwrap().capsule_bar;
         assert_eq!(c.position.center_x, 0.1235);
         assert_eq!(c.position.bottom_gap, 12.3);
 
         let t = set_pinned(&t, &["a.exe|1".into(), "guid:{X}".into()]);
-        assert!(t.contains("# 显示在胶囊上"));
-        assert_eq!(parse(&t).unwrap().tray.pinned, ["a.exe|1", "guid:{X}"]);
+        assert!(t.contains("# Tray icons shown"));
+        assert_eq!(parse(&t).unwrap().capsule_bar.tray.pinned, ["a.exe|1", "guid:{X}"]);
+
+        let t = set_enabled(&t, true);
+        assert!(t.contains("# Replace the Windows taskbar"));
+        assert!(parse(&t).unwrap().capsule_bar.enabled);
+        assert!(!parse(&set_enabled(&t, false)).unwrap().capsule_bar.enabled);
     }
 
     #[test]
     fn edits_create_missing_tables() {
-        let t = set_pinned(&set_position("", 0.25, 3.0), &["x|0".into()]);
-        let c = parse(&t).unwrap();
+        let t = set_enabled(&set_pinned(&set_position("", 0.25, 3.0), &["x|0".into()]), true);
+        let c = parse(&t).unwrap().capsule_bar;
+        assert!(c.enabled);
         assert_eq!(c.position.center_x, 0.25);
         assert_eq!(c.tray.pinned, ["x|0"]);
     }

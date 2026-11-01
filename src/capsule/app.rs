@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use capsule_core::config::Config;
+use capsule_core::config::CapsuleBar;
 use capsule_core::layout::{self, Hit, Input, Layout, METRICS, Rect};
 use capsule_core::{clock, kbd};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
@@ -15,58 +15,59 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{POWERBROADCAST_SETTING, RegisterPowerSettingNotification};
 use windows::Win32::System::RemoteDesktop::{NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification};
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Controls::{
     HOVER_DEFAULT, ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, WM_MOUSEHOVER, WM_MOUSELEAVE,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, ReleaseCapture, SetCapture, TME_HOVER, TME_LEAVE,
-    TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
+    ReleaseCapture, SetCapture, TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
 };
 use windows::Win32::UI::Shell::{
     ABM_NEW, ABM_REMOVE, APPBARDATA, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHAppBarMessage,
-    SHQueryUserNotificationState, ShellExecuteW,
+    SHQueryUserNotificationState,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, ChangeWindowMessageFilterEx, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
-    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, FindWindowW, GA_ROOTOWNER, GWL_STYLE, GetAncestor,
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_TOPMOST, IDC_ARROW,
-    IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE,
+    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EndMenu, FindWindowW, GA_ROOTOWNER, GWL_STYLE,
+    GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON,
+    HWND_TOPMOST, IDC_ARROW, IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE,
     MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW,
     RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA,
-    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SendMessageW, SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
-    WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE,
-    WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
+    SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WA_INACTIVE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT,
+    WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
+    WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{GUID, PCWSTR, w};
 
-use crate::config_store::ConfigStore;
-use crate::gfx::{Font, Gfx, Surface, Text};
-use crate::icons::IconWorker;
-use crate::keyboard;
-use crate::keyhook::{self, KeyHook};
-use crate::menu::{self, Item};
-use crate::pinned;
-use crate::popup::Popup;
-use crate::shell::{self, REAL_TRAY, Takeover};
-use crate::theme::{self, Theme};
-use crate::tooltip::Tooltip;
-use crate::tray::spy::{Rects, Shared, Spy};
-use crate::tray::{NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
-use crate::util::{class_name, from_wide, lparam_point, primary_monitor, process_path, scale, wide, window_ids};
-use crate::volume::Volume;
-use crate::windows_list::{self as winlist, IconRank, WindowList};
+use crate::capsule::config_store::{self, ConfigStore};
+use crate::capsule::gfx::{Font, Gfx, Surface, Text};
+use crate::capsule::icons::IconWorker;
+use crate::capsule::keyboard;
+use crate::capsule::keyhook::{self, KeyHook};
+use crate::capsule::menu::{self, Item};
+use crate::capsule::pinned;
+use crate::capsule::popup::Popup;
+use crate::capsule::shell::{self, REAL_TRAY, Takeover};
+use crate::capsule::theme::{self, Theme};
+use crate::capsule::tooltip::Tooltip;
+use crate::capsule::tray::spy::{Rects, Shared, Spy};
+use crate::capsule::tray::{NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
+use crate::capsule::util::{class_name, from_wide, lparam_point, primary_monitor, process_path, scale, window_ids};
+use crate::capsule::volume::Volume;
+use crate::capsule::windows_list::{self as winlist, IconRank, WindowList};
 
 pub struct Options {
     pub safe: bool,
     pub diag: bool,
+    /// Window that receives `quit_msg` when the user picks Quit.
+    pub owner: isize,
+    pub quit_msg: u32,
 }
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -77,6 +78,11 @@ const WM_APP_APPBAR: u32 = WM_APP + 5;
 const WM_APP_WINEVENT: u32 = WM_APP + 6;
 const WM_APP_WIN_DIGIT: u32 = WM_APP + 7;
 const WM_APP_INPUT: u32 = WM_APP + 8;
+pub const WM_APP_STOP: u32 = WM_APP + 9;
+pub const WM_APP_BREAK: u32 = WM_APP + 10;
+
+pub static STOP: AtomicBool = AtomicBool::new(false);
+pub static BREAK: AtomicBool = AtomicBool::new(false);
 
 const TIMER_CLOCK: usize = 1;
 const TIMER_SLOW: usize = 2;
@@ -88,13 +94,11 @@ const TIMER_WIN_DIGIT: usize = 7;
 const TIMER_REVEAL: usize = 8;
 const TIMER_PINS: usize = 9;
 
-const HOTKEY_EXIT: i32 = 1;
-
 const WINDOW_ICON: f32 = 20.0;
 const TRAY_ICON: f32 = 16.0;
 const POPUP_GAP: f32 = 6.0;
 const CLOCK_LINE_OVERLAP: f32 = 2.0;
-const ELEVATED_HINT: &str = "这个程序以管理员身份运行，需要以管理员身份运行 capsule-bar 才能操作它的图标";
+const ELEVATED_HINT: &str = "This program runs as administrator. Run 202020 as administrator to use its icon.";
 
 const ABN_FULLSCREENAPP: usize = 2;
 const WTS_SESSION_LOCK: usize = 7;
@@ -121,13 +125,11 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
     APP.with(|cell| cell.try_borrow_mut().ok().and_then(|mut a| a.as_mut().map(f)))
 }
 
-/// Work that pumps messages (menus, window destruction) and so must run
-/// with the app unborrowed.
-enum Deferred {
-    AppMenu,
-    KeyboardMenu,
-    TrayMenu(usize),
-    Exit,
+/// Menus pump messages and so must run with the app unborrowed.
+enum DeferredMenu {
+    App,
+    Keyboard,
+    Tray(usize),
 }
 
 enum IconTarget {
@@ -201,17 +203,14 @@ pub struct App {
     shell_msg: u32,
     taskbar_created_msg: u32,
     last_work_area_fix: Option<Instant>,
-    deferred: VecDeque<Deferred>,
+    deferred: VecDeque<DeferredMenu>,
     stopped: bool,
 }
 
-pub fn run(opts: Options) {
+/// Runs the bar on the calling thread until `STOP` is set. `ready` gets the
+/// bar window, or `None` if it could not be created.
+pub fn run(opts: Options, ready: impl FnOnce(Option<HWND>)) {
     unsafe {
-        let _ = CreateMutexW(None, true, w!("Local\\capsule-bar"));
-        if windows::Win32::Foundation::GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
-            log::info!("already running");
-            return;
-        }
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         let _ = InitCommonControlsEx(&INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -219,23 +218,27 @@ pub fn run(opts: Options) {
         });
     }
     menu::allow_dark_menus();
-    let Some((bar, popup)) = create_windows() else {
+    let windows = create_windows();
+    ready(windows.map(|(bar, _)| bar));
+    let Some((bar, popup)) = windows else {
         log::error!("window creation failed");
+        unsafe { CoUninitialize() };
         return;
     };
-    let app = match App::new(bar, popup, opts) {
-        Ok(a) => a,
-        Err(e) => {
-            log::error!("startup: {e}");
-            return;
+    match App::new(bar, popup, opts) {
+        Ok(app) => {
+            APP.with(|c| *c.borrow_mut() = Some(app));
+            with_app(App::start);
+            message_loop();
+            with_app(App::stop);
+            APP.with(|c| c.borrow_mut().take());
         }
-    };
-    APP.with(|c| *c.borrow_mut() = Some(app));
-    with_app(App::start);
-    message_loop();
-    with_app(App::stop);
-    APP.with(|c| c.borrow_mut().take());
-    unsafe { CoUninitialize() };
+        Err(e) => log::error!("startup: {e}"),
+    }
+    unsafe {
+        let _ = DestroyWindow(bar);
+        CoUninitialize();
+    }
 }
 
 fn create_windows() -> Option<(HWND, HWND)> {
@@ -293,7 +296,7 @@ fn create_windows() -> Option<(HWND, HWND)> {
 
 fn message_loop() {
     let mut msg = MSG::default();
-    loop {
+    while !STOP.load(Ordering::Relaxed) {
         let watches =
             with_app(|a| [a.cfg.watch_handle(), a.pin_watch.as_ref().map_or_else(HANDLE::default, |w| w.handle())])
                 .unwrap_or_default();
@@ -322,20 +325,9 @@ fn message_loop() {
 fn run_deferred() {
     while let Some(d) = with_app(|a| a.deferred.pop_front()).flatten() {
         match d {
-            Deferred::AppMenu => app_menu(),
-            Deferred::KeyboardMenu => keyboard_menu(),
-            Deferred::TrayMenu(i) => tray_menu(i),
-            Deferred::Exit => {
-                let Some(h) = with_app(|a| {
-                    a.stop();
-                    a.hwnd
-                }) else {
-                    return;
-                };
-                unsafe {
-                    let _ = DestroyWindow(h);
-                }
-            }
+            DeferredMenu::App => app_menu(),
+            DeferredMenu::Keyboard => keyboard_menu(),
+            DeferredMenu::Tray(i) => tray_menu(i),
         }
     }
 }
@@ -379,7 +371,7 @@ unsafe extern "system" fn on_winevent(
         let bar = BAR.load(Ordering::Relaxed);
         unsafe {
             let _ = PostMessageW(
-                Some(crate::util::hwnd(bar)),
+                Some(crate::capsule::util::hwnd(bar)),
                 WM_APP_WINEVENT,
                 WPARAM(event as usize),
                 LPARAM(h.0 as isize),
@@ -568,8 +560,6 @@ impl App {
             let _ = WTSRegisterSessionNotification(h, NOTIFY_FOR_THIS_SESSION);
             let _ =
                 RegisterPowerSettingNotification(HANDLE(h.0), &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
-            let _ =
-                RegisterHotKey(Some(h), HOTKEY_EXIT, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, u32::from(b'Q'));
             let _ = SetCoalescableTimer(Some(h), TIMER_SLOW, 2000, None, 1000);
         }
         self.register_appbar();
@@ -1049,7 +1039,7 @@ impl App {
     }
 
     fn update_visibility(&mut self) {
-        let hide = self.appbar_fullscreen || fullscreen_foreground();
+        let hide = BREAK.load(Ordering::Relaxed) || self.appbar_fullscreen || fullscreen_foreground();
         if hide == self.hidden {
             return;
         }
@@ -1135,7 +1125,7 @@ impl App {
         }
     }
 
-    fn apply_config(&mut self, old: &Config) {
+    fn apply_config(&mut self, old: &CapsuleBar) {
         let c = self.cfg.config.clone();
         if c.appearance.backdrop != old.appearance.backdrop {
             theme::apply(self.hwnd, c.appearance.backdrop, &self.theme);
@@ -1296,9 +1286,9 @@ impl App {
             Hit::Window(i) => winlist::title(self.windows.items[i].hwnd),
             Hit::Tray(i) => return self.tray_tip(self.bar_tray[i], x, self.bounds.top, self.bounds.bottom),
             Hit::Keyboard => keyboard::display_name(self.keyboard_layout),
-            Hit::Volume if !self.volume.available() => "没有音频输出设备".into(),
-            Hit::Volume if self.volume.muted() => "已静音".into(),
-            Hit::Volume => format!("音量 {}%", (self.volume.level() * 100.0).round()),
+            Hit::Volume if !self.volume.available() => "No audio output device".into(),
+            Hit::Volume if self.volume.muted() => "Muted".into(),
+            Hit::Volume => format!("Volume {}%", (self.volume.level() * 100.0).round()),
             Hit::Clock => long_date(),
             Hit::Chevron => return,
         };
@@ -1414,8 +1404,8 @@ impl App {
                 let p = cursor();
                 winlist::system_menu(self.windows.items[i].hwnd, p.x, p.y);
             }
-            (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(Deferred::KeyboardMenu),
-            (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(Deferred::AppMenu),
+            (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(DeferredMenu::Keyboard),
+            (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(DeferredMenu::App),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
             _ => {}
         }
@@ -1557,7 +1547,7 @@ impl App {
         let icon = self.popup.cells[c];
         match msg {
             WM_RBUTTONDOWN => {}
-            WM_RBUTTONUP => self.deferred.push_back(Deferred::TrayMenu(icon)),
+            WM_RBUTTONUP => self.deferred.push_back(DeferredMenu::Tray(icon)),
             _ => self.tray_mouse(icon, msg),
         }
     }
@@ -1722,7 +1712,10 @@ impl App {
             WM_MOUSEWHEEL => self.on_wheel(wparam, lparam),
             WM_CAPTURECHANGED => self.end_drag(),
             WM_TIMER => self.on_timer(wparam.0),
-            WM_HOTKEY if wparam.0 == HOTKEY_EXIT as usize => self.deferred.push_back(Deferred::Exit),
+            WM_APP_STOP => unsafe {
+                let _ = EndMenu();
+            },
+            WM_APP_BREAK => self.update_visibility(),
             WM_DPICHANGED => self.on_dpi((wparam.0 & 0xFFFF) as u32),
             WM_DISPLAYCHANGE => {
                 self.reposition();
@@ -1817,7 +1810,7 @@ fn menu_anchor(a: &App, hit: Hit) -> (i32, i32) {
 fn app_menu() {
     let Some((owner, prev, (x, y))) = with_app(|a| (a.hwnd, a.foreground, menu_anchor(a, Hit::Clock))) else { return };
     let items =
-        [menu::command(1, "打开配置文件"), menu::command(2, "重新加载配置"), Item::Separator, menu::command(3, "退出")];
+        [menu::command(1, "Open config"), menu::command(2, "Reload config"), Item::Separator, menu::command(3, "Quit")];
     let id = menu::show(owner, &items, x, y);
     if id != 3 && !prev.is_invalid() {
         unsafe {
@@ -1825,26 +1818,11 @@ fn app_menu() {
         }
     }
     with_app(|a| match id {
-        1 => {
-            let path = wide(&a.cfg.path.to_string_lossy());
-            let r = unsafe {
-                ShellExecuteW(None, w!("open"), PCWSTR(path.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
-            };
-            if r.0 as isize <= 32 {
-                unsafe {
-                    ShellExecuteW(
-                        None,
-                        w!("open"),
-                        w!("notepad.exe"),
-                        PCWSTR(path.as_ptr()),
-                        PCWSTR::null(),
-                        SW_SHOWNORMAL,
-                    );
-                }
-            }
-        }
+        1 => config_store::open_in_editor(&a.cfg.path),
         2 => a.reload_config(),
-        3 => a.deferred.push_back(Deferred::Exit),
+        3 => unsafe {
+            let _ = PostMessageW(Some(crate::capsule::util::hwnd(a.opts.owner)), a.opts.quit_msg, WPARAM(0), LPARAM(0));
+        },
         _ => {}
     });
 }
@@ -1886,8 +1864,7 @@ fn tray_menu(icon: usize) {
         return;
     };
     let p = cursor();
-    let items =
-        [menu::command(1, if pinned { "从状态栏取消固定" } else { "固定到状态栏" }), menu::command(2, "应用菜单")];
+    let items = [menu::command(1, if pinned { "Unpin from bar" } else { "Pin to bar" }), menu::command(2, "App menu")];
     let id = menu::show(owner, &items, p.x, p.y);
     with_app(|a| {
         let Some(icon) = a.tray.icons.iter().position(|i| i.key.same(&key)) else { return };

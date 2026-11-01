@@ -130,7 +130,8 @@ pub fn tray_icon(font: &FontVec, size: u32, face: IconFace) -> Pixmap {
             let text_size = if text.len() <= 2 { 34.0 } else { 28.0 };
             if let Some((path, advance)) = text_path(font, &text, text_size) {
                 let b = path.bounds();
-                let t = t.pre_translate((ICON_CANVAS - advance) / 2.0, ICON_CANVAS / 2.0 - (b.top() + b.bottom()) / 2.0);
+                let t =
+                    t.pre_translate((ICON_CANVAS - advance) / 2.0, ICON_CANVAS / 2.0 - (b.top() + b.bottom()) / 2.0);
                 pixmap.fill_path(&path, &fg, FillRule::Winding, t, None);
             }
         }
@@ -141,7 +142,8 @@ pub fn tray_icon(font: &FontVec, size: u32, face: IconFace) -> Pixmap {
 fn logo_path() -> Option<Path> {
     let mut pb = PathBuilder::new();
     for d in LOGO_PATHS {
-        let spaced: String = d.chars().flat_map(|c| if c.is_ascii_alphabetic() { vec![' ', c, ' '] } else { vec![c] }).collect();
+        let spaced: String =
+            d.chars().flat_map(|c| if c.is_ascii_alphabetic() { vec![' ', c, ' '] } else { vec![c] }).collect();
         let tokens: Vec<&str> = spaced.split_whitespace().collect();
         let num = |i: usize| tokens[i].parse::<f32>().unwrap();
         let mut i = 0;
@@ -180,7 +182,8 @@ impl Overlay {
         let (w, h) = (width as f32, height as f32);
         let (bar_w, bar_h, border) = (236.0 * scale, 8.0 * scale, scale);
         let bar = Rect::from_xywh((w - bar_w) / 2.0, h * 0.904 - bar_h / 2.0, bar_w, bar_h).unwrap();
-        let fill = Rect::from_xywh(bar.x() + border, bar.y() + border, bar_w - border * 2.0, bar_h - border * 2.0).unwrap();
+        let fill =
+            Rect::from_xywh(bar.x() + border, bar.y() + border, bar_w - border * 2.0, bar_h - border * 2.0).unwrap();
         let mut overlay = Self { width, height, scale, pixels: vec![0; (width * height) as usize], bar, fill };
 
         let (logo_w, logo_h) = (84.0 * scale, 116.0 * scale);

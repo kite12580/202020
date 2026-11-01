@@ -16,7 +16,7 @@ use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::core::{GUID, PCWSTR, Result, implement};
 
-use crate::util::hwnd;
+use crate::capsule::util::hwnd;
 
 struct State {
     level: AtomicU32,

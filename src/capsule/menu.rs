@@ -6,7 +6,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCSTR, PCWSTR, w};
 
-use crate::util::wide;
+use crate::capsule::util::wide;
 
 pub enum Item<'a> {
     Command { id: u32, text: &'a str, checked: bool },

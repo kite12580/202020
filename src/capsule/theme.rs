@@ -16,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, s, w};
 
-use crate::gfx::Color;
+use crate::capsule::gfx::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {

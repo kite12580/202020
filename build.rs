@@ -1,5 +1,6 @@
 //! Embeds `app.manifest` as an RT_MANIFEST resource via a hand-written `.res`
-//! file, which the linker converts itself (no mt.exe / rc.exe needed).
+//! file, which the linker converts itself (no mt.exe / rc.exe needed), and
+//! delay-loads the capsule bar's DLLs.
 
 use std::path::PathBuf;
 
@@ -16,6 +17,23 @@ fn res_header(out: &mut Vec<u8>, data_size: u32, ty: u16, name: u16, flags: u16,
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
 }
+
+/// DLLs only the capsule bar uses, so they stay unloaded while it is disabled.
+const DELAY_LOADED: &[&str] = &[
+    "advapi32.dll",
+    "bcryptprimitives.dll",
+    "combase.dll",
+    "comctl32.dll",
+    "d2d1.dll",
+    "dwmapi.dll",
+    "dwrite.dll",
+    "imm32.dll",
+    "ole32.dll",
+    "oleaut32.dll",
+    "propsys.dll",
+    "uxtheme.dll",
+    "wtsapi32.dll",
+];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -36,4 +54,8 @@ fn main() {
     let path = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("app.res");
     std::fs::write(&path, res).expect("write app.res");
     println!("cargo:rustc-link-arg-bins={}", path.display());
+    for dll in DELAY_LOADED {
+        println!("cargo:rustc-link-arg-bins=/DELAYLOAD:{dll}");
+    }
+    println!("cargo:rustc-link-arg-bins=delayimp.lib");
 }

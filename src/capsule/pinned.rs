@@ -10,7 +10,7 @@ use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{IEnumFullIDList, IShellItem2, SHCreateItemFromIDList};
 use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PWSTR, interface, w};
 
-use crate::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID};
+use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID};
 
 const CLSID_TASKBAND_PIN: GUID = GUID::from_u128(0x90aa3a4e_1cba_4233_b8bb_535773d48449);
 const PKEY_LINK_TARGET_PARSING_PATH: PROPERTYKEY =

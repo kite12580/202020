@@ -10,8 +10,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, DestroyIcon, HICON, IsWindow, SendNotifyMessageW, WM_CONTEXTMENU, WM_USER,
 };
 
-use crate::gfx::{Gfx, Image};
-use crate::util::{hwnd, make_long, process_path, window_ids};
+use crate::capsule::gfx::{Gfx, Image};
+use crate::capsule::util::{hwnd, make_long, process_path, window_ids};
 use spy::TrayEvent;
 
 pub const NIN_SELECT: u32 = WM_USER;
