@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ffi::c_void;
 
 use capsule_core::layout::Rect;
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HWND};
@@ -21,12 +22,11 @@ use windows::Win32::Graphics::DirectWrite::{
     IDWriteTextLayout, IDWriteTypography,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::HBITMAP;
-use windows::Win32::Graphics::Gdi::HPALETTE;
+use windows::Win32::Graphics::Gdi::{BITMAP, GetObjectW, HBITMAP, HGDIOBJ, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICBitmapSource, IWICImagingFactory,
     WICBitmapCacheOnLoad, WICBitmapDitherTypeNone, WICBitmapInterpolationModeHighQualityCubic,
-    WICBitmapPaletteTypeCustom, WICBitmapUsePremultipliedAlpha,
+    WICBitmapPaletteTypeCustom, WICBitmapUseAlpha, WICBitmapUsePremultipliedAlpha,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::UI::WindowsAndMessaging::HICON;
@@ -154,10 +154,26 @@ impl Gfx {
     }
 
     pub fn image_from_hbitmap(&self, bitmap: HBITMAP, px: u32) -> Result<Image> {
-        let bitmap =
-            unsafe { self.wic.CreateBitmapFromHBITMAP(bitmap, HPALETTE::default(), WICBitmapUsePremultipliedAlpha)? };
+        let alpha = if premultiplied(bitmap) { WICBitmapUsePremultipliedAlpha } else { WICBitmapUseAlpha };
+        let bitmap = unsafe { self.wic.CreateBitmapFromHBITMAP(bitmap, HPALETTE::default(), alpha)? };
         self.finish(&bitmap.cast()?, px)
     }
+}
+
+/// Shell bitmaps come in either alpha mode; premultiplied channels never
+/// exceed their alpha.
+fn premultiplied(bitmap: HBITMAP) -> bool {
+    let mut bm = BITMAP::default();
+    let size = size_of::<BITMAP>() as i32;
+    if unsafe { GetObjectW(HGDIOBJ(bitmap.0), size, Some(&mut bm as *mut BITMAP as *mut c_void)) } == 0
+        || bm.bmBits.is_null()
+        || bm.bmBitsPixel != 32
+    {
+        return true;
+    }
+    let len = bm.bmWidthBytes.unsigned_abs() as usize * bm.bmHeight.unsigned_abs() as usize / 4;
+    let pixels = unsafe { std::slice::from_raw_parts(bm.bmBits as *const [u8; 4], len) };
+    pixels.iter().all(|p| p[0].max(p[1]).max(p[2]) <= p[3])
 }
 
 /// A D2D render target bound to one window. Coordinates are DIPs.

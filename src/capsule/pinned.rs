@@ -69,14 +69,18 @@ pub fn read() -> Vec<PinnedApp> {
             let display = |sigdn| unsafe { item.GetDisplayName(sigdn) }.ok().and_then(take_string).unwrap_or_default();
             pins.push(PinnedApp {
                 pin: Pin::new(aumid.as_deref(), target.as_deref()),
-                parsing_name: display(SIGDN_DESKTOPABSOLUTEPARSING),
+                // A pinned packaged app's own parsing name does not parse back.
+                parsing_name: match (&aumid, &target) {
+                    (Some(id), None) => format!(r"shell:AppsFolder\{id}"),
+                    _ => display(SIGDN_DESKTOPABSOLUTEPARSING),
+                },
                 name: display(SIGDN_NORMALDISPLAY),
                 image: None,
             });
         }
         unsafe { CoTaskMemFree(Some(pidl[0] as *const _)) };
     }
-    log::debug!("taskbar pins {:?}", pins.iter().map(|p| &p.pin).collect::<Vec<_>>());
+    log::debug!("taskbar pins {:?}", pins.iter().map(|p| (&p.pin, &p.parsing_name)).collect::<Vec<_>>());
     pins
 }
 
