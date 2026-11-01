@@ -13,7 +13,6 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CopyIcon, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, FindWindowExW, GetIconInfo, GetMessageW, HICON, HWND_BROADCAST, HWND_MESSAGE, HWND_TOPMOST,
@@ -25,7 +24,7 @@ use windows::core::{PCWSTR, w};
 
 use super::TrayKey;
 use crate::capsule::shell::real_tray;
-use crate::capsule::util::{hwnd, make_long, window_ids};
+use crate::capsule::util::{hwnd, make_long, own_window};
 
 pub struct TrayEvent {
     pub msg: NotifyIconMessage,
@@ -122,12 +121,11 @@ impl Spy {
 /// Reaches message-only windows too, which `HWND_BROADCAST` skips but some
 /// apps use as their notify-icon owner.
 fn announce_taskbar(msg: u32) {
-    let own = unsafe { GetCurrentProcessId() };
     unsafe {
         let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
         let mut prev = None;
         while let Ok(h) = FindWindowExW(Some(HWND_MESSAGE), prev, PCWSTR::null(), PCWSTR::null()) {
-            if window_ids(h).1 != own {
+            if !own_window(h) {
                 let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
             }
             prev = Some(h);

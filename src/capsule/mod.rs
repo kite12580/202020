@@ -33,12 +33,11 @@ pub struct Bar {
 }
 
 impl Bar {
-    /// Starts the bar. Once it has started, `exited_msg` is posted to
+    /// Starts the bar. Once it has started, `opts.exited_msg` is posted to
     /// `opts.owner` when the bar thread is about to finish, after which `join`
     /// returns promptly.
-    pub fn start(opts: Options, exited_msg: u32) -> Option<Bar> {
+    pub fn start(opts: Options) -> Option<Bar> {
         app::STOP.store(false, Ordering::Relaxed);
-        let owner = opts.owner;
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::spawn(move || {
             let mut started = false;
@@ -47,9 +46,7 @@ impl Bar {
                 let _ = tx.send(h.map(|h| h.0 as isize));
             });
             if started {
-                unsafe {
-                    let _ = PostMessageW(Some(util::hwnd(owner)), exited_msg, WPARAM(0), LPARAM(0));
-                }
+                opts.post_owner(opts.exited_msg);
             }
         });
         match rx.recv().ok().flatten() {

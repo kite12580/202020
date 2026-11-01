@@ -6,17 +6,20 @@ use std::time::{Duration, Instant};
 
 use capsule_core::config::CapsuleBar;
 use capsule_core::layout::{self, Hit, Input, Layout, METRICS, Rect};
-use capsule_core::taskband::Task;
+use capsule_core::taskband::{Pin, Task};
 use capsule_core::{clock, kbd};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Globalization::{DATE_LONGDATE, GetDateFormatEx, GetTimeFormatEx, TIME_FORMAT_FLAGS};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HGDIOBJ, InvalidateRect, ScreenToClient, ValidateRect};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Power::{POWERBROADCAST_SETTING, RegisterPowerSettingNotification};
-use windows::Win32::System::RemoteDesktop::{NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification};
+use windows::Win32::System::Power::{
+    HPOWERNOTIFY, POWERBROADCAST_SETTING, RegisterPowerSettingNotification, UnregisterPowerSettingNotification,
+};
+use windows::Win32::System::RemoteDesktop::{
+    NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+};
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Controls::{
     HOVER_DEFAULT, ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, WM_MOUSEHOVER, WM_MOUSELEAVE,
@@ -47,7 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{GUID, PCWSTR, w};
 
 use crate::capsule::config_store::{self, ConfigStore};
-use crate::capsule::gfx::{Font, Gfx, Surface, Text};
+use crate::capsule::gfx::{Font, Gfx, Image, Surface, Text};
 use crate::capsule::icons::IconWorker;
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
@@ -58,19 +61,30 @@ use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
 use crate::capsule::tooltip::Tooltip;
 use crate::capsule::tray::spy::{Rects, Shared, Spy};
-use crate::capsule::tray::{NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
-use crate::capsule::util::{class_name, from_wide, lparam_point, primary_monitor, process_path, scale, window_ids};
+use crate::capsule::tray::{self, Change, NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
+use crate::capsule::util::{
+    apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, scale,
+};
 use crate::capsule::volume::Volume;
 use crate::capsule::windows_list::{self as winlist, IconRank, WindowList};
 
+#[derive(Clone, Copy)]
 pub struct Options {
     pub safe: bool,
     pub diag: bool,
-    /// Window that receives `quit_msg` or `disable_msg` when the user picks
-    /// Quit or Disable capsule bar.
+    /// Window that receives the `*_msg` messages.
     pub owner: isize,
+    pub exited_msg: u32,
     pub quit_msg: u32,
     pub disable_msg: u32,
+}
+
+impl Options {
+    pub fn post_owner(&self, msg: u32) {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd(self.owner)), msg, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -83,6 +97,7 @@ const WM_APP_WIN_DIGIT: u32 = WM_APP + 7;
 const WM_APP_INPUT: u32 = WM_APP + 8;
 pub const WM_APP_STOP: u32 = WM_APP + 9;
 pub const WM_APP_BREAK: u32 = WM_APP + 10;
+const WM_APP_REPOSITION: u32 = WM_APP + 11;
 
 pub static STOP: AtomicBool = AtomicBool::new(false);
 pub static BREAK: AtomicBool = AtomicBool::new(false);
@@ -115,6 +130,13 @@ const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 const EVENT_OBJECT_CLOAKED: u32 = 0x8017;
 const EVENT_OBJECT_UNCLOAKED: u32 = 0x8018;
 
+const FRAME_CLASS: &str = "ApplicationFrameWindow";
+
+const MENU_OPEN_CONFIG: u32 = 1;
+const MENU_RELOAD_CONFIG: u32 = 2;
+const MENU_DISABLE: u32 = 3;
+const MENU_QUIT: u32 = 4;
+
 const GLYPH_CHEVRON: &str = "\u{E70E}";
 const GLYPH_MUTE: &str = "\u{E74F}";
 const GLYPH_VOLUME: [&str; 4] = ["\u{E992}", "\u{E993}", "\u{E994}", "\u{E995}"];
@@ -135,6 +157,8 @@ enum DeferredMenu {
     Keyboard,
     Tray(usize),
 }
+
+type IconKey = (String, u32);
 
 enum IconTarget {
     Window(HWND, IconRank),
@@ -187,12 +211,15 @@ pub struct App {
     keyboard_iso: String,
     keyboard_label: String,
     keyboard_retries: u8,
+    volume_glyph: &'static str,
     pending_win_digits: Vec<u16>,
     last_win_digit: Option<Instant>,
     clock: (String, String),
     texts: Texts,
     icon_worker: IconWorker,
-    icon_requests: HashMap<u64, IconTarget>,
+    icon_requests: HashMap<u64, IconKey>,
+    icon_waiters: HashMap<IconKey, Vec<IconTarget>>,
+    icon_cache: HashMap<IconKey, Image>,
     next_icon_request: u64,
     foreground: HWND,
     hover: Option<Hit>,
@@ -207,6 +234,8 @@ pub struct App {
     locked: bool,
     display_off: bool,
     hooks: Vec<HWINEVENTHOOK>,
+    power_notify: Option<HPOWERNOTIFY>,
+    reposition_pending: bool,
     shell_msg: u32,
     taskbar_created_msg: u32,
     last_work_area_fix: Option<Instant>,
@@ -377,12 +406,7 @@ unsafe extern "system" fn on_winevent(
     if with_app(|a| a.on_winevent(event, h)).is_none() {
         let bar = BAR.load(Ordering::Relaxed);
         unsafe {
-            let _ = PostMessageW(
-                Some(crate::capsule::util::hwnd(bar)),
-                WM_APP_WINEVENT,
-                WPARAM(event as usize),
-                LPARAM(h.0 as isize),
-            );
+            let _ = PostMessageW(Some(hwnd(bar)), WM_APP_WINEVENT, WPARAM(event as usize), LPARAM(h.0 as isize));
         }
     }
 }
@@ -399,10 +423,6 @@ fn cursor() -> POINT {
         let _ = GetCursorPos(&mut p);
     }
     p
-}
-
-fn own_window(h: HWND) -> bool {
-    window_ids(h).1 == unsafe { GetCurrentProcessId() }
 }
 
 fn fullscreen_foreground() -> bool {
@@ -479,12 +499,15 @@ impl App {
             keyboard_iso: String::new(),
             keyboard_label: String::new(),
             keyboard_retries: 0,
+            volume_glyph: "",
             pending_win_digits: Vec::new(),
             last_win_digit: None,
             clock: Default::default(),
             texts: Texts::default(),
             icon_worker: IconWorker::new(hwnd.0 as isize, WM_APP_ICON),
             icon_requests: HashMap::new(),
+            icon_waiters: HashMap::new(),
+            icon_cache: HashMap::new(),
             next_icon_request: 1,
             foreground: HWND::default(),
             hover: None,
@@ -499,6 +522,8 @@ impl App {
             locked: false,
             display_off: false,
             hooks: Vec::new(),
+            power_notify: None,
+            reposition_pending: false,
             shell_msg: unsafe { RegisterWindowMessageW(w!("SHELLHOOK")) },
             taskbar_created_msg,
             last_work_area_fix: None,
@@ -567,8 +592,9 @@ impl App {
                 }
             }
             let _ = WTSRegisterSessionNotification(h, NOTIFY_FOR_THIS_SESSION);
-            let _ =
-                RegisterPowerSettingNotification(HANDLE(h.0), &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
+            self.power_notify =
+                RegisterPowerSettingNotification(HANDLE(h.0), &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE)
+                    .ok();
             let _ = SetCoalescableTimer(Some(h), TIMER_SLOW, 2000, None, 1000);
         }
         self.register_appbar();
@@ -595,8 +621,15 @@ impl App {
                 let _ = UnhookWinEvent(hook);
             }
             let _ = DeregisterShellHookWindow(self.hwnd);
+            let _ = WTSUnRegisterSessionNotification(self.hwnd);
+            if let Some(n) = self.power_notify.take() {
+                let _ = UnregisterPowerSettingNotification(n);
+            }
         }
         self.spy = None;
+        for ev in self.tray_shared.queue.lock().unwrap().drain(..) {
+            tray::destroy_icon(ev.icon);
+        }
         self.keyhook = None;
         if let Some(t) = self.takeover.take() {
             t.stop();
@@ -723,11 +756,14 @@ impl App {
                 _ => 3,
             }]
         };
-        self.texts.volume_glyph = self.gfx.text(glyph, Font::Glyph).ok();
+        if glyph != self.volume_glyph {
+            self.texts.volume_glyph = self.gfx.text(glyph, Font::Glyph).ok();
+            self.volume_glyph = glyph;
+            self.invalidate();
+        }
         if self.hover == Some(Hit::Volume) {
             self.show_tip();
         }
-        self.invalidate();
     }
 
     fn relayout(&mut self) {
@@ -748,14 +784,26 @@ impl App {
             self.set_hover(None);
         }
         if resized {
-            self.reposition();
+            self.schedule_reposition();
         } else {
             self.publish_tray_rects();
         }
         self.invalidate();
     }
 
+    /// Coalesces the resizes from a burst of window events, such as a
+    /// virtual desktop switch cloaking and uncloaking every window.
+    fn schedule_reposition(&mut self) {
+        if !self.reposition_pending {
+            self.reposition_pending = true;
+            unsafe {
+                let _ = PostMessageW(Some(self.hwnd), WM_APP_REPOSITION, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+
     fn reposition(&mut self) {
+        self.reposition_pending = false;
         let mon = primary_monitor();
         let (w, h) = (self.px(self.layout.width), self.px(METRICS.height));
         let (x, y) = if self.drag.is_some() {
@@ -822,15 +870,15 @@ impl App {
             self.set_window_icon(h, class_icon, IconRank::Class);
         }
         let px = self.window_icon_px();
-        if class_name(h) == "ApplicationFrameWindow"
+        if class_name(h) == FRAME_CLASS
             && let Some(id) = winlist::aumid(h)
         {
-            self.request_shell_icon(h, format!("shell:AppsFolder\\{id}"), IconRank::Package, px);
+            self.request_shell_icon(h, apps_folder(&id), IconRank::Package, px);
             return;
         }
         winlist::request_window_icon(h, false, on_window_icon);
         if class_icon == 0
-            && let Some(path) = process_path(window_ids(h).1)
+            && let Some(path) = self.windows.index(h).and_then(|i| self.windows.items[i].exe.clone())
         {
             self.request_shell_icon(h, path, IconRank::Exe, px);
         }
@@ -841,10 +889,18 @@ impl App {
     }
 
     fn request_icon_target(&mut self, target: IconTarget, name: String, px: u32) {
-        let id = self.next_icon_request;
-        self.next_icon_request += 1;
-        self.icon_requests.insert(id, target);
-        self.icon_worker.request(id, name, px);
+        let key = (name, px);
+        if let Some(img) = self.icon_cache.get(&key) {
+            return self.apply_shell_icon(target, img.clone());
+        }
+        let waiters = self.icon_waiters.entry(key.clone()).or_default();
+        waiters.push(target);
+        if waiters.len() == 1 {
+            let id = self.next_icon_request;
+            self.next_icon_request += 1;
+            self.icon_worker.request(id, key.0.clone(), px);
+            self.icon_requests.insert(id, key);
+        }
     }
 
     /// Builds images for the given tray icons, asking for the owner's exe
@@ -858,7 +914,7 @@ impl App {
             }
             icon.fallback_requested = true;
             let key = icon.key;
-            if let Some(exe) = icon.owner_exe() {
+            if let Some(exe) = icon.exe.clone() {
                 self.request_icon_target(IconTarget::Tray(key), exe, px);
             }
         }
@@ -889,11 +945,27 @@ impl App {
     }
 
     fn on_shell_icon(&mut self, id: u64, bitmap: HBITMAP) {
-        match self.icon_requests.remove(&id) {
-            Some(IconTarget::Window(h, rank)) => {
+        let key = self.icon_requests.remove(&id);
+        let targets = key.as_ref().and_then(|k| self.icon_waiters.remove(k)).unwrap_or_default();
+        if bitmap.is_invalid() {
+            return;
+        }
+        let img = key.as_ref().and_then(|k| self.gfx.image_from_hbitmap(bitmap, k.1).ok());
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        }
+        let (Some(key), Some(img)) = (key, img) else { return };
+        for target in targets {
+            self.apply_shell_icon(target, img.clone());
+        }
+        self.icon_cache.insert(key, img);
+    }
+
+    fn apply_shell_icon(&mut self, target: IconTarget, img: Image) {
+        match target {
+            IconTarget::Window(h, rank) => {
                 if let Some(i) = self.windows.index(h)
                     && rank >= self.windows.items[i].rank
-                    && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, self.window_icon_px())
                 {
                     let w = &mut self.windows.items[i];
                     w.image = Some(img);
@@ -902,33 +974,24 @@ impl App {
                     self.invalidate();
                 }
             }
-            Some(IconTarget::Pin(name)) => {
-                let px = self.window_icon_px();
-                if let Some(p) = self.pins.iter_mut().find(|p| p.parsing_name == name)
-                    && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, px)
-                {
+            IconTarget::Pin(name) => {
+                if let Some(p) = self.pins.iter_mut().find(|p| p.parsing_name == name) {
                     p.image = Some(img);
                     self.invalidate();
                 }
             }
-            Some(IconTarget::Tray(key)) => {
-                let px = self.px(TRAY_ICON) as u32;
-                if let Some(icon) = self.tray.icons.iter_mut().find(|i| i.key.same(&key) && i.image.is_none())
-                    && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, px)
-                {
+            IconTarget::Tray(key) => {
+                if let Some(icon) = self.tray.icons.iter_mut().find(|i| i.key.same(&key) && i.image.is_none()) {
                     icon.image = Some(img);
                     self.invalidate();
                     self.invalidate_popup();
                 }
             }
-            None => {}
-        }
-        unsafe {
-            let _ = DeleteObject(HGDIOBJ(bitmap.0));
         }
     }
 
     fn refetch_icons(&mut self) {
+        self.icon_cache.clear();
         for w in &mut self.windows.items {
             w.rank = IconRank::None;
         }
@@ -999,7 +1062,7 @@ impl App {
             }
             ACTIVATED => self.on_foreground(h),
             REDRAW => {
-                if self.windows.index(h).is_some() && class_name(h) != "ApplicationFrameWindow" {
+                if self.windows.index(h).is_some() && class_name(h) != FRAME_CLASS {
                     winlist::request_window_icon(h, false, on_window_icon);
                 }
             }
@@ -1038,12 +1101,19 @@ impl App {
 
     fn on_tray_events(&mut self) {
         let events: Vec<_> = self.tray_shared.queue.lock().unwrap().drain(..).collect();
-        let mut changed = false;
+        let (mut relayout, mut redraw) = (false, false);
         for ev in events {
-            changed |= self.tray.apply(ev);
+            match self.tray.apply(ev) {
+                Change::None => {}
+                Change::Redraw(i) => redraw |= self.bar_tray.contains(&i) || self.popup.cells.contains(&i),
+                Change::Relayout => relayout = true,
+            }
         }
-        if changed {
+        if relayout {
             self.after_tray_change();
+        } else if redraw {
+            self.invalidate();
+            self.invalidate_popup();
         }
     }
 
@@ -1145,7 +1215,14 @@ impl App {
     }
 
     fn refresh_pins(&mut self) {
-        self.set_pins(pinned::read());
+        let pins = pinned::read();
+        fn key(p: &PinnedApp) -> (&Pin, &str, &str) {
+            (&p.pin, &p.parsing_name, &p.name)
+        }
+        if pins.iter().map(key).eq(self.pins.iter().map(key)) {
+            return;
+        }
+        self.set_pins(pins);
         self.relayout();
     }
 
@@ -1632,13 +1709,17 @@ impl App {
         self.invalidate_popup();
     }
 
+    fn new_surface(&self, hwnd: HWND, w: i32, h: i32) -> Option<Surface> {
+        let software = self.cfg.config.appearance.render == capsule_core::config::Render::Software;
+        Surface::new(&self.gfx, hwnd, w as u32, h as u32, self.dpi, software)
+            .map_err(|e| log::error!("surface: {e}"))
+            .ok()
+    }
+
     fn ensure_surface(&mut self) -> bool {
         if self.surface.is_none() {
-            let software = self.cfg.config.appearance.render == capsule_core::config::Render::Software;
             let (w, h) = (self.bounds.right - self.bounds.left, self.bounds.bottom - self.bounds.top);
-            self.surface = Surface::new(&self.gfx, self.hwnd, w as u32, h as u32, self.dpi, software)
-                .map_err(|e| log::error!("surface: {e}"))
-                .ok();
+            self.surface = self.new_surface(self.hwnd, w, h);
         }
         self.surface.is_some()
     }
@@ -1665,24 +1746,24 @@ impl App {
             let center = |t: &Text| (r.center_x() - t.width / 2.0, cy - t.height / 2.0);
             match hit {
                 Hit::Task(i) => {
-                    let (image, active) = match self.tasks[i] {
+                    let image = match self.tasks[i] {
                         Task::Window(w) => {
                             let w = &self.windows.items[w];
-                            (&w.image, Some(w.hwnd == self.foreground))
+                            let (bar_w, color) = if w.hwnd == self.foreground {
+                                s.fill(highlight, pal.active, 4.0);
+                                (16.0, pal.accent)
+                            } else {
+                                (6.0, pal.running)
+                            };
+                            s.fill(Rect { x: r.center_x() - bar_w / 2.0, y: h - 7.0, w: bar_w, h: 3.0 }, color, 1.5);
+                            &w.image
                         }
-                        Task::Pin(p) => (&self.pins[p].image, None),
+                        Task::Pin(p) => &self.pins[p].image,
                     };
-                    if active == Some(true) {
-                        s.fill(highlight, pal.active, 4.0);
-                    }
                     let icon_y = cy - TASK_ICON_LIFT;
                     match image {
                         Some(img) => s.image(img, r.center_x(), icon_y),
                         None => s.dot(r.center_x(), icon_y, 3.0, pal.text.alpha(0.5)),
-                    }
-                    if let Some(active) = active {
-                        let (w, c) = if active { (16.0, pal.accent) } else { (6.0, pal.running) };
-                        s.fill(Rect { x: r.center_x() - w / 2.0, y: h - 7.0, w, h: 3.0 }, c, 1.5);
                     }
                 }
                 Hit::Chevron => {
@@ -1732,10 +1813,8 @@ impl App {
             return;
         }
         if self.popup.surface.is_none() {
-            let software = self.cfg.config.appearance.render == capsule_core::config::Render::Software;
             let (w, h) = self.popup.size();
-            self.popup.surface =
-                Surface::new(&self.gfx, self.popup.hwnd, self.px(w) as u32, self.px(h) as u32, self.dpi, software).ok();
+            self.popup.surface = self.new_surface(self.popup.hwnd, self.px(w), self.px(h));
         }
         self.ensure_tray_images(&self.popup.cells.clone());
         let pal = self.theme.palette(self.cfg.config.appearance.opacity);
@@ -1784,6 +1863,11 @@ impl App {
                 let _ = EndMenu();
             },
             WM_APP_BREAK => self.update_visibility(),
+            WM_APP_REPOSITION => {
+                if self.reposition_pending {
+                    self.reposition();
+                }
+            }
             WM_DPICHANGED => self.on_dpi((wparam.0 & 0xFFFF) as u32),
             WM_DISPLAYCHANGE => {
                 self.reposition();
@@ -1878,25 +1962,23 @@ fn menu_anchor(a: &App, hit: Hit) -> (i32, i32) {
 fn app_menu() {
     let Some((owner, prev, (x, y))) = with_app(|a| (a.hwnd, a.foreground, menu_anchor(a, Hit::Clock))) else { return };
     let items = [
-        menu::command(1, "Open config"),
-        menu::command(2, "Reload config"),
+        menu::command(MENU_OPEN_CONFIG, "Open config"),
+        menu::command(MENU_RELOAD_CONFIG, "Reload config"),
         Item::Separator,
-        menu::command(3, "Disable capsule bar"),
-        menu::command(4, "Quit"),
+        menu::command(MENU_DISABLE, "Disable capsule bar"),
+        menu::command(MENU_QUIT, "Quit"),
     ];
     let id = menu::show(owner, &items, x, y);
-    if id != 4 && !prev.is_invalid() {
+    if id != MENU_QUIT && !prev.is_invalid() {
         unsafe {
             let _ = SetForegroundWindow(prev);
         }
     }
     with_app(|a| match id {
-        1 => config_store::open_in_editor(&a.cfg.path),
-        2 => a.reload_config(),
-        3 | 4 => unsafe {
-            let msg = if id == 3 { a.opts.disable_msg } else { a.opts.quit_msg };
-            let _ = PostMessageW(Some(crate::capsule::util::hwnd(a.opts.owner)), msg, WPARAM(0), LPARAM(0));
-        },
+        MENU_OPEN_CONFIG => config_store::open_in_editor(&a.cfg.path),
+        MENU_RELOAD_CONFIG => a.reload_config(),
+        MENU_DISABLE => a.opts.post_owner(a.opts.disable_msg),
+        MENU_QUIT => a.opts.post_owner(a.opts.quit_msg),
         _ => {}
     });
 }

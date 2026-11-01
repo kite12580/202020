@@ -6,11 +6,9 @@ use capsule_core::winfilter::{WindowFacts, taskbar_window};
 use windows::Win32::Foundation::{ERROR_SUCCESS, FILETIME, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
-use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Threading::{
-    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, GetProcessTimes, OpenProcess,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    AttachThreadInput, GetCurrentThreadId, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -22,7 +20,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PWSTR};
 
 use crate::capsule::gfx::Image;
-use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, class_name, make_long, process_path, window_ids};
+use crate::capsule::util::{
+    OwnedHandle, PKEY_APP_USER_MODEL_ID, class_name, hwnd, image_path, make_long, open_process, own_window,
+    take_string, window_ids,
+};
 
 const WM_POPUPSYSTEMMENU: u32 = 0x0313;
 
@@ -44,7 +45,7 @@ pub struct Window {
     /// The HICON `image` was made from, to skip unchanged refetches.
     pub src: isize,
     aumids: Vec<String>,
-    exe: Option<String>,
+    pub exe: Option<String>,
     /// Index of the taskbar pin the window groups under, or `usize::MAX`.
     slot: usize,
 }
@@ -76,7 +77,7 @@ pub fn qualifies(h: HWND, diag: bool) -> bool {
     let facts = WindowFacts {
         visible: unsafe { IsWindowVisible(h) }.as_bool(),
         cloaked: cloaked(h),
-        own_process: window_ids(h).1 == unsafe { GetCurrentProcessId() },
+        own_process: own_window(h),
         tool_window: ex & WS_EX_TOOLWINDOW.0 != 0,
         app_window: ex & WS_EX_APPWINDOW.0 != 0,
         no_activate: ex & WS_EX_NOACTIVATE.0 != 0,
@@ -91,10 +92,9 @@ pub fn qualifies(h: HWND, diag: bool) -> bool {
 }
 
 fn process_created(pid: u32) -> u64 {
-    let Ok(p) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+    let Some(p) = open_process(PROCESS_QUERY_LIMITED_INFORMATION, pid) else {
         return u64::MAX;
     };
-    let p = OwnedHandle(p);
     let (mut c, mut e, mut k, mut u) =
         (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
     if unsafe { GetProcessTimes(p.0, &mut c, &mut e, &mut k, &mut u) }.is_err() {
@@ -151,9 +151,9 @@ impl WindowList {
                 self.next_seq
             }),
         };
-        let pid = window_ids(h).1;
-        let aumids: Vec<String> = aumid(h).into_iter().chain(package_aumid(pid)).collect();
-        let exe = process_path(pid);
+        let process = open_process(PROCESS_QUERY_LIMITED_INFORMATION, window_ids(h).1);
+        let aumids: Vec<String> = aumid(h).into_iter().chain(process.as_ref().and_then(package_aumid)).collect();
+        let exe = process.as_ref().and_then(image_path);
         let slot = slot(&self.pins, &aumids, exe.as_deref()).unwrap_or(usize::MAX);
         log::debug!("window {:?} {aumids:?} {exe:?} -> pin {slot}", h.0);
         let w = Window { hwnd: h, seq, image: None, rank: IconRank::None, src: 0, aumids, exe, slot };
@@ -205,7 +205,7 @@ impl WindowList {
         let before = self.items.len();
         let diag = self.diag;
         self.items.retain(|w| qualifies(w.hwnd, diag));
-        self.seen.retain(|&h, _| unsafe { IsWindow(Some(crate::capsule::util::hwnd(h))) }.as_bool());
+        self.seen.retain(|&h, _| unsafe { IsWindow(Some(hwnd(h))) }.as_bool());
         before != self.items.len()
     }
 }
@@ -215,15 +215,11 @@ pub fn aumid(h: HWND) -> Option<String> {
     unsafe {
         let store: IPropertyStore = SHGetPropertyStoreForWindow(h).ok()?;
         let value = store.GetValue(&PKEY_APP_USER_MODEL_ID).ok()?;
-        let s = PropVariantToStringAlloc(&value).ok()?;
-        let out = s.to_string().ok();
-        CoTaskMemFree(Some(s.0 as *const _));
-        out.filter(|s| !s.is_empty())
+        take_string(PropVariantToStringAlloc(&value).ok()?).filter(|s| !s.is_empty())
     }
 }
 
-fn package_aumid(pid: u32) -> Option<String> {
-    let p = OwnedHandle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?);
+fn package_aumid(p: &OwnedHandle) -> Option<String> {
     let mut buf = [0u16; 256];
     let mut len = buf.len() as u32;
     if unsafe { GetApplicationUserModelId(p.0, &mut len, Some(PWSTR(buf.as_mut_ptr()))) } != ERROR_SUCCESS {

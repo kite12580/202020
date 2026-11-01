@@ -34,7 +34,7 @@ impl TrayKey {
     }
 }
 
-fn destroy_icon(h: isize) {
+pub fn destroy_icon(h: isize) {
     if h != 0 {
         unsafe {
             let _ = DestroyIcon(HICON(h as *mut _));
@@ -50,6 +50,7 @@ pub struct Icon {
     pub show_tip: bool,
     pub hidden: bool,
     pub tip: String,
+    pub exe: Option<String>,
     hicon: isize,
     pub image: Option<Image>,
     /// An exe icon was requested because the app sent no usable icon.
@@ -77,10 +78,6 @@ impl Icon {
         }
         self.image = gfx.image_from_hicon(HICON(self.hicon as *mut _), px).ok();
         self.image.is_some()
-    }
-
-    pub fn owner_exe(&self) -> Option<String> {
-        process_path(window_ids(self.owner()).1)
     }
 
     /// Delivers a mouse message to the icon's owner with the semantics of
@@ -126,9 +123,16 @@ pub struct Tray {
     pub icons: Vec<Icon>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    None,
+    /// The icon at this index got a new image.
+    Redraw(usize),
+    Relayout,
+}
+
 impl Tray {
-    /// Applies one spy event. Returns whether anything visible changed.
-    pub fn apply(&mut self, ev: TrayEvent) -> bool {
+    pub fn apply(&mut self, ev: TrayEvent) -> Change {
         let d = &ev.msg.data;
         let key = TrayKey { hwnd: d.hwnd, uid: d.uid, guid: d.guid };
         let pos = self.icons.iter().position(|i| i.key.same(&key));
@@ -136,15 +140,16 @@ impl Tray {
         match ev.msg.message {
             NIM_ADD | NIM_MODIFY => {
                 let idx = pos.unwrap_or_else(|| {
-                    let exe = process_path(window_ids(hwnd(handle(d.hwnd))).1).unwrap_or_default();
+                    let exe = process_path(window_ids(hwnd(handle(d.hwnd))).1);
                     self.icons.push(Icon {
                         key,
-                        pin: pin_key(&exe, d.uid, d.guid.as_ref()),
+                        pin: pin_key(exe.as_deref().unwrap_or_default(), d.uid, d.guid.as_ref()),
                         callback: 0,
                         version: 0,
                         show_tip: false,
                         hidden: false,
                         tip: String::new(),
+                        exe,
                         hicon: 0,
                         image: None,
                         fallback_requested: false,
@@ -152,6 +157,7 @@ impl Tray {
                     self.icons.len() - 1
                 });
                 let icon = &mut self.icons[idx];
+                let was_hidden = icon.hidden;
                 if d.flags & NIF_MESSAGE != 0 {
                     icon.callback = d.callback_message;
                 }
@@ -172,21 +178,33 @@ impl Tray {
                 if icon.key.guid.is_none() && d.guid.is_some() {
                     icon.key.guid = d.guid;
                 }
-                true
+                if pos.is_none() || icon.hidden != was_hidden {
+                    Change::Relayout
+                } else if d.flags & NIF_ICON != 0 {
+                    Change::Redraw(idx)
+                } else {
+                    Change::None
+                }
             }
             NIM_DELETE => {
                 destroy_icon(ev.icon);
-                pos.map(|i| self.icons.remove(i)).is_some()
+                match pos {
+                    Some(i) => {
+                        self.icons.remove(i);
+                        Change::Relayout
+                    }
+                    None => Change::None,
+                }
             }
             NIM_SETVERSION => {
                 if let Some(i) = pos {
                     self.icons[i].version = d.version;
                 }
-                false
+                Change::None
             }
             _ => {
                 destroy_icon(ev.icon);
-                false
+                Change::None
             }
         }
     }

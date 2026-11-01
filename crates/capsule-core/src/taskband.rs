@@ -5,10 +5,13 @@ pub struct Pin {
     pub target: Option<String>,
 }
 
+fn norm(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_lowercase())
+}
+
 impl Pin {
     pub fn new(aumid: Option<&str>, target: Option<&str>) -> Pin {
-        let norm = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_lowercase);
-        Pin { aumid: norm(aumid), target: norm(target) }
+        Pin { aumid: aumid.and_then(norm), target: target.and_then(norm) }
     }
 }
 
@@ -17,12 +20,12 @@ impl Pin {
 /// of them, so a PWA does not land on its browser's pin; a window without
 /// any joins by executable path.
 pub fn slot<S: AsRef<str>>(pins: &[Pin], aumids: &[S], exe: Option<&str>) -> Option<usize> {
-    let ids: Vec<String> = aumids.iter().map(|s| s.as_ref().to_lowercase()).filter(|s| !s.is_empty()).collect();
+    let ids: Vec<String> = aumids.iter().filter_map(|s| norm(s.as_ref())).collect();
     if !ids.is_empty() {
-        return ids.iter().find_map(|id| pins.iter().position(|p| p.aumid.as_deref() == Some(id.as_str())));
+        return ids.iter().find_map(|id| pins.iter().position(|p| p.aumid.as_ref() == Some(id)));
     }
-    let exe = exe?.to_lowercase();
-    pins.iter().position(|p| p.target.as_deref() == Some(exe.as_str()))
+    let exe = exe.and_then(norm)?;
+    pins.iter().position(|p| p.target.as_ref() == Some(&exe))
 }
 
 /// A button in the task area.

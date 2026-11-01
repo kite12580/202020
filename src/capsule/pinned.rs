@@ -12,10 +12,10 @@ use windows::Win32::UI::Shell::{
     SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, PWSTR, interface, w};
+use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, interface, w};
 
 use crate::capsule::gfx::Image;
-use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, wide};
+use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, apps_folder, take_string, wide};
 
 const CLSID_TASKBAND_PIN: GUID = GUID::from_u128(0x90aa3a4e_1cba_4233_b8bb_535773d48449);
 const PKEY_LINK_TARGET_PARSING_PATH: PROPERTYKEY =
@@ -33,12 +33,6 @@ pub struct PinnedApp {
     pub parsing_name: String,
     pub name: String,
     pub image: Option<Image>,
-}
-
-fn take_string(s: PWSTR) -> Option<String> {
-    let out = unsafe { s.to_string() }.ok();
-    unsafe { CoTaskMemFree(Some(s.0 as *const _)) };
-    out
 }
 
 fn string(item: &IShellItem2, key: &PROPERTYKEY) -> Option<String> {
@@ -71,7 +65,7 @@ pub fn read() -> Vec<PinnedApp> {
                 pin: Pin::new(aumid.as_deref(), target.as_deref()),
                 // A pinned packaged app's own parsing name does not parse back.
                 parsing_name: match (&aumid, &target) {
-                    (Some(id), None) => format!(r"shell:AppsFolder\{id}"),
+                    (Some(id), None) => apps_folder(id),
                     _ => display(SIGDN_DESKTOPABSOLUTEPARSING),
                 },
                 name: display(SIGDN_NORMALDISPLAY),

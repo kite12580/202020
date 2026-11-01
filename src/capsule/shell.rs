@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
 use windows::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcessId, INFINITE, OpenEventW, OpenProcess, PROCESS_SYNCHRONIZE,
-    SYNCHRONIZATION_SYNCHRONIZE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, GetCurrentProcessId, INFINITE, OpenEventW, PROCESS_SYNCHRONIZE, SYNCHRONIZATION_SYNCHRONIZE,
+    SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Shell::{ABM_GETSTATE, ABM_SETSTATE, APPBARDATA, SHAppBarMessage};
@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::capsule::util::{OwnedHandle, hwnd, primary_monitor, wide, window_ids};
+use crate::capsule::util::{OwnedHandle, hwnd, open_process, own_window, primary_monitor_rect, wide, window_ids};
 
 const ABS_AUTOHIDE: u32 = 1;
 const ABS_ALWAYSONTOP: u32 = 2;
@@ -34,11 +34,10 @@ pub fn real_tray() -> Option<HWND> {
 
 /// Finds the `Shell_TrayWnd` that isn't our spy.
 pub fn find_real_tray() -> Option<HWND> {
-    let own = unsafe { GetCurrentProcessId() };
     let mut after = None;
     loop {
         let h = unsafe { FindWindowExW(None, after, w!("Shell_TrayWnd"), PCWSTR::null()) }.ok()?;
-        if window_ids(h).1 != own {
+        if !own_window(h) {
             return Some(h);
         }
         after = Some(h);
@@ -77,11 +76,6 @@ fn set_work_area(r: &RECT) {
     unsafe {
         let _ = SystemParametersInfoW(SPI_SETWORKAREA, 0, Some(r as *const RECT as *mut c_void), SPIF_SENDCHANGE);
     }
-}
-
-fn monitor_work_area() -> RECT {
-    let m = primary_monitor();
-    RECT { left: m.left, top: m.top, right: m.right, bottom: m.bottom }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,7 +220,7 @@ impl Takeover {
     }
 
     pub fn ensure_work_area(&self) {
-        let full = monitor_work_area();
+        let full = primary_monitor_rect();
         if work_area() != full {
             set_work_area(&full);
             log::debug!("work area reset to monitor");
@@ -254,10 +248,9 @@ pub fn run_watchdog(args: &[String]) -> i32 {
         work_area: RECT { left: left as i32, top: top as i32, right: right as i32, bottom: bottom as i32 },
     };
     let pid = pid as u32;
-    let Ok(process) = (unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }) else {
+    let Some(process) = open_process(PROCESS_SYNCHRONIZE, pid) else {
         return 1;
     };
-    let process = OwnedHandle(process);
     let name = exit_event_name(pid, seq as u32);
     let Ok(event) = (unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) }) else {
         return 1;

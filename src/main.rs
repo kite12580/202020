@@ -113,11 +113,15 @@ struct App {
     last_tick: f64,
     last_face: Option<IconFace>,
     brk: Option<Break>,
-    safe: bool,
-    diag: bool,
-    bar: Option<capsule::Bar>,
-    bar_stopping: bool,
+    bar_opts: capsule::Options,
+    bar: BarState,
     quitting: bool,
+}
+
+enum BarState {
+    Off,
+    Running(capsule::Bar),
+    Stopping(capsule::Bar),
 }
 
 impl App {
@@ -216,7 +220,7 @@ impl App {
             );
             let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0);
             self.brk = Some(Break { hwnd, hook, started_at: now(), overlay });
-            capsule::set_break(true, self.bar.as_ref());
+            capsule::set_break(true, self.bar());
             SetTimer(self.hwnd, TIMER_FRAME, 1000 / 30, None);
             SetTimer(self.hwnd, TIMER_BREAK_END, (BREAK_SECONDS * 1000.0) as u32, None);
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -243,7 +247,7 @@ impl App {
             UnhookWindowsHookEx(brk.hook);
             DestroyWindow(brk.hwnd);
         }
-        capsule::set_break(false, self.bar.as_ref());
+        capsule::set_break(false, self.bar());
         self.deadline = now() + WORK_SECONDS;
         self.refresh_icon();
     }
@@ -263,46 +267,54 @@ impl App {
         }
     }
 
+    fn bar(&self) -> Option<&capsule::Bar> {
+        match &self.bar {
+            BarState::Running(bar) | BarState::Stopping(bar) => Some(bar),
+            BarState::Off => None,
+        }
+    }
+
     fn start_bar(&mut self) {
-        let opts = capsule::Options {
-            safe: self.safe,
-            diag: self.diag,
-            owner: self.hwnd as isize,
-            quit_msg: WM_BAR_QUIT,
-            disable_msg: WM_BAR_DISABLE,
-        };
-        self.bar = capsule::Bar::start(opts, WM_BAR_EXITED);
+        if let Some(bar) = capsule::Bar::start(self.bar_opts) {
+            self.bar = BarState::Running(bar);
+        }
     }
 
     fn stop_bar(&mut self) {
-        if let Some(bar) = &self.bar
-            && !self.bar_stopping
-        {
-            bar.stop();
-            self.bar_stopping = true;
+        self.bar = match std::mem::replace(&mut self.bar, BarState::Off) {
+            BarState::Running(bar) => {
+                bar.stop();
+                BarState::Stopping(bar)
+            }
+            state => state,
+        };
+    }
+
+    fn set_bar(&mut self, on: bool) {
+        let running = match self.bar {
+            BarState::Off => false,
+            BarState::Running(_) => true,
+            BarState::Stopping(_) => return,
+        };
+        if on == running {
+            return;
         }
+        capsule::set_enabled(on);
+        if on { self.start_bar() } else { self.stop_bar() }
     }
 
     fn toggle_bar(&mut self) {
-        if self.bar_stopping {
-            return;
-        }
-        let enable = self.bar.is_none();
-        capsule::set_enabled(enable);
-        if enable { self.start_bar() } else { self.stop_bar() }
+        self.set_bar(matches!(self.bar, BarState::Off));
     }
 
     fn disable_bar(&mut self) {
-        if self.bar.is_some() {
-            self.toggle_bar();
-        }
+        self.set_bar(false);
     }
 
     fn on_bar_exited(&mut self) {
-        if let Some(bar) = self.bar.take() {
+        if let BarState::Running(bar) | BarState::Stopping(bar) = std::mem::replace(&mut self.bar, BarState::Off) {
             bar.join();
         }
-        self.bar_stopping = false;
         if self.quitting {
             self.quit();
         }
@@ -310,7 +322,7 @@ impl App {
 
     fn quit(&mut self) {
         self.quitting = true;
-        if self.bar.is_some() {
+        if self.bar().is_some() {
             return self.stop_bar();
         }
         self.dismiss_break();
@@ -374,7 +386,14 @@ fn paint_overlay(hdc: HDC, overlay: &Overlay) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let Some((paused, bar, bar_stopping)) = with_app(|app| (app.paused, app.bar.is_some(), app.bar_stopping)) else {
+    let Some((paused, bar_flags)) = with_app(|app| {
+        let bar_flags = match app.bar {
+            BarState::Off => MF_UNCHECKED,
+            BarState::Running(_) => MF_CHECKED,
+            BarState::Stopping(_) => MF_GRAYED,
+        };
+        (app.paused, bar_flags)
+    }) else {
         return;
     };
     let cmd = unsafe {
@@ -383,13 +402,6 @@ fn show_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_STRING, CMD_BREAK, w!("Break now"));
         AppendMenuW(menu, MF_STRING, CMD_RESET, w!("Reset timer"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        let bar_flags = if bar_stopping {
-            MF_GRAYED
-        } else if bar {
-            MF_CHECKED
-        } else {
-            MF_UNCHECKED
-        };
         AppendMenuW(menu, MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar"));
         AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG, w!("Edit config"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
@@ -569,10 +581,15 @@ fn main() {
             last_tick: now,
             last_face: None,
             brk: None,
-            safe: flag("--safe"),
-            diag,
-            bar: None,
-            bar_stopping: false,
+            bar_opts: capsule::Options {
+                safe: flag("--safe"),
+                diag,
+                owner: hwnd as isize,
+                exited_msg: WM_BAR_EXITED,
+                quit_msg: WM_BAR_QUIT,
+                disable_msg: WM_BAR_DISABLE,
+            },
+            bar: BarState::Off,
             quitting: false,
         };
         app.refresh_icon();
