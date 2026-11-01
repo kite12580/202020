@@ -54,6 +54,7 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_DISMISS: u32 = WM_APP + 2;
 const WM_BAR_EXITED: u32 = WM_APP + 3;
 const WM_BAR_QUIT: u32 = WM_APP + 4;
+const WM_BAR_DISABLE: u32 = WM_APP + 5;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
 const TIMER_TICK: usize = 1;
@@ -263,8 +264,13 @@ impl App {
     }
 
     fn start_bar(&mut self) {
-        let opts =
-            capsule::Options { safe: self.safe, diag: self.diag, owner: self.hwnd as isize, quit_msg: WM_BAR_QUIT };
+        let opts = capsule::Options {
+            safe: self.safe,
+            diag: self.diag,
+            owner: self.hwnd as isize,
+            quit_msg: WM_BAR_QUIT,
+            disable_msg: WM_BAR_DISABLE,
+        };
         self.bar = capsule::Bar::start(opts, WM_BAR_EXITED);
     }
 
@@ -284,6 +290,12 @@ impl App {
         let enable = self.bar.is_none();
         capsule::set_enabled(enable);
         if enable { self.start_bar() } else { self.stop_bar() }
+    }
+
+    fn disable_bar(&mut self) {
+        if self.bar.is_some() {
+            self.toggle_bar();
+        }
     }
 
     fn on_bar_exited(&mut self) {
@@ -438,6 +450,9 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         }
         WM_BAR_QUIT => {
             with_app(App::quit);
+        }
+        WM_BAR_DISABLE => {
+            with_app(App::disable_bar);
         }
         WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC as usize => {
             with_app(App::reset_timer);

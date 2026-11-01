@@ -7,10 +7,15 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::Threading::CreateEventW;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
-use windows::Win32::UI::Shell::{IEnumFullIDList, IShellItem2, SHCreateItemFromIDList};
-use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PWSTR, interface, w};
+use windows::Win32::UI::Shell::{
+    IEnumFullIDList, IShellItem2, SEE_MASK_INVOKEIDLIST, SHCreateItemFromIDList, SHELLEXECUTEINFOW, SHParseDisplayName,
+    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, ShellExecuteExW,
+};
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, PWSTR, interface, w};
 
-use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID};
+use crate::capsule::gfx::Image;
+use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, wide};
 
 const CLSID_TASKBAND_PIN: GUID = GUID::from_u128(0x90aa3a4e_1cba_4233_b8bb_535773d48449);
 const PKEY_LINK_TARGET_PARSING_PATH: PROPERTYKEY =
@@ -22,15 +27,26 @@ unsafe trait IPinnedList3: IUnknown {
     unsafe fn enum_objects(&self, list: *mut Option<IEnumFullIDList>) -> HRESULT;
 }
 
-fn string(item: &IShellItem2, key: &PROPERTYKEY) -> Option<String> {
-    let s: PWSTR = unsafe { item.GetString(key) }.ok()?;
+/// A program pinned to the native taskbar.
+pub struct PinnedApp {
+    pub pin: Pin,
+    pub parsing_name: String,
+    pub name: String,
+    pub image: Option<Image>,
+}
+
+fn take_string(s: PWSTR) -> Option<String> {
     let out = unsafe { s.to_string() }.ok();
     unsafe { CoTaskMemFree(Some(s.0 as *const _)) };
     out
 }
 
+fn string(item: &IShellItem2, key: &PROPERTYKEY) -> Option<String> {
+    take_string(unsafe { item.GetString(key) }.ok()?)
+}
+
 /// The native taskbar's pinned apps, in order.
-pub fn read() -> Vec<Pin> {
+pub fn read() -> Vec<PinnedApp> {
     let mut pins = Vec::new();
     let Ok(list) = (unsafe { CoCreateInstance::<_, IPinnedList3>(&CLSID_TASKBAND_PIN, None, CLSCTX_INPROC_SERVER) })
     else {
@@ -50,12 +66,37 @@ pub fn read() -> Vec<Pin> {
         if let Ok(item) = unsafe { SHCreateItemFromIDList::<IShellItem2>(pidl[0]) } {
             let aumid = string(&item, &PKEY_APP_USER_MODEL_ID);
             let target = string(&item, &PKEY_LINK_TARGET_PARSING_PATH);
-            pins.push(Pin::new(aumid.as_deref(), target.as_deref()));
+            let display = |sigdn| unsafe { item.GetDisplayName(sigdn) }.ok().and_then(take_string).unwrap_or_default();
+            pins.push(PinnedApp {
+                pin: Pin::new(aumid.as_deref(), target.as_deref()),
+                parsing_name: display(SIGDN_DESKTOPABSOLUTEPARSING),
+                name: display(SIGDN_NORMALDISPLAY),
+                image: None,
+            });
         }
         unsafe { CoTaskMemFree(Some(pidl[0] as *const _)) };
     }
-    log::debug!("taskbar pins {pins:?}");
+    log::debug!("taskbar pins {:?}", pins.iter().map(|p| &p.pin).collect::<Vec<_>>());
     pins
+}
+
+pub fn launch(parsing_name: &str) {
+    let mut pidl = std::ptr::null_mut();
+    if let Err(e) = unsafe { SHParseDisplayName(PCWSTR(wide(parsing_name).as_ptr()), None, &mut pidl, 0, None) } {
+        log::warn!("launch {parsing_name}: {e}");
+        return;
+    }
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_INVOKEIDLIST,
+        lpIDList: pidl as *mut _,
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
+        log::warn!("launch {parsing_name}: {e}");
+    }
+    unsafe { CoTaskMemFree(Some(pidl as *const _)) };
 }
 
 /// Signals when explorer rewrites the pin list.

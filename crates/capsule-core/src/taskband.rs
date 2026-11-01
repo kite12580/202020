@@ -24,9 +24,43 @@ pub fn slot(pins: &[Pin], aumid: Option<&str>, exe: Option<&str>) -> Option<usiz
     pins.iter().position(|p| p.target.as_deref() == Some(exe.as_str()))
 }
 
+/// A button in the task area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Task {
+    Window(usize),
+    Pin(usize),
+}
+
+/// Task buttons for windows sorted by pin slot (`usize::MAX` for none):
+/// each pin in order with its windows, or the pin itself when none are
+/// open, then the unpinned windows.
+pub fn tasks(slots: &[usize], pins: usize) -> Vec<Task> {
+    let mut out = Vec::with_capacity(slots.len() + pins);
+    let mut windows = slots.iter().copied().enumerate().peekable();
+    for p in 0..pins {
+        let start = out.len();
+        while let Some((i, _)) = windows.next_if(|&(_, s)| s == p) {
+            out.push(Task::Window(i));
+        }
+        if out.len() == start {
+            out.push(Task::Pin(p));
+        }
+    }
+    out.extend(windows.map(|(i, _)| Task::Window(i)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_buttons() {
+        use Task::{Pin, Window};
+        assert_eq!(tasks(&[0, 0, 2, usize::MAX], 3), [Window(0), Window(1), Pin(1), Window(2), Window(3)]);
+        assert_eq!(tasks(&[], 2), [Pin(0), Pin(1)]);
+        assert_eq!(tasks(&[usize::MAX], 0), [Window(0)]);
+    }
 
     #[test]
     fn matching() {

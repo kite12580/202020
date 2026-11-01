@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use capsule_core::taskband::{Pin, slot};
+use capsule_core::taskband::{self, Pin, Task, slot};
 use capsule_core::winfilter::{WindowFacts, taskbar_window};
 use windows::Win32::Foundation::{ERROR_SUCCESS, FILETIME, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
@@ -159,18 +159,18 @@ impl WindowList {
         self.items.insert(at, w);
     }
 
-    /// Regroups windows behind the native taskbar's pins. Returns whether
-    /// the order changed.
-    pub fn set_pins(&mut self, pins: Vec<Pin>) -> bool {
+    /// Regroups windows behind the native taskbar's pins.
+    pub fn set_pins(&mut self, pins: Vec<Pin>) {
         self.pins = pins;
         for w in &mut self.items {
             w.slot = slot(&self.pins, w.aumid.as_deref(), w.exe.as_deref()).unwrap_or(usize::MAX);
         }
-        if self.items.is_sorted_by_key(Window::order) {
-            return false;
-        }
         self.items.sort_by_key(Window::order);
-        true
+    }
+
+    pub fn tasks(&self) -> Vec<Task> {
+        let slots: Vec<usize> = self.items.iter().map(|w| w.slot).collect();
+        taskband::tasks(&slots, self.pins.len())
     }
 
     pub fn add(&mut self, h: HWND) -> bool {

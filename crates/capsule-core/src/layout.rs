@@ -23,7 +23,7 @@ impl Rect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Hit {
-    Window(usize),
+    Task(usize),
     Chevron,
     Tray(usize),
     Keyboard,
@@ -34,26 +34,19 @@ pub enum Hit {
 pub struct Metrics {
     pub height: f32,
     pub pad: f32,
-    pub window_item: f32,
+    pub task_item: f32,
     pub tray_item: f32,
     pub chevron: f32,
     pub text_pad: f32,
     pub tight_pad: f32,
 }
 
-pub const METRICS: Metrics = Metrics {
-    height: 32.0,
-    pad: 4.0,
-    window_item: 30.0,
-    tray_item: 24.0,
-    chevron: 22.0,
-    text_pad: 6.0,
-    tight_pad: 3.0,
-};
+pub const METRICS: Metrics =
+    Metrics { height: 32.0, pad: 4.0, task_item: 30.0, tray_item: 24.0, chevron: 22.0, text_pad: 6.0, tight_pad: 3.0 };
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Input {
-    pub windows: usize,
+    pub tasks: usize,
     pub tray: usize,
     pub chevron: bool,
     pub keyboard_w: f32,
@@ -76,8 +69,8 @@ impl Layout {
             *x += w;
         };
 
-        for i in 0..input.windows {
-            push(&mut out, Hit::Window(i), m.window_item, &mut x);
+        for i in 0..input.tasks {
+            push(&mut out, Hit::Task(i), m.task_item, &mut x);
         }
         if input.chevron {
             push(&mut out, Hit::Chevron, m.chevron, &mut x);
@@ -144,16 +137,16 @@ mod tests {
 
     #[test]
     fn layout_sections() {
-        let input = Input { windows: 2, tray: 1, chevron: true, keyboard_w: 10.0, volume_w: 20.0, clock_w: 80.0 };
+        let input = Input { tasks: 2, tray: 1, chevron: true, keyboard_w: 10.0, volume_w: 20.0, clock_w: 80.0 };
         let l = Layout::compute(&METRICS, &input);
         let hits: Vec<Hit> = l.items.iter().map(|(h, _)| *h).collect();
         assert_eq!(
             hits,
-            [Hit::Window(0), Hit::Window(1), Hit::Chevron, Hit::Tray(0), Hit::Keyboard, Hit::Volume, Hit::Clock]
+            [Hit::Task(0), Hit::Task(1), Hit::Chevron, Hit::Tray(0), Hit::Keyboard, Hit::Volume, Hit::Clock]
         );
         let m = &METRICS;
         let expected =
-            m.pad * 2.0 + 2.0 * m.window_item + m.chevron + m.tray_item + 110.0 + 3.0 * m.text_pad + 3.0 * m.tight_pad;
+            m.pad * 2.0 + 2.0 * m.task_item + m.chevron + m.tray_item + 110.0 + 3.0 * m.text_pad + 3.0 * m.tight_pad;
         assert!((l.width - expected).abs() < 0.01);
         for w in l.items.windows(2) {
             assert!(w[0].1.right() <= w[1].1.x + 0.001);

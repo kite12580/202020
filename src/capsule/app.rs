@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use capsule_core::config::CapsuleBar;
 use capsule_core::layout::{self, Hit, Input, Layout, METRICS, Rect};
+use capsule_core::taskband::Task;
 use capsule_core::{clock, kbd};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Globalization::{DATE_LONGDATE, GetDateFormatEx, GetTimeFormatEx, TIME_FORMAT_FLAGS};
@@ -51,7 +52,7 @@ use crate::capsule::icons::IconWorker;
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
 use crate::capsule::menu::{self, Item};
-use crate::capsule::pinned;
+use crate::capsule::pinned::{self, PinnedApp};
 use crate::capsule::popup::Popup;
 use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
@@ -65,9 +66,11 @@ use crate::capsule::windows_list::{self as winlist, IconRank, WindowList};
 pub struct Options {
     pub safe: bool,
     pub diag: bool,
-    /// Window that receives `quit_msg` when the user picks Quit.
+    /// Window that receives `quit_msg` or `disable_msg` when the user picks
+    /// Quit or Disable capsule bar.
     pub owner: isize,
     pub quit_msg: u32,
+    pub disable_msg: u32,
 }
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -95,6 +98,7 @@ const TIMER_REVEAL: usize = 8;
 const TIMER_PINS: usize = 9;
 
 const WINDOW_ICON: f32 = 20.0;
+const TASK_ICON_LIFT: f32 = 1.5;
 const TRAY_ICON: f32 = 16.0;
 const POPUP_GAP: f32 = 6.0;
 const CLOCK_LINE_OVERLAP: f32 = 2.0;
@@ -135,6 +139,7 @@ enum DeferredMenu {
 enum IconTarget {
     Window(HWND, IconRank),
     Tray(TrayKey),
+    Pin(String),
 }
 
 struct Drag {
@@ -169,6 +174,8 @@ pub struct App {
     bounds: RECT,
     bar_tray: Vec<usize>,
     windows: WindowList,
+    pins: Vec<PinnedApp>,
+    tasks: Vec<Task>,
     tray: Tray,
     tray_shared: Arc<Shared>,
     spy: Option<Spy>,
@@ -459,6 +466,8 @@ impl App {
             bounds: RECT::default(),
             bar_tray: Vec::new(),
             windows: WindowList::new(opts.diag),
+            pins: Vec::new(),
+            tasks: Vec::new(),
             tray: Tray::default(),
             tray_shared,
             spy: None,
@@ -520,7 +529,7 @@ impl App {
             self.takeover = Takeover::start(real);
         }
 
-        self.windows.set_pins(pinned::read());
+        self.set_pins(pinned::read());
         self.windows.enumerate();
         self.foreground = self.root(unsafe { GetForegroundWindow() });
         for i in 0..self.windows.items.len() {
@@ -723,8 +732,9 @@ impl App {
 
     fn relayout(&mut self) {
         self.bar_tray = self.tray.bar_icons(&self.cfg.config.tray.pinned);
+        self.tasks = self.windows.tasks();
         let input = Input {
-            windows: self.windows.items.len(),
+            tasks: self.tasks.len(),
             tray: self.bar_tray.len(),
             chevron: !self.tray.popup_icons().is_empty(),
             keyboard_w: self.texts.keyboard.as_ref().map_or(0.0, |t| t.width.ceil()).max(self.texts.keyboard_slot),
@@ -892,6 +902,15 @@ impl App {
                     self.invalidate();
                 }
             }
+            Some(IconTarget::Pin(name)) => {
+                let px = self.window_icon_px();
+                if let Some(p) = self.pins.iter_mut().find(|p| p.parsing_name == name)
+                    && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, px)
+                {
+                    p.image = Some(img);
+                    self.invalidate();
+                }
+            }
             Some(IconTarget::Tray(key)) => {
                 let px = self.px(TRAY_ICON) as u32;
                 if let Some(icon) = self.tray.icons.iter_mut().find(|i| i.key.same(&key) && i.image.is_none())
@@ -915,6 +934,9 @@ impl App {
         }
         for i in 0..self.windows.items.len() {
             self.request_icon(self.windows.items[i].hwnd);
+        }
+        for i in 0..self.pins.len() {
+            self.request_pin_icon(i);
         }
         for icon in &mut self.tray.icons {
             icon.image = None;
@@ -1104,10 +1126,27 @@ impl App {
         }
     }
 
-    fn refresh_pins(&mut self) {
-        if self.windows.set_pins(pinned::read()) {
-            self.relayout();
+    fn set_pins(&mut self, mut pins: Vec<PinnedApp>) {
+        for p in &mut pins {
+            p.image = self.pins.iter_mut().find(|o| o.parsing_name == p.parsing_name).and_then(|o| o.image.take());
         }
+        self.windows.set_pins(pins.iter().map(|p| p.pin.clone()).collect());
+        self.pins = pins;
+        for i in 0..self.pins.len() {
+            if self.pins[i].image.is_none() {
+                self.request_pin_icon(i);
+            }
+        }
+    }
+
+    fn request_pin_icon(&mut self, i: usize) {
+        let name = self.pins[i].parsing_name.clone();
+        self.request_icon_target(IconTarget::Pin(name.clone()), name, self.window_icon_px());
+    }
+
+    fn refresh_pins(&mut self) {
+        self.set_pins(pinned::read());
+        self.relayout();
     }
 
     fn on_config_signal(&mut self) {
@@ -1283,7 +1322,10 @@ impl App {
         let Some(r) = self.layout.rect(hit) else { return };
         let x = self.bounds.left + self.px(r.center_x());
         let text = match hit {
-            Hit::Window(i) => winlist::title(self.windows.items[i].hwnd),
+            Hit::Task(i) => match self.tasks[i] {
+                Task::Window(w) => winlist::title(self.windows.items[w].hwnd),
+                Task::Pin(p) => self.pins[p].name.clone(),
+            },
             Hit::Tray(i) => return self.tray_tip(self.bar_tray[i], x, self.bounds.top, self.bounds.bottom),
             Hit::Keyboard => keyboard::display_name(self.keyboard_layout),
             Hit::Volume if !self.volume.available() => "No audio output device".into(),
@@ -1399,10 +1441,16 @@ impl App {
         }
         let Some(hit) = hit else { return };
         match (msg, hit) {
-            (WM_MBUTTONUP, Hit::Window(i)) => winlist::close(self.windows.items[i].hwnd),
-            (WM_RBUTTONUP, Hit::Window(i)) => {
-                let p = cursor();
-                winlist::system_menu(self.windows.items[i].hwnd, p.x, p.y);
+            (WM_MBUTTONUP, Hit::Task(i)) => {
+                if let Some(h) = self.task_window(i) {
+                    winlist::close(h);
+                }
+            }
+            (WM_RBUTTONUP, Hit::Task(i)) => {
+                if let Some(h) = self.task_window(i) {
+                    let p = cursor();
+                    winlist::system_menu(h, p.x, p.y);
+                }
             }
             (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(DeferredMenu::Keyboard),
             (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(DeferredMenu::App),
@@ -1411,10 +1459,20 @@ impl App {
         }
     }
 
+    fn task_window(&self, i: usize) -> Option<HWND> {
+        match self.tasks[i] {
+            Task::Window(w) => Some(self.windows.items[w].hwnd),
+            Task::Pin(_) => None,
+        }
+    }
+
     /// A left click that did not turn into a drag.
     fn left_click(&mut self, hit: Hit, double: bool) {
         match hit {
-            Hit::Window(i) => winlist::activate_or_minimize(self.windows.items[i].hwnd, self.foreground_root()),
+            Hit::Task(i) => match self.tasks[i] {
+                Task::Window(w) => winlist::activate_or_minimize(self.windows.items[w].hwnd, self.foreground_root()),
+                Task::Pin(p) => pinned::launch(&self.pins[p].parsing_name),
+            },
             Hit::Chevron => self.toggle_popup(),
             Hit::Keyboard => self.next_keyboard_layout(),
             Hit::Volume => keyhook::press_win(b'A'),
@@ -1606,15 +1664,25 @@ impl App {
             }
             let center = |t: &Text| (r.center_x() - t.width / 2.0, cy - t.height / 2.0);
             match hit {
-                Hit::Window(i) => {
-                    let w = &self.windows.items[i];
-                    if w.hwnd == self.foreground {
+                Hit::Task(i) => {
+                    let (image, active) = match self.tasks[i] {
+                        Task::Window(w) => {
+                            let w = &self.windows.items[w];
+                            (&w.image, Some(w.hwnd == self.foreground))
+                        }
+                        Task::Pin(p) => (&self.pins[p].image, None),
+                    };
+                    if active == Some(true) {
                         s.fill(highlight, pal.active, 4.0);
-                        s.fill(Rect { x: r.center_x() - 6.0, y: h - 6.5, w: 12.0, h: 2.5 }, pal.text.alpha(0.75), 1.25);
                     }
-                    match &w.image {
-                        Some(img) => s.image(img, r.center_x(), cy - 0.5),
-                        None => s.dot(r.center_x(), cy, 3.0, pal.text.alpha(0.5)),
+                    let icon_y = cy - TASK_ICON_LIFT;
+                    match image {
+                        Some(img) => s.image(img, r.center_x(), icon_y),
+                        None => s.dot(r.center_x(), icon_y, 3.0, pal.text.alpha(0.5)),
+                    }
+                    if let Some(active) = active {
+                        let (w, c) = if active { (16.0, pal.accent) } else { (6.0, pal.running) };
+                        s.fill(Rect { x: r.center_x() - w / 2.0, y: h - 7.0, w, h: 3.0 }, c, 1.5);
                     }
                 }
                 Hit::Chevron => {
@@ -1809,10 +1877,15 @@ fn menu_anchor(a: &App, hit: Hit) -> (i32, i32) {
 
 fn app_menu() {
     let Some((owner, prev, (x, y))) = with_app(|a| (a.hwnd, a.foreground, menu_anchor(a, Hit::Clock))) else { return };
-    let items =
-        [menu::command(1, "Open config"), menu::command(2, "Reload config"), Item::Separator, menu::command(3, "Quit")];
+    let items = [
+        menu::command(1, "Open config"),
+        menu::command(2, "Reload config"),
+        Item::Separator,
+        menu::command(3, "Disable capsule bar"),
+        menu::command(4, "Quit"),
+    ];
     let id = menu::show(owner, &items, x, y);
-    if id != 3 && !prev.is_invalid() {
+    if id != 4 && !prev.is_invalid() {
         unsafe {
             let _ = SetForegroundWindow(prev);
         }
@@ -1820,8 +1893,9 @@ fn app_menu() {
     with_app(|a| match id {
         1 => config_store::open_in_editor(&a.cfg.path),
         2 => a.reload_config(),
-        3 => unsafe {
-            let _ = PostMessageW(Some(crate::capsule::util::hwnd(a.opts.owner)), a.opts.quit_msg, WPARAM(0), LPARAM(0));
+        3 | 4 => unsafe {
+            let msg = if id == 3 { a.opts.disable_msg } else { a.opts.quit_msg };
+            let _ = PostMessageW(Some(crate::capsule::util::hwnd(a.opts.owner)), msg, WPARAM(0), LPARAM(0));
         },
         _ => {}
     });
