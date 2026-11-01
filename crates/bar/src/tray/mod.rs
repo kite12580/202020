@@ -5,7 +5,7 @@ use capsule_core::tray_proto::{
     NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_STATE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
     NIS_HIDDEN, handle,
 };
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{E_ACCESSDENIED, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, DestroyIcon, HICON, IsWindow, SendNotifyMessageW, WM_CONTEXTMENU, WM_USER,
 };
@@ -52,6 +52,8 @@ pub struct Icon {
     pub tip: String,
     hicon: isize,
     pub image: Option<Image>,
+    /// An exe icon was requested because the app sent no usable icon.
+    pub fallback_requested: bool,
 }
 
 impl Drop for Icon {
@@ -65,24 +67,34 @@ impl Icon {
         hwnd(handle(self.key.hwnd))
     }
 
-    pub fn ensure_image(&mut self, gfx: &Gfx, px: u32) {
-        if self.image.as_ref().is_some_and(|i| i.px == px) || self.hicon == 0 {
-            return;
+    /// Returns `false` when the icon has no image of its own.
+    pub fn ensure_image(&mut self, gfx: &Gfx, px: u32) -> bool {
+        if self.image.as_ref().is_some_and(|i| i.px == px) {
+            return true;
+        }
+        if self.hicon == 0 {
+            return false;
         }
         self.image = gfx.image_from_hicon(HICON(self.hicon as *mut _), px).ok();
+        self.image.is_some()
+    }
+
+    pub fn owner_exe(&self) -> Option<String> {
+        process_path(window_ids(self.owner()).1)
     }
 
     /// Delivers a mouse message to the icon's owner with the semantics of
-    /// the version the icon registered.
-    pub fn send(&self, msg: u32, cursor: (i32, i32)) {
+    /// the version the icon registered. Returns `false` when UIPI blocks it,
+    /// meaning the owner runs elevated and we do not.
+    pub fn send(&self, msg: u32, cursor: (i32, i32)) -> bool {
         let (wparam, lparam) = if self.version >= 4 {
             (make_long(cursor.0, cursor.1) as usize, make_long(msg as i32, self.key.uid as i32) as isize)
         } else {
             (self.key.uid as usize, msg as isize)
         };
-        unsafe {
-            let _ = SendNotifyMessageW(self.owner(), self.callback, WPARAM(wparam), LPARAM(lparam));
-        }
+        let r = unsafe { SendNotifyMessageW(self.owner(), self.callback, WPARAM(wparam), LPARAM(lparam)) };
+        log::debug!("tray send {msg:#x} to {:?} cb {:#x} v{} -> {r:?}", self.key, self.callback, self.version);
+        !matches!(r, Err(e) if e.code() == E_ACCESSDENIED)
     }
 
     pub fn allow_foreground(&self) {
@@ -135,6 +147,7 @@ impl Tray {
                         tip: String::new(),
                         hicon: 0,
                         image: None,
+                        fallback_requested: false,
                     });
                     self.icons.len() - 1
                 });

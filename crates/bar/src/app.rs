@@ -34,20 +34,20 @@ use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DeregisterShellHookWindow, DestroyWindow,
-    DispatchMessageW, FindWindowExW, FindWindowW, GA_ROOTOWNER, GWL_STYLE, GetAncestor, GetCursorPos,
-    GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_BROADCAST, HWND_MESSAGE,
-    HWND_TOPMOST, IDC_ARROW, IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE,
-    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW,
-    RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA,
-    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SendMessageW, SendNotifyMessageW, SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP,
-    WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY,
-    WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_DBLCLKS, ChangeWindowMessageFilterEx, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
+    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW, GA_ROOTOWNER, GWL_STYLE,
+    GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON,
+    HWND_BROADCAST, HWND_MESSAGE, HWND_TOPMOST, IDC_ARROW, IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG,
+    MSGFLT_ALLOW, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
+    PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG,
+    SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SendNotifyMessageW, SetCoalescableTimer,
+    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT,
+    WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
+    WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{GUID, PCWSTR, w};
 
@@ -55,7 +55,7 @@ use crate::config_store::ConfigStore;
 use crate::gfx::{Font, Gfx, Surface, Text};
 use crate::icons::IconWorker;
 use crate::keyboard;
-use crate::keyhook::{self, KeyHook, Launch};
+use crate::keyhook::{self, KeyHook};
 use crate::menu::{self, Item};
 use crate::popup::Popup;
 use crate::shell::{self, REAL_TRAY, Takeover};
@@ -87,6 +87,8 @@ const TIMER_CONFIG: usize = 3;
 const TIMER_KEYBOARD: usize = 4;
 const TIMER_WORK_AREA: usize = 5;
 const TIMER_AUDIO: usize = 6;
+const TIMER_WIN_DIGIT: usize = 7;
+const TIMER_REVEAL: usize = 8;
 
 const HOTKEY_EXIT: i32 = 1;
 
@@ -94,6 +96,7 @@ const WINDOW_ICON: f32 = 20.0;
 const TRAY_ICON: f32 = 16.0;
 const POPUP_GAP: f32 = 6.0;
 const CLOCK_LINE_OVERLAP: f32 = 2.0;
+const ELEVATED_HINT: &str = "这个程序以管理员身份运行，需要以管理员身份运行 capsule-bar 才能操作它的图标";
 
 const ABN_FULLSCREENAPP: usize = 2;
 const WTS_SESSION_LOCK: usize = 7;
@@ -133,10 +136,17 @@ enum Deferred {
     Exit,
 }
 
+enum IconTarget {
+    Window(HWND, IconRank),
+    Tray(TrayKey),
+}
+
 struct Drag {
     cursor: POINT,
     origin: POINT,
     moved: bool,
+    hit: Option<Hit>,
+    double: bool,
 }
 
 #[derive(Default)]
@@ -173,10 +183,12 @@ pub struct App {
     keyboard_iso: String,
     keyboard_label: String,
     keyboard_retries: u8,
+    pending_win_digits: Vec<u16>,
+    last_win_digit: Option<Instant>,
     clock: (String, String),
     texts: Texts,
     icon_worker: IconWorker,
-    icon_requests: HashMap<u64, (HWND, IconRank)>,
+    icon_requests: HashMap<u64, IconTarget>,
     next_icon_request: u64,
     foreground: HWND,
     hover: Option<Hit>,
@@ -475,6 +487,8 @@ impl App {
             keyboard_iso: String::new(),
             keyboard_label: String::new(),
             keyboard_retries: 0,
+            pending_win_digits: Vec::new(),
+            last_win_digit: None,
             clock: Default::default(),
             texts: Texts::default(),
             icon_worker: IconWorker::new(hwnd.0 as isize, WM_APP_ICON),
@@ -506,6 +520,11 @@ impl App {
 
     fn start(&mut self) {
         let h = self.hwnd;
+        unsafe {
+            for m in [self.taskbar_created_msg, self.shell_msg, WM_APP_APPBAR] {
+                let _ = ChangeWindowMessageFilterEx(h, m, MSGFLT_ALLOW, None);
+            }
+        }
         theme::apply(h, self.cfg.config.appearance.backdrop, &self.theme);
         theme::apply(self.popup.hwnd, self.cfg.config.appearance.backdrop, &self.theme);
         self.tooltip.set_dark(self.theme.dark);
@@ -842,10 +861,31 @@ impl App {
     }
 
     fn request_shell_icon(&mut self, h: HWND, name: String, rank: IconRank, px: u32) {
+        self.request_icon_target(IconTarget::Window(h, rank), name, px);
+    }
+
+    fn request_icon_target(&mut self, target: IconTarget, name: String, px: u32) {
         let id = self.next_icon_request;
         self.next_icon_request += 1;
-        self.icon_requests.insert(id, (h, rank));
+        self.icon_requests.insert(id, target);
         self.icon_worker.request(id, name, px);
+    }
+
+    /// Builds images for the given tray icons, asking for the owner's exe
+    /// icon when the app sent none we can read.
+    fn ensure_tray_images(&mut self, icons: &[usize]) {
+        let px = self.px(TRAY_ICON) as u32;
+        for &i in icons {
+            let icon = &mut self.tray.icons[i];
+            if icon.ensure_image(&self.gfx, px) || icon.fallback_requested {
+                continue;
+            }
+            icon.fallback_requested = true;
+            let key = icon.key;
+            if let Some(exe) = icon.owner_exe() {
+                self.request_icon_target(IconTarget::Tray(key), exe, px);
+            }
+        }
     }
 
     fn set_window_icon(&mut self, h: HWND, icon: isize, rank: IconRank) {
@@ -873,16 +913,30 @@ impl App {
     }
 
     fn on_shell_icon(&mut self, id: u64, bitmap: HBITMAP) {
-        if let Some((h, rank)) = self.icon_requests.remove(&id)
-            && let Some(i) = self.windows.index(h)
-            && rank >= self.windows.items[i].rank
-            && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, self.window_icon_px())
-        {
-            let w = &mut self.windows.items[i];
-            w.image = Some(img);
-            w.rank = rank;
-            w.src = 0;
-            self.invalidate();
+        match self.icon_requests.remove(&id) {
+            Some(IconTarget::Window(h, rank)) => {
+                if let Some(i) = self.windows.index(h)
+                    && rank >= self.windows.items[i].rank
+                    && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, self.window_icon_px())
+                {
+                    let w = &mut self.windows.items[i];
+                    w.image = Some(img);
+                    w.rank = rank;
+                    w.src = 0;
+                    self.invalidate();
+                }
+            }
+            Some(IconTarget::Tray(key)) => {
+                let px = self.px(TRAY_ICON) as u32;
+                if let Some(icon) = self.tray.icons.iter_mut().find(|i| i.key.same(&key) && i.image.is_none())
+                    && let Ok(img) = self.gfx.image_from_hbitmap(bitmap, px)
+                {
+                    icon.image = Some(img);
+                    self.invalidate();
+                    self.invalidate_popup();
+                }
+            }
+            None => {}
         }
         unsafe {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
@@ -898,6 +952,7 @@ impl App {
         }
         for icon in &mut self.tray.icons {
             icon.image = None;
+            icon.fallback_requested = false;
         }
     }
 
@@ -1168,6 +1223,12 @@ impl App {
                 }
             }
             TIMER_WORK_AREA => self.fix_work_area(),
+            TIMER_WIN_DIGIT => {
+                for vk in std::mem::take(&mut self.pending_win_digits) {
+                    keyhook::replay_win_key(vk);
+                }
+            }
+            TIMER_REVEAL => self.conceal_when_idle(),
             TIMER_AUDIO => {
                 self.volume.attach();
                 self.refresh_volume();
@@ -1268,7 +1329,10 @@ impl App {
             i.allow_foreground();
         }
         let p = cursor();
-        i.send(msg, (p.x, p.y));
+        if !i.send(msg, (p.x, p.y)) {
+            self.tooltip.show(ELEVATED_HINT, p.x, p.y - self.px(12.0));
+            return;
+        }
         let skip = msg == WM_LBUTTONUP && std::mem::take(&mut self.double_click);
         if msg == WM_LBUTTONDBLCLK {
             self.double_click = true;
@@ -1294,21 +1358,31 @@ impl App {
         if fg.is_invalid() || own_window(fg) { self.foreground } else { fg }
     }
 
-    fn on_win_digit(&mut self, index: usize, launch: Launch) {
-        let Some(h) = self.windows.items.get(index).map(|w| w.hwnd) else { return };
-        if launch == Launch::Activate {
-            winlist::activate_or_minimize(h, self.foreground_root());
-            return;
+    fn on_win_digit(&mut self, vk: u16) {
+        let Some(t) = &self.takeover else { return keyhook::replay_win_key(vk) };
+        self.last_win_digit = Some(Instant::now());
+        if t.revealed() && self.pending_win_digits.is_empty() {
+            keyhook::replay_win_key(vk);
+        } else {
+            t.reveal();
+            self.pending_win_digits.push(vk);
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_WIN_DIGIT, 60, None);
+            }
         }
-        let target = (class_name(h) == "ApplicationFrameWindow")
-            .then(|| aumid(h).map(|id| format!("shell:AppsFolder\\{id}")))
-            .flatten()
-            .or_else(|| process_path(window_ids(h).1));
-        let Some(target) = target else { return };
-        let target = wide(&target);
-        let verb = if launch == Launch::Admin { w!("runas") } else { w!("open") };
         unsafe {
-            ShellExecuteW(None, verb, PCWSTR(target.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+            SetTimer(Some(self.hwnd), TIMER_REVEAL, 300, None);
+        }
+    }
+
+    fn conceal_when_idle(&mut self) {
+        let Some(t) = &self.takeover else { return };
+        if keyhook::win_held() || self.last_win_digit.is_some_and(|d| d.elapsed() < Duration::from_millis(800)) {
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_REVEAL, 300, None);
+            }
+        } else {
+            t.conceal();
         }
     }
 
@@ -1327,10 +1401,10 @@ impl App {
                     }
                 }
                 WM_LBUTTONUP => {
-                    let moved = d.moved;
+                    let (moved, down_hit, double) = (d.moved, d.hit, d.double);
                     self.end_drag();
-                    if !moved && hit == Some(Hit::Clock) {
-                        keyhook::press_win(b'N');
+                    if let Some(h) = down_hit.filter(|&h| !moved && Some(h) == hit) {
+                        self.left_click(h, double);
                     }
                 }
                 _ => {}
@@ -1342,28 +1416,39 @@ impl App {
             return;
         }
         self.tooltip.hide();
+        if matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) {
+            let origin = POINT { x: self.bounds.left, y: self.bounds.top };
+            self.drag = Some(Drag { cursor: cursor(), origin, moved: false, hit, double: msg == WM_LBUTTONDBLCLK });
+            unsafe { SetCapture(self.hwnd) };
+            return;
+        }
         let Some(hit) = hit else { return };
         match (msg, hit) {
-            (WM_LBUTTONDOWN, Hit::Clock) => {
-                let origin = POINT { x: self.bounds.left, y: self.bounds.top };
-                self.drag = Some(Drag { cursor: cursor(), origin, moved: false });
-                unsafe { SetCapture(self.hwnd) };
-            }
-            (WM_LBUTTONUP, Hit::Window(i)) => {
-                winlist::activate_or_minimize(self.windows.items[i].hwnd, self.foreground_root());
-            }
             (WM_MBUTTONUP, Hit::Window(i)) => winlist::close(self.windows.items[i].hwnd),
             (WM_RBUTTONUP, Hit::Window(i)) => {
                 let p = cursor();
                 winlist::system_menu(self.windows.items[i].hwnd, p.x, p.y);
             }
-            (WM_LBUTTONUP, Hit::Chevron) => self.toggle_popup(),
-            (WM_LBUTTONUP, Hit::Keyboard) => self.next_keyboard_layout(),
             (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(Deferred::KeyboardMenu),
-            (WM_LBUTTONUP, Hit::Volume) => keyhook::press_win(b'A'),
             (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(Deferred::AppMenu),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
             _ => {}
+        }
+    }
+
+    /// A left click that did not turn into a drag.
+    fn left_click(&mut self, hit: Hit, double: bool) {
+        match hit {
+            Hit::Window(i) => winlist::activate_or_minimize(self.windows.items[i].hwnd, self.foreground_root()),
+            Hit::Chevron => self.toggle_popup(),
+            Hit::Keyboard => self.next_keyboard_layout(),
+            Hit::Volume => keyhook::press_win(b'A'),
+            Hit::Clock => keyhook::press_win(b'N'),
+            Hit::Tray(i) => {
+                let icon = self.bar_tray[i];
+                self.tray_mouse(icon, if double { WM_LBUTTONDBLCLK } else { WM_LBUTTONDOWN });
+                self.tray_mouse(icon, WM_LBUTTONUP);
+            }
         }
     }
 
@@ -1531,10 +1616,7 @@ impl App {
         if !self.ensure_surface() {
             return;
         }
-        let tray_px = self.px(TRAY_ICON) as u32;
-        for &i in &self.bar_tray {
-            self.tray.icons[i].ensure_image(&self.gfx, tray_px);
-        }
+        self.ensure_tray_images(&self.bar_tray.clone());
         let pal = self.theme.palette(self.cfg.config.appearance.opacity);
         let h = METRICS.height;
         let cy = h / 2.0;
@@ -1612,10 +1694,7 @@ impl App {
             self.popup.surface =
                 Surface::new(&self.gfx, self.popup.hwnd, self.px(w) as u32, self.px(h) as u32, self.dpi, software).ok();
         }
-        let tray_px = self.px(TRAY_ICON) as u32;
-        for &i in &self.popup.cells {
-            self.tray.icons[i].ensure_image(&self.gfx, tray_px);
-        }
+        self.ensure_tray_images(&self.popup.cells.clone());
         let pal = self.theme.palette(self.cfg.config.appearance.opacity);
         let (w, h) = self.popup.size();
         let pins = &self.cfg.config.tray.pinned;
@@ -1710,7 +1789,7 @@ impl App {
                 }
             }
             WM_APP_WINEVENT => self.on_winevent(wparam.0 as u32, HWND(lparam.0 as *mut _)),
-            WM_APP_WIN_DIGIT => self.on_win_digit(wparam.0, Launch::from_raw(lparam.0)),
+            WM_APP_WIN_DIGIT => self.on_win_digit(wparam.0 as u16),
             WM_APP_INPUT => {
                 keyhook::input_handled();
                 self.keyboard_retries = 2;
@@ -1814,9 +1893,9 @@ fn keyboard_menu() {
 }
 
 fn tray_menu(icon: usize) {
-    let Some((owner, pinned)) = with_app(|a| {
+    let Some((owner, key, pinned)) = with_app(|a| {
         let i = a.tray.icons.get(icon)?;
-        Some((a.popup.hwnd, a.cfg.config.tray.pinned.contains(&i.pin)))
+        Some((a.popup.hwnd, i.key, a.cfg.config.tray.pinned.contains(&i.pin)))
     })
     .flatten() else {
         return;
@@ -1826,21 +1905,12 @@ fn tray_menu(icon: usize) {
         [menu::command(1, if pinned { "从状态栏取消固定" } else { "固定到状态栏" }), menu::command(2, "应用菜单")];
     let id = menu::show(owner, &items, p.x, p.y);
     with_app(|a| {
-        if icon >= a.tray.icons.len() {
-            return;
-        }
+        let Some(icon) = a.tray.icons.iter().position(|i| i.key.same(&key)) else { return };
         match id {
             1 => a.toggle_pin(icon),
             2 => {
-                a.close_popup();
-                let i = &a.tray.icons[icon];
-                i.allow_foreground();
-                for m in [WM_RBUTTONDOWN, WM_RBUTTONUP] {
-                    i.send(m, (p.x, p.y));
-                }
-                if let Some(f) = i.follow_up(WM_RBUTTONUP) {
-                    i.send(f, (p.x, p.y));
-                }
+                a.tray_mouse(icon, WM_RBUTTONDOWN);
+                a.tray_mouse(icon, WM_RBUTTONUP);
             }
             _ => {}
         }

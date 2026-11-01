@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{
@@ -21,6 +21,10 @@ const ABS_ALWAYSONTOP: u32 = 2;
 
 /// Explorer's `Shell_TrayWnd`, read by the tray spy thread for forwarding.
 pub static REAL_TRAY: AtomicIsize = AtomicIsize::new(0);
+
+/// Set while the taskbar is deliberately shown so explorer can handle a
+/// replayed shortcut.
+static REVEALED: AtomicBool = AtomicBool::new(false);
 
 pub fn real_tray() -> Option<HWND> {
     let v = REAL_TRAY.load(Ordering::Relaxed);
@@ -113,7 +117,7 @@ unsafe extern "system" fn on_tray_shown(
     _thread: u32,
     _time: u32,
 ) {
-    if object == OBJID_WINDOW.0 && Some(h) == real_tray() {
+    if object == OBJID_WINDOW.0 && Some(h) == real_tray() && !REVEALED.load(Ordering::Relaxed) {
         unsafe {
             let _ = ShowWindow(h, SW_HIDE);
         }
@@ -174,9 +178,30 @@ impl Takeover {
         log::info!("taskbar hidden");
     }
 
+    /// Shows the auto-hidden taskbar, which stays collapsed off-screen, so
+    /// explorer handles its Win+number shortcuts.
+    pub fn reveal(&self) {
+        REVEALED.store(true, Ordering::Relaxed);
+        if let Some(tray) = real_tray() {
+            unsafe {
+                let _ = ShowWindow(tray, SW_SHOWNA);
+            }
+        }
+    }
+
+    pub fn revealed(&self) -> bool {
+        REVEALED.load(Ordering::Relaxed)
+    }
+
+    pub fn conceal(&self) {
+        REVEALED.store(false, Ordering::Relaxed);
+        self.ensure_hidden();
+    }
+
     /// Re-hides the taskbar if explorer showed it without a SHOW event.
     pub fn ensure_hidden(&self) {
-        if let Some(tray) = real_tray()
+        if !self.revealed()
+            && let Some(tray) = real_tray()
             && unsafe { IsWindowVisible(tray) }.as_bool()
         {
             unsafe {
@@ -194,6 +219,7 @@ impl Takeover {
     }
 
     pub fn stop(self) {
+        REVEALED.store(false, Ordering::Relaxed);
         unsafe {
             let _ = UnhookWinEvent(self.show_hook);
             let _ = SetEvent(self.exit_event.0);

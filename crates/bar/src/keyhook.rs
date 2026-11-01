@@ -6,8 +6,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_MENU,
-    VK_RCONTROL, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
+    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
+    VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE, PeekMessageW,
@@ -17,23 +17,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::util::hwnd;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Launch {
-    Activate,
-    New,
-    Admin,
-}
-
-impl Launch {
-    pub fn from_raw(v: isize) -> Launch {
-        match v {
-            1 => Launch::New,
-            2 => Launch::Admin,
-            _ => Launch::Activate,
-        }
-    }
-}
-
 static TARGET: AtomicIsize = AtomicIsize::new(0);
 static DIGIT_MSG: AtomicU32 = AtomicU32::new(0);
 static INPUT_MSG: AtomicU32 = AtomicU32::new(0);
@@ -41,13 +24,10 @@ static DIGITS: AtomicBool = AtomicBool::new(false);
 static SWALLOWED: AtomicU32 = AtomicU32::new(0);
 static INPUT_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Unassigned virtual key, injected so releasing Win after a swallowed
-/// Win+digit does not open Start.
-const VK_MASK: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
-
-/// Low-level keyboard hook on its own thread. Posts `digit_msg(index, Launch)`
-/// for Win+1..0 when enabled and `input_msg` after keys that may switch the
-/// input language or IME mode.
+/// Low-level keyboard hook on its own thread. When enabled, swallows Win+0..9
+/// and posts `digit_msg(vk)` so the caller can replay it once explorer's
+/// hidden taskbar is able to handle it. Posts `input_msg` after keys that may
+/// switch the input language or IME mode.
 pub struct KeyHook {
     thread: u32,
     join: Option<JoinHandle<()>>,
@@ -117,30 +97,24 @@ fn on_key(vk: u32, down: bool) -> bool {
         if !down {
             return SWALLOWED.fetch_and(!bit, Relaxed) & bit != 0;
         }
-        let win = held(VK_LWIN) || held(VK_RWIN);
+        let win = win_held();
         if SWALLOWED.load(Relaxed) & bit != 0 {
             if win {
                 return true;
             }
             SWALLOWED.fetch_and(!bit, Relaxed);
         }
-        if !DIGITS.load(Relaxed) || !win || held(VK_MENU) {
+        if !DIGITS.load(Relaxed) || !win {
             return false;
         }
         SWALLOWED.fetch_or(bit, Relaxed);
-        let launch = match (held(VK_SHIFT), held(VK_CONTROL)) {
-            (false, _) => Launch::Activate,
-            (true, false) => Launch::New,
-            (true, true) => Launch::Admin,
-        };
-        post(&DIGIT_MSG, (n as usize + 9) % 10, launch as isize);
-        mask_start_menu();
+        post(&DIGIT_MSG, vk as usize, 0);
         return true;
     }
     let vk = VIRTUAL_KEY(vk as u16);
     let switches = match vk {
         VK_LSHIFT | VK_RSHIFT | VK_LCONTROL | VK_RCONTROL | VK_LWIN | VK_RWIN | VK_CAPITAL => true,
-        VK_SPACE => held(VK_LWIN) || held(VK_RWIN) || held(VK_CONTROL) || held(VK_SHIFT),
+        VK_SPACE => win_held() || held(VK_CONTROL) || held(VK_SHIFT),
         _ => false,
     };
     if !down && switches && !INPUT_PENDING.swap(true, Relaxed) {
@@ -160,9 +134,24 @@ fn key(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     }
 }
 
-fn mask_start_menu() {
-    let inputs = [key(VK_MASK, KEYBD_EVENT_FLAGS(0)), key(VK_MASK, KEYEVENTF_KEYUP)];
+/// Types `vk` with Win held, pressing Win only if the user has released it.
+pub fn replay_win_key(vk: u16) {
+    let vk = VIRTUAL_KEY(vk);
+    let press = [key(vk, KEYBD_EVENT_FLAGS(0)), key(vk, KEYEVENTF_KEYUP)];
+    let inputs: Vec<INPUT> = if held(VK_LWIN) || held(VK_RWIN) {
+        press.to_vec()
+    } else {
+        [key(VK_LWIN, KEYEVENTF_EXTENDEDKEY)]
+            .into_iter()
+            .chain(press)
+            .chain([key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP)])
+            .collect()
+    };
     unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+}
+
+pub fn win_held() -> bool {
+    held(VK_LWIN) || held(VK_RWIN)
 }
 
 /// Sends the shell shortcut Win+`letter`.

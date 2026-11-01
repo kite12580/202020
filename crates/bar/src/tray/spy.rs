@@ -9,14 +9,15 @@ use std::thread::JoinHandle;
 
 use capsule_core::tray_proto::{self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, NIF_ICON, NotifyIconMessage, handle};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChangeWindowMessageFilterEx, CopyIcon, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, HICON, HWND_TOPMOST, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SMTO_ABORTIFHUNG, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageTimeoutW, SetWindowPos,
-    WM_ACTIVATEAPP, WM_APP, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    ChangeWindowMessageFilterEx, CopyIcon, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, GetIconInfo, GetMessageW, HICON, HWND_TOPMOST, ICONINFO, MSG, MSGFLT_ALLOW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SMTO_ABORTIFHUNG, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SendMessageTimeoutW, SetWindowPos, WM_ACTIVATEAPP, WM_APP, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_USER,
+    WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -173,13 +174,29 @@ fn icon_rect(q: &tray_proto::IconRectQuery) -> LRESULT {
     LRESULT(packed as isize)
 }
 
+/// `CopyIcon` can fail for icons of other processes when it tries to reload
+/// them from their module, so fall back to copying the bitmaps.
+fn copy_icon(h: isize) -> isize {
+    let h = HICON(h as *mut _);
+    if let Ok(c) = unsafe { CopyIcon(h) } {
+        return c.0 as isize;
+    }
+    let mut info = ICONINFO::default();
+    if unsafe { GetIconInfo(h, &mut info) }.is_err() {
+        log::debug!("tray icon {h:?} unreadable");
+        return 0;
+    }
+    let copy = unsafe { CreateIconIndirect(&info) }.map_or(0, |c| c.0 as isize);
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ(info.hbmColor.0));
+        let _ = DeleteObject(HGDIOBJ(info.hbmMask.0));
+    }
+    copy
+}
+
 fn record(m: NotifyIconMessage) {
     let Some(shared) = SHARED.get() else { return };
-    let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 {
-        unsafe { CopyIcon(HICON(handle(m.data.icon) as *mut _)) }.map_or(0, |h| h.0 as isize)
-    } else {
-        0
-    };
+    let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 { copy_icon(handle(m.data.icon)) } else { 0 };
     let was_empty = {
         let mut q = shared.queue.lock().unwrap();
         let was_empty = q.is_empty();

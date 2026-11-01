@@ -1,10 +1,10 @@
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, TOOLTIPS_CLASSW, TTF_ABSOLUTE, TTF_TRACK, TTM_ADDTOOLW, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE,
-    TTM_TRACKPOSITION, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
+    SetWindowTheme, TOOLTIPS_CLASSW, TTF_ABSOLUTE, TTF_TRACK, TTM_ADDTOOLW, TTM_GETBUBBLESIZE, TTM_SETMAXTIPWIDTH,
+    TTM_TRACKACTIVATE, TTM_TRACKPOSITION, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetWindowRect, SendMessageW, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DestroyWindow, SendMessageW, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
@@ -70,18 +70,22 @@ impl Tooltip {
             self.hide();
             return;
         }
-        self.text = wide(text);
+        let text = wide(text);
+        if self.shown && text == self.text {
+            return;
+        }
+        self.text = text;
         let mut info = self.info();
         let lp = Some(LPARAM(&mut info as *mut _ as isize));
         unsafe {
             SendMessageW(self.hwnd, TTM_UPDATETIPTEXTW, None, lp);
-            SendMessageW(self.hwnd, TTM_TRACKPOSITION, None, Some(LPARAM(make_long(x, top) as isize)));
-            SendMessageW(self.hwnd, TTM_TRACKACTIVATE, Some(WPARAM(1)), lp);
-            let mut r = RECT::default();
-            let _ = GetWindowRect(self.hwnd, &mut r);
-            let (w, h) = (r.right - r.left, r.bottom - r.top);
+            let size = SendMessageW(self.hwnd, TTM_GETBUBBLESIZE, None, lp).0 as u32;
+            let (w, h) = ((size & 0xFFFF) as i32, (size >> 16) as i32);
             let pos = make_long(x - w / 2, top - h - 6);
             SendMessageW(self.hwnd, TTM_TRACKPOSITION, None, Some(LPARAM(pos as isize)));
+            if !self.shown {
+                SendMessageW(self.hwnd, TTM_TRACKACTIVATE, Some(WPARAM(1)), lp);
+            }
         }
         self.shown = true;
     }
