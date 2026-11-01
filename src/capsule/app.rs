@@ -135,6 +135,7 @@ const EVENT_OBJECT_CLOAKED: u32 = 0x8017;
 const EVENT_OBJECT_UNCLOAKED: u32 = 0x8018;
 
 const FRAME_CLASS: &str = "ApplicationFrameWindow";
+const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
 
 const MENU_OPEN_CONFIG: u32 = 1;
 const MENU_RELOAD_CONFIG: u32 = 2;
@@ -229,6 +230,7 @@ pub struct App {
     next_icon_request: u64,
     icon_refresh: Vec<HWND>,
     foreground: HWND,
+    focus: HWND,
     hover: Option<Hit>,
     drag: Option<Drag>,
     wheel: i32,
@@ -237,6 +239,7 @@ pub struct App {
     tooltip: Tooltip,
     popup: Popup,
     appbar_fullscreen: bool,
+    fullscreen: bool,
     hidden: bool,
     locked: bool,
     display_off: bool,
@@ -441,29 +444,40 @@ fn cursor() -> POINT {
     p
 }
 
-fn fullscreen_foreground() -> bool {
+/// Shell flyouts such as the input switcher and the IME mode indicator are
+/// top-level CoreWindows that take the foreground and can cover the whole
+/// monitor without being fullscreen apps.
+fn shell_flyout(h: HWND) -> bool {
+    class_name(h) == CORE_WINDOW_CLASS
+}
+
+/// `None` while a shell flyout is in front, which says nothing about the app
+/// behind it.
+fn fullscreen_foreground() -> Option<bool> {
     if let Ok(state) = unsafe { SHQueryUserNotificationState() }
         && matches!(state, QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE)
     {
-        return true;
+        return Some(true);
     }
     let fg = unsafe { GetForegroundWindow() };
     if fg.is_invalid() || own_window(fg) || unsafe { IsZoomed(fg) }.as_bool() {
-        return false;
+        return Some(false);
     }
-    if matches!(class_name(fg).as_str(), "Progman" | "WorkerW") {
-        return false;
+    match class_name(fg).as_str() {
+        "Progman" | "WorkerW" => return Some(false),
+        CORE_WINDOW_CLASS => return None,
+        _ => {}
     }
     let style = unsafe { GetWindowLongW(fg, GWL_STYLE) } as u32;
     if style & WS_CAPTION.0 == WS_CAPTION.0 {
-        return false;
+        return Some(false);
     }
     let mut r = RECT::default();
     if unsafe { GetWindowRect(fg, &mut r) }.is_err() {
-        return false;
+        return Some(false);
     }
     let m = primary_monitor();
-    r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
+    Some(r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom)
 }
 
 fn long_date() -> String {
@@ -529,6 +543,7 @@ impl App {
             next_icon_request: 1,
             icon_refresh: Vec::new(),
             foreground: HWND::default(),
+            focus: HWND::default(),
             hover: None,
             drag: None,
             wheel: 0,
@@ -537,6 +552,7 @@ impl App {
             tooltip: Tooltip::new(hwnd),
             popup: Popup::new(popup),
             appbar_fullscreen: false,
+            fullscreen: false,
             hidden: false,
             locked: false,
             display_off: false,
@@ -737,14 +753,21 @@ impl App {
             self.clock = s;
             self.invalidate();
         }
-        unsafe {
-            SetTimer(Some(self.hwnd), TIMER_CLOCK, clock::ms_until_next_minute(t.wSecond, t.wMilliseconds) + 20, None);
+        if !self.paused() {
+            unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    TIMER_CLOCK,
+                    clock::ms_until_next_minute(t.wSecond, t.wMilliseconds) + 20,
+                    None,
+                );
+            }
         }
     }
 
     fn input_target(&self) -> HWND {
         let fg = unsafe { GetForegroundWindow() };
-        if fg.is_invalid() || own_window(fg) { self.foreground } else { fg }
+        if fg.is_invalid() || own_window(fg) || shell_flyout(fg) { self.foreground } else { fg }
     }
 
     fn refresh_keyboard(&mut self) {
@@ -787,6 +810,7 @@ impl App {
     fn update_keyboard_label(&mut self) {
         let label = kbd::label(&self.keyboard_iso, &self.cfg.config.keyboard.labels, self.ime_native);
         if label != self.keyboard_label {
+            log::debug!("keyboard label {label}");
             self.texts.keyboard = self.gfx.text(&label, Font::Text).ok();
             self.keyboard_label = label;
             self.relayout();
@@ -1092,6 +1116,9 @@ impl App {
             return;
         }
         let root = self.root(h);
+        if shell_flyout(root) {
+            return;
+        }
         self.add_window(root);
         if root != self.foreground {
             self.foreground = root;
@@ -1107,9 +1134,12 @@ impl App {
             EVENT_SYSTEM_FOREGROUND => self.on_foreground(h),
             EVENT_OBJECT_CLOAKED => self.remove_window(h),
             EVENT_OBJECT_UNCLOAKED => self.add_window(h),
-            EVENT_OBJECT_FOCUS => unsafe {
-                SetTimer(Some(self.hwnd), TIMER_KEYBOARD, 100, None);
-            },
+            EVENT_OBJECT_FOCUS if h != self.focus => {
+                self.focus = h;
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_KEYBOARD, 100, None);
+                }
+            }
             _ => {}
         }
     }
@@ -1206,10 +1236,14 @@ impl App {
     }
 
     fn update_visibility(&mut self) {
-        let hide = BREAK.load(Ordering::Relaxed) || self.appbar_fullscreen || fullscreen_foreground();
+        if let Some(f) = fullscreen_foreground() {
+            self.fullscreen = f;
+        }
+        let hide = BREAK.load(Ordering::Relaxed) || self.appbar_fullscreen || self.fullscreen;
         if hide == self.hidden {
             return;
         }
+        log::debug!("bar {}", if hide { "hidden" } else { "shown" });
         self.hidden = hide;
         if hide {
             self.close_popup();
@@ -1248,17 +1282,22 @@ impl App {
         self.prune_icon_cache();
     }
 
+    fn paused(&self) -> bool {
+        self.locked || self.display_off
+    }
+
     fn set_paused(&mut self, locked: bool, display_off: bool) {
-        let was = self.locked || self.display_off;
+        let was = self.paused();
         self.locked = locked;
         self.display_off = display_off;
-        let now = locked || display_off;
+        let now = self.paused();
         if now == was {
             return;
         }
         unsafe {
             if now {
                 let _ = KillTimer(Some(self.hwnd), TIMER_SLOW);
+                let _ = KillTimer(Some(self.hwnd), TIMER_CLOCK);
             } else {
                 let _ = SetCoalescableTimer(Some(self.hwnd), TIMER_SLOW, 2000, None, 1000);
             }
