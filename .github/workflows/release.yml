@@ -16,9 +16,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - run: cargo build --release --locked
+      - run: cargo build --release --locked -p twenty-twenty-twenty -p capsule-hook
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: target/release/202020.exe
+          files: |
+            target/release/202020.exe
+            target/release/capsule_hook.dll
           generate_release_notes: true

@@ -7,6 +7,14 @@ pub const COPYDATA_APPBAR: usize = 0;
 pub const COPYDATA_NOTIFYICON: usize = 1;
 pub const COPYDATA_ICON_RECT: usize = 3;
 
+/// Registered message posted to explorer's tray thread to attach the tray
+/// hook (wParam: relay window, lParam: `Shell_TrayWnd`), and posted back to
+/// the relay window once attached.
+pub const HOOK_ATTACH_MSG: &str = "202020.TrayHook.Attach";
+/// Registered message posted to `Shell_TrayWnd` to detach the tray hook
+/// (wParam: process ID of the bar that attached it).
+pub const HOOK_DETACH_MSG: &str = "202020.TrayHook.Detach";
+
 pub const NIM_ADD: u32 = 0;
 pub const NIM_MODIFY: u32 = 1;
 pub const NIM_DELETE: u32 = 2;

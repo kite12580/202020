@@ -1,4 +1,4 @@
-pub mod spy;
+pub mod relay;
 
 use capsule_core::pins::pin_key;
 use capsule_core::tray_proto::{
@@ -12,7 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::capsule::gfx::{Gfx, Image};
 use crate::capsule::util::{hwnd, make_long, process_path, window_ids};
-use spy::TrayEvent;
+use relay::TrayEvent;
 
 pub const NIN_SELECT: u32 = WM_USER;
 pub const NIN_POPUPOPEN: u32 = WM_USER + 6;

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/capsule-core"]
+members = ["crates/capsule-core", "crates/capsule-hook"]
 
 [workspace.package]
 version = "0.1.0"

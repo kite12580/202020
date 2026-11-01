@@ -15,12 +15,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::capsule::util::{OwnedHandle, hwnd, open_process, own_window, primary_monitor_rect, wide, window_ids};
+use crate::capsule::tray::relay;
+use crate::capsule::util::{OwnedHandle, hwnd, open_process, primary_monitor_rect, process_path, wide, window_ids};
 
 const ABS_AUTOHIDE: u32 = 1;
 const ABS_ALWAYSONTOP: u32 = 2;
 
-/// Explorer's `Shell_TrayWnd`, read by the tray spy thread for forwarding.
+/// Explorer's `Shell_TrayWnd`.
 pub static REAL_TRAY: AtomicIsize = AtomicIsize::new(0);
 
 /// Set while the taskbar is deliberately shown so explorer can handle a
@@ -32,12 +33,12 @@ pub fn real_tray() -> Option<HWND> {
     (v != 0).then(|| hwnd(v))
 }
 
-/// Finds the `Shell_TrayWnd` that isn't our spy.
+/// Skips the `Shell_TrayWnd`s other programs create to intercept tray icons.
 pub fn find_real_tray() -> Option<HWND> {
     let mut after = None;
     loop {
         let h = unsafe { FindWindowExW(None, after, w!("Shell_TrayWnd"), PCWSTR::null()) }.ok()?;
-        if !own_window(h) {
+        if process_path(window_ids(h).1).is_some_and(|p| p.to_ascii_lowercase().ends_with("\\explorer.exe")) {
             return Some(h);
         }
         after = Some(h);
@@ -84,8 +85,7 @@ pub struct Saved {
     pub work_area: RECT,
 }
 
-/// Puts the taskbar back. The tray spy must be gone so `SHAppBarMessage`
-/// reaches explorer.
+/// Puts the taskbar back.
 pub fn restore(saved: &Saved) {
     let Some(tray) = find_real_tray() else { return };
     set_ab_state(tray, saved.ab_state);
@@ -262,6 +262,9 @@ pub fn run_watchdog(args: &[String]) -> i32 {
     let r = unsafe { WaitForMultipleObjects(&[process.0, event.0], false, INFINITE) };
     if r == WAIT_OBJECT_0 && unsafe { WaitForSingleObject(event.0, 0) } != WAIT_OBJECT_0 {
         log::warn!("202020 {pid} exited without cleanup");
+        if let Some(tray) = find_real_tray() {
+            relay::detach(tray, pid);
+        }
         restore(&saved);
     }
     0

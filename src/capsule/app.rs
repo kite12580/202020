@@ -34,19 +34,18 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, ChangeWindowMessageFilterEx, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
-    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EndMenu, FindWindowW, GA_ROOTOWNER, GWL_STYLE,
-    GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON,
-    HWND_TOPMOST, IDC_ARROW, IsWindow, IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MSGFLT_ALLOW,
-    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage,
-    QS_ALLINPUT, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG,
-    SPI_SETHIGHCONTRAST, SPI_SETWORKAREA, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SendMessageW, SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP,
-    WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
-    WM_TIMECHANGE, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EndMenu, GA_ROOTOWNER, GWL_STYLE, GetAncestor,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_TOPMOST, IDC_ARROW,
+    IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE,
+    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW,
+    RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA,
+    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
+    SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WA_INACTIVE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT,
+    WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
+    WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{GUID, PCWSTR, w};
 
@@ -61,11 +60,10 @@ use crate::capsule::popup::Popup;
 use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
 use crate::capsule::tooltip::Tooltip;
-use crate::capsule::tray::spy::{Rects, Shared, Spy};
+use crate::capsule::tray::relay::{Rects, Relay, Shared};
 use crate::capsule::tray::{self, Change, NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
 use crate::capsule::util::{
-    apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, process_path, scale,
-    window_ids,
+    apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, scale,
 };
 use crate::capsule::volume::Volume;
 use crate::capsule::windows_list::{self as winlist, IconRank, WindowList};
@@ -211,7 +209,7 @@ pub struct App {
     tasks: Vec<Task>,
     tray: Tray,
     tray_shared: Arc<Shared>,
-    spy: Option<Spy>,
+    relay: Option<Relay>,
     takeover: Option<Takeover>,
     volume: Volume,
     keyhook: Option<KeyHook>,
@@ -519,7 +517,7 @@ impl App {
             tasks: Vec::new(),
             tray: Tray::default(),
             tray_shared,
-            spy: None,
+            relay: None,
             takeover: None,
             volume: Volume::new(hwnd.0 as isize, WM_APP_VOLUME, WM_APP_AUDIO_DEVICE),
             keyhook: None,
@@ -602,7 +600,7 @@ impl App {
         self.relayout();
         self.reposition();
 
-        self.spy = Some(Spy::start(self.tray_shared.clone(), self.bounds));
+        self.relay = Some(Relay::start(self.tray_shared.clone()));
         self.keyhook = KeyHook::start(h, WM_APP_WIN_DIGIT, WM_APP_INPUT);
         if let Some(k) = &self.keyhook {
             k.set_digits(self.takeover.is_some());
@@ -635,8 +633,8 @@ impl App {
             let _ = SetCoalescableTimer(Some(h), TIMER_SLOW, 2000, None, 1000);
         }
         self.register_appbar();
-        if let Some(spy) = &self.spy {
-            spy.reclaim(Vec::new());
+        if let (Some(relay), Some(real)) = (&self.relay, real) {
+            relay.attach(real);
         }
         unsafe {
             let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
@@ -663,7 +661,7 @@ impl App {
                 let _ = UnregisterPowerSettingNotification(n);
             }
         }
-        self.spy = None;
+        self.relay = None;
         for ev in self.tray_shared.queue.lock().unwrap().drain(..) {
             tray::destroy_icon(ev.icon);
         }
@@ -891,9 +889,6 @@ impl App {
         if let Some(s) = &mut self.surface {
             s.resize(w as u32, h as u32);
         }
-        if let Some(spy) = &self.spy {
-            spy.raise(self.bounds);
-        }
         self.publish_tray_rects();
         if self.popup.open {
             self.place_popup();
@@ -913,7 +908,7 @@ impl App {
         (self.bounds.left, self.bounds.top)
     }
 
-    /// Shares icon positions with the spy for `Shell_NotifyIconGetRect`.
+    /// Shares icon positions with the relay for `Shell_NotifyIconGetRect`.
     fn publish_tray_rects(&self) {
         let mut rects = self.tray_shared.rects.lock().unwrap();
         rects.icons.clear();
@@ -1125,7 +1120,6 @@ impl App {
         }
         self.refresh_keyboard();
         self.update_visibility();
-        self.guard_tray_order();
     }
 
     fn on_winevent(&mut self, event: u32, h: HWND) {
@@ -1189,23 +1183,8 @@ impl App {
         self.tray.icons.clear();
         self.relayout();
         self.register_appbar();
-        if let Some(spy) = &self.spy {
-            spy.reclaim(Vec::new());
-        }
-    }
-
-    fn guard_tray_order(&self) {
-        let Some(spy) = &self.spy else { return };
-        let first = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) };
-        if let Ok(first) = first
-            && first != spy.hwnd()
-        {
-            log::info!(
-                "spy lost tray z-order to {:?} (spy alive: {})",
-                process_path(window_ids(first).1),
-                unsafe { IsWindow(Some(spy.hwnd())) }.as_bool()
-            );
-            spy.reclaim(self.tray.icons.iter().map(|i| i.key.hwnd).collect());
+        if let (Some(relay), Some(real)) = (&self.relay, real) {
+            relay.attach(real);
         }
     }
 
@@ -1271,7 +1250,6 @@ impl App {
         if self.hidden {
             return;
         }
-        self.guard_tray_order();
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if !self.slow_ticks.is_multiple_of(PRUNE_EVERY) {
             return;
@@ -1600,7 +1578,6 @@ impl App {
             }
         } else {
             t.conceal();
-            self.guard_tray_order();
         }
     }
 
@@ -1709,9 +1686,6 @@ impl App {
         let b = self.bounds;
         let (cx, gap) = layout::anchor(mon, b.left, b.top, b.right - b.left, b.bottom - b.top);
         self.cfg.save_position(cx, self.to_dip(gap));
-        if let Some(spy) = &self.spy {
-            spy.raise(self.bounds);
-        }
         self.publish_tray_rects();
     }
 

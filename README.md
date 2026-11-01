@@ -47,7 +47,7 @@ While the bar is running, a `--watchdog` child process restores the taskbar's au
 
 ## Running
 
-`202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. To start at login, put a shortcut to it in `shell:startup`.
+`202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. Keep `capsule_hook.dll` next to it: while the capsule bar runs, it is loaded into explorer to pass tray icons to the bar. To start at login, put a shortcut to it in `shell:startup`.
 
 | Flag | Effect |
 |---|---|
@@ -65,17 +65,17 @@ While the bar is running, a `--watchdog` child process restores the taskbar's au
 On Windows:
 
 ```
-cargo build --release
+cargo build --release -p twenty-twenty-twenty -p capsule-hook
 ```
 
-Produces `target\release\202020.exe`.
+Produces `target\release\202020.exe` and `target\release\capsule_hook.dll`.
 
 Cross-compiling from Linux:
 
 ```sh
 rustup target add x86_64-pc-windows-msvc
 cargo install --locked cargo-xwin
-scripts/build.sh      # target/x86_64-pc-windows-msvc/release/202020.exe
+scripts/build.sh      # target/x86_64-pc-windows-msvc/release/{202020.exe,capsule_hook.dll}
 scripts/check.sh      # fmt, clippy, core tests, build and artifact checks
 ```
 
