@@ -39,8 +39,8 @@ pub struct Metrics {
     pub window_item: f32,
     pub tray_item: f32,
     pub chevron: f32,
-    pub separator: f32,
     pub text_pad: f32,
+    pub tight_pad: f32,
 }
 
 pub const METRICS: Metrics = Metrics {
@@ -50,8 +50,8 @@ pub const METRICS: Metrics = Metrics {
     window_item: 30.0,
     tray_item: 24.0,
     chevron: 22.0,
-    separator: 9.0,
     text_pad: 6.0,
+    tight_pad: 3.0,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -68,8 +68,6 @@ pub struct Input {
 pub struct Layout {
     pub width: f32,
     pub items: Vec<(Hit, Rect)>,
-    /// X coordinates of separator lines.
-    pub separators: Vec<f32>,
 }
 
 impl Layout {
@@ -80,31 +78,20 @@ impl Layout {
             out.items.push((hit, Rect { x: *x, y: 0.0, w, h: m.height }));
             *x += w;
         };
-        let sep = |out: &mut Layout, x: &mut f32| {
-            out.separators.push(*x + m.separator / 2.0);
-            *x += m.separator;
-        };
 
         push(&mut out, Hit::Grip, m.grip, &mut x);
-        if input.windows > 0 {
-            sep(&mut out, &mut x);
-            for i in 0..input.windows {
-                push(&mut out, Hit::Window(i), m.window_item, &mut x);
-            }
+        for i in 0..input.windows {
+            push(&mut out, Hit::Window(i), m.window_item, &mut x);
         }
-        if input.chevron || input.tray > 0 {
-            sep(&mut out, &mut x);
-            if input.chevron {
-                push(&mut out, Hit::Chevron, m.chevron, &mut x);
-            }
-            for i in 0..input.tray {
-                push(&mut out, Hit::Tray(i), m.tray_item, &mut x);
-            }
+        if input.chevron {
+            push(&mut out, Hit::Chevron, m.chevron, &mut x);
         }
-        sep(&mut out, &mut x);
+        for i in 0..input.tray {
+            push(&mut out, Hit::Tray(i), m.tray_item, &mut x);
+        }
         push(&mut out, Hit::Keyboard, input.keyboard_w + 2.0 * m.text_pad, &mut x);
-        push(&mut out, Hit::Volume, input.volume_w + 2.0 * m.text_pad, &mut x);
-        push(&mut out, Hit::Clock, input.clock_w + 2.0 * m.text_pad, &mut x);
+        push(&mut out, Hit::Volume, input.volume_w + 2.0 * m.tight_pad, &mut x);
+        push(&mut out, Hit::Clock, m.tight_pad + input.clock_w + m.text_pad, &mut x);
         out.width = x + m.pad;
         out
     }
@@ -177,16 +164,15 @@ mod tests {
                 Hit::Clock
             ]
         );
-        assert_eq!(l.separators.len(), 3);
         let m = &METRICS;
         let expected = m.pad * 2.0
             + m.grip
-            + 3.0 * m.separator
             + 2.0 * m.window_item
             + m.chevron
             + m.tray_item
             + 110.0
-            + 6.0 * m.text_pad;
+            + 3.0 * m.text_pad
+            + 3.0 * m.tight_pad;
         assert!((l.width - expected).abs() < 0.01);
         for w in l.items.windows(2) {
             assert!(w[0].1.right() <= w[1].1.x + 0.001);
@@ -196,7 +182,6 @@ mod tests {
     #[test]
     fn empty_sections_are_skipped() {
         let l = Layout::compute(&METRICS, &Input::default());
-        assert_eq!(l.separators.len(), 1);
         assert_eq!(l.rect(Hit::Chevron), None);
         assert_eq!(l.hit(1.0), None);
         assert_eq!(l.hit(METRICS.pad + 1.0), Some(Hit::Grip));

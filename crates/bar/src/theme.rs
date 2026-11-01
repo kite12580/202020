@@ -30,7 +30,6 @@ pub struct Palette {
     pub text: Color,
     pub hover: Color,
     pub active: Color,
-    pub separator: Color,
 }
 
 fn personalize_dword(name: PCWSTR) -> Option<u32> {
@@ -82,7 +81,6 @@ impl Theme {
                 text: Color(1.0, 1.0, 1.0, 0.92),
                 hover: Color(1.0, 1.0, 1.0, 0.08),
                 active: Color(1.0, 1.0, 1.0, 0.15),
-                separator: Color(1.0, 1.0, 1.0, 0.16),
             }
         } else {
             Palette {
@@ -90,7 +88,6 @@ impl Theme {
                 text: Color(0.0, 0.0, 0.0, 0.9),
                 hover: Color(0.0, 0.0, 0.0, 0.05),
                 active: Color(0.0, 0.0, 0.0, 0.1),
-                separator: Color(0.0, 0.0, 0.0, 0.14),
             }
         }
     }

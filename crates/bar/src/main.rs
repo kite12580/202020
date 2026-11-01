@@ -5,6 +5,7 @@ mod config_store;
 mod gfx;
 mod icons;
 mod keyboard;
+mod keyhook;
 mod logger;
 mod menu;
 mod popup;

@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use capsule_core::clock;
 use capsule_core::config::Config;
 use capsule_core::layout::{self, Hit, Input, Layout, METRICS, Rect};
+use capsule_core::{clock, kbd};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Globalization::{DATE_LONGDATE, GetDateFormatEx, GetTimeFormatEx, TIME_FORMAT_FLAGS};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HGDIOBJ, InvalidateRect, ScreenToClient, ValidateRect};
@@ -54,6 +54,7 @@ use crate::config_store::ConfigStore;
 use crate::gfx::{Font, Gfx, Surface, Text};
 use crate::icons::IconWorker;
 use crate::keyboard;
+use crate::keyhook::{self, KeyHook, Launch};
 use crate::menu::{self, Item};
 use crate::popup::Popup;
 use crate::shell::{self, REAL_TRAY, Takeover};
@@ -61,7 +62,7 @@ use crate::theme::{self, Theme};
 use crate::tooltip::Tooltip;
 use crate::tray::spy::{Rects, Shared, Spy};
 use crate::tray::{NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
-use crate::util::{class_name, from_wide, lparam_point, primary_monitor, scale, window_ids};
+use crate::util::{class_name, from_wide, lparam_point, primary_monitor, process_path, scale, wide, window_ids};
 use crate::volume::Volume;
 use crate::windows_list::{self as winlist, IconRank, WindowList};
 
@@ -76,6 +77,8 @@ const WM_APP_AUDIO_DEVICE: u32 = WM_APP + 3;
 const WM_APP_ICON: u32 = WM_APP + 4;
 const WM_APP_APPBAR: u32 = WM_APP + 5;
 const WM_APP_WINEVENT: u32 = WM_APP + 6;
+const WM_APP_WIN_DIGIT: u32 = WM_APP + 7;
+const WM_APP_INPUT: u32 = WM_APP + 8;
 
 const TIMER_CLOCK: usize = 1;
 const TIMER_SLOW: usize = 2;
@@ -89,6 +92,7 @@ const HOTKEY_EXIT: i32 = 1;
 const WINDOW_ICON: f32 = 20.0;
 const TRAY_ICON: f32 = 16.0;
 const POPUP_GAP: f32 = 6.0;
+const CLOCK_LINE_OVERLAP: f32 = 2.0;
 
 const ABN_FULLSCREENAPP: usize = 2;
 const WTS_SESSION_LOCK: usize = 7;
@@ -138,8 +142,8 @@ struct Texts {
     keyboard: Option<Text>,
     chevron: Option<Text>,
     volume_glyph: Option<Text>,
-    volume_level: Option<Text>,
-    clock: Option<Text>,
+    clock_time: Option<Text>,
+    clock_date: Option<Text>,
     volume_slot: f32,
     clock_slot: f32,
 }
@@ -161,9 +165,12 @@ pub struct App {
     spy: Option<Spy>,
     takeover: Option<Takeover>,
     volume: Volume,
+    keyhook: Option<KeyHook>,
     keyboard_layout: isize,
+    keyboard_iso: String,
     keyboard_label: String,
-    clock: String,
+    keyboard_retries: u8,
+    clock: (String, String),
     texts: Texts,
     icon_worker: IconWorker,
     icon_requests: HashMap<u64, (HWND, IconRank)>,
@@ -460,9 +467,12 @@ impl App {
             spy: None,
             takeover: None,
             volume: Volume::new(hwnd.0 as isize, WM_APP_VOLUME, WM_APP_AUDIO_DEVICE),
+            keyhook: None,
             keyboard_layout: 0,
+            keyboard_iso: String::new(),
             keyboard_label: String::new(),
-            clock: String::new(),
+            keyboard_retries: 0,
+            clock: Default::default(),
             texts: Texts::default(),
             icon_worker: IconWorker::new(hwnd.0 as isize, WM_APP_ICON),
             icon_requests: HashMap::new(),
@@ -518,6 +528,10 @@ impl App {
         self.reposition();
 
         self.spy = Some(Spy::start(self.tray_shared.clone(), self.bounds));
+        self.keyhook = KeyHook::start(h, WM_APP_WIN_DIGIT, WM_APP_INPUT);
+        if let Some(k) = &self.keyhook {
+            k.set_digits(self.takeover.is_some());
+        }
 
         unsafe {
             let _ = RegisterShellHookWindow(h);
@@ -570,6 +584,7 @@ impl App {
             let _ = DeregisterShellHookWindow(self.hwnd);
         }
         self.spy = None;
+        self.keyhook = None;
         if let Some(t) = self.takeover.take() {
             t.stop();
         }
@@ -627,20 +642,19 @@ impl App {
         t.chevron = self.gfx.text(GLYPH_CHEVRON, Font::Glyph).ok();
         t.clock_slot = clock::WIDTH_CANDIDATES
             .iter()
-            .filter_map(|s| self.gfx.text(s, Font::Digits).ok())
+            .filter_map(|s| self.gfx.text(s, Font::Clock).ok())
             .map(|t| t.width.ceil())
             .fold(0.0, f32::max);
         let glyph = GLYPH_VOLUME.iter().chain([&GLYPH_MUTE]).filter_map(|g| self.gfx.text(g, Font::Glyph).ok());
-        let glyph_w = glyph.map(|t| t.width).fold(0.0, f32::max);
-        let digits_w = self.gfx.text("100", Font::Digits).map_or(0.0, |t| t.width);
-        t.volume_slot = (glyph_w + 4.0 + digits_w).ceil();
+        t.volume_slot = glyph.map(|t| t.width).fold(0.0, f32::max).ceil();
     }
 
     fn refresh_clock(&mut self) {
         let t = unsafe { GetLocalTime() };
-        let s = clock::format(t.wHour, t.wMinute, t.wMonth, t.wDay);
+        let s = (clock::time(t.wHour, t.wMinute), clock::date(t.wMonth, t.wDay));
         if s != self.clock {
-            self.texts.clock = self.gfx.text(&s, Font::Digits).ok();
+            self.texts.clock_time = self.gfx.text(&s.0, Font::Clock).ok();
+            self.texts.clock_date = self.gfx.text(&s.1, Font::Clock).ok();
             self.clock = s;
             self.invalidate();
         }
@@ -655,12 +669,17 @@ impl App {
     }
 
     fn refresh_keyboard(&mut self) {
-        let hkl = keyboard::current(self.input_target());
-        if hkl == 0 || hkl == self.keyboard_layout {
+        let target = self.input_target();
+        let hkl = keyboard::current(target);
+        if hkl == 0 {
             return;
         }
-        self.keyboard_layout = hkl;
-        let label = keyboard::label(hkl, &self.cfg.config.keyboard.labels);
+        if hkl != self.keyboard_layout {
+            self.keyboard_layout = hkl;
+            self.keyboard_iso = keyboard::iso(hkl);
+        }
+        let native = if kbd::has_ime(&self.keyboard_iso) { keyboard::ime_native(target) } else { None };
+        let label = kbd::label(&self.keyboard_iso, &self.cfg.config.keyboard.labels, native);
         if label != self.keyboard_label {
             self.texts.keyboard = self.gfx.text(&label, Font::Text).ok();
             self.keyboard_label = label;
@@ -681,8 +700,6 @@ impl App {
             }]
         };
         self.texts.volume_glyph = self.gfx.text(glyph, Font::Glyph).ok();
-        let pct = if self.volume.available() { format!("{}", (level * 100.0).round() as u32) } else { String::new() };
-        self.texts.volume_level = self.gfx.text(&pct, Font::Digits).ok();
         self.invalidate();
     }
 
@@ -785,7 +802,7 @@ impl App {
         }
         winlist::request_window_icon(h, false, on_window_icon);
         if class_icon == 0
-            && let Some(path) = crate::util::process_path(window_ids(h).1)
+            && let Some(path) = process_path(window_ids(h).1)
         {
             self.request_shell_icon(h, path, IconRank::Exe, px);
         }
@@ -1053,8 +1070,6 @@ impl App {
             self.popup.surface = None;
         }
         if c.keyboard.labels != old.keyboard.labels {
-            self.keyboard_layout = 0;
-            self.keyboard_label.clear();
             self.refresh_keyboard();
         }
         self.relayout();
@@ -1105,7 +1120,15 @@ impl App {
             TIMER_CLOCK => self.refresh_clock(),
             TIMER_SLOW => self.slow_tick(),
             TIMER_CONFIG => self.reload_config(),
-            TIMER_KEYBOARD => self.refresh_keyboard(),
+            TIMER_KEYBOARD => {
+                self.refresh_keyboard();
+                if self.keyboard_retries > 0 {
+                    self.keyboard_retries -= 1;
+                    unsafe {
+                        SetTimer(Some(self.hwnd), TIMER_KEYBOARD, 200, None);
+                    }
+                }
+            }
             TIMER_WORK_AREA => self.fix_work_area(),
             TIMER_AUDIO => {
                 self.volume.attach();
@@ -1218,6 +1241,29 @@ impl App {
         }
     }
 
+    fn foreground_root(&self) -> HWND {
+        let fg = self.root(unsafe { GetForegroundWindow() });
+        if fg.is_invalid() || own_window(fg) { self.foreground } else { fg }
+    }
+
+    fn on_win_digit(&mut self, index: usize, launch: Launch) {
+        let Some(h) = self.windows.items.get(index).map(|w| w.hwnd) else { return };
+        if launch == Launch::Activate {
+            winlist::activate_or_minimize(h, self.foreground_root());
+            return;
+        }
+        let target = (class_name(h) == "ApplicationFrameWindow")
+            .then(|| aumid(h).map(|id| format!("shell:AppsFolder\\{id}")))
+            .flatten()
+            .or_else(|| process_path(window_ids(h).1));
+        let Some(target) = target else { return };
+        let target = wide(&target);
+        let verb = if launch == Launch::Admin { w!("runas") } else { w!("open") };
+        unsafe {
+            ShellExecuteW(None, verb, PCWSTR(target.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        }
+    }
+
     fn on_bar_mouse(&mut self, msg: u32, lparam: LPARAM) {
         let hit = self.layout.hit(self.to_dip(lparam_point(lparam).0));
         if let Some(d) = &self.drag {
@@ -1243,9 +1289,7 @@ impl App {
                 unsafe { SetCapture(self.hwnd) };
             }
             (WM_LBUTTONUP, Hit::Window(i)) => {
-                let fg = self.root(unsafe { GetForegroundWindow() });
-                let fg = if fg.is_invalid() || own_window(fg) { self.foreground } else { fg };
-                winlist::activate_or_minimize(self.windows.items[i].hwnd, fg);
+                winlist::activate_or_minimize(self.windows.items[i].hwnd, self.foreground_root());
             }
             (WM_MBUTTONUP, Hit::Window(i)) => winlist::close(self.windows.items[i].hwnd),
             (WM_RBUTTONUP, Hit::Window(i)) => {
@@ -1435,9 +1479,6 @@ impl App {
         let s = self.surface.as_mut().unwrap();
         s.begin();
         s.fill(Rect { x: 0.0, y: 0.0, w: self.layout.width, h }, pal.tint, 0.0);
-        for &x in &self.layout.separators {
-            s.vline(x, 9.0, h - 9.0, pal.separator);
-        }
         for &(hit, r) in &self.layout.items {
             let highlight = Rect { x: r.x + 1.0, y: 4.0, w: r.w - 2.0, h: h - 8.0 };
             if self.hover == Some(hit) && hit != Hit::Grip {
@@ -1487,18 +1528,17 @@ impl App {
                     }
                 }
                 Hit::Volume => {
-                    let x = r.x + METRICS.text_pad;
                     if let Some(g) = &self.texts.volume_glyph {
-                        s.text(g, x, cy - g.height / 2.0, pal.text);
-                    }
-                    if let Some(t) = &self.texts.volume_level {
-                        let right = r.right() - METRICS.text_pad;
-                        s.text(t, right - t.width, cy - t.height / 2.0, pal.text);
+                        let (x, y) = center(g);
+                        s.text(g, x, y, pal.text);
                     }
                 }
                 Hit::Clock => {
-                    if let Some(t) = &self.texts.clock {
-                        s.text(t, r.right() - METRICS.text_pad - t.width, cy - t.height / 2.0, pal.text);
+                    if let (Some(t), Some(d)) = (&self.texts.clock_time, &self.texts.clock_date) {
+                        let right = r.right() - METRICS.text_pad;
+                        let top = cy - (t.height + d.height - CLOCK_LINE_OVERLAP) / 2.0;
+                        s.text(t, right - t.width, top, pal.text);
+                        s.text(d, right - d.width, top + t.height - CLOCK_LINE_OVERLAP, pal.text);
                     }
                 }
             }
@@ -1620,6 +1660,14 @@ impl App {
                 }
             }
             WM_APP_WINEVENT => self.on_winevent(wparam.0 as u32, HWND(lparam.0 as *mut _)),
+            WM_APP_WIN_DIGIT => self.on_win_digit(wparam.0, Launch::from_raw(lparam.0)),
+            WM_APP_INPUT => {
+                keyhook::input_handled();
+                self.keyboard_retries = 2;
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_KEYBOARD, 40, None);
+                }
+            }
             m if m == self.shell_msg && m != 0 => self.on_shell_hook(wparam.0, HWND(lparam.0 as *mut _)),
             m if m == self.taskbar_created_msg && m != 0 => self.on_taskbar_created(),
             _ => return None,
@@ -1664,7 +1712,7 @@ fn grip_menu() {
     }
     with_app(|a| match id {
         1 => {
-            let path = crate::util::wide(&a.cfg.path.to_string_lossy());
+            let path = wide(&a.cfg.path.to_string_lossy());
             let r = unsafe {
                 ShellExecuteW(None, w!("open"), PCWSTR(path.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
             };

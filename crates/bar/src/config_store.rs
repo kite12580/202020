@@ -9,12 +9,12 @@ use windows::core::PCWSTR;
 
 use crate::util::wide;
 
-pub fn config_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("capsule-bar")
+pub fn app_dir() -> PathBuf {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default()
 }
 
 pub fn log_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("capsule-bar")
+    app_dir().join("logs")
 }
 
 pub struct ConfigStore {
@@ -26,9 +26,8 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn open() -> Self {
-        let dir = config_dir();
+        let dir = app_dir();
         let path = dir.join("config.toml");
-        let _ = std::fs::create_dir_all(&dir);
         if !path.exists() {
             let _ = std::fs::write(&path, config::DEFAULT_TEXT);
         }

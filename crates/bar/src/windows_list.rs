@@ -5,13 +5,14 @@ use capsule_core::winfilter::{WindowFacts, taskbar_window};
 use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, GetProcessTimes, OpenProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GCLP_HICON, GCLP_HICONSM, GW_OWNER, GWL_EXSTYLE, GetClassLongPtrW, GetWindow, GetWindowLongW,
-    GetWindowTextW, ICON_BIG, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, PostMessageW, SW_MINIMIZE, SW_RESTORE,
-    SendMessageCallbackW, SetForegroundWindow, ShowWindowAsync, WM_CLOSE, WM_GETICON, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    EnumWindows, GCLP_HICON, GCLP_HICONSM, GW_OWNER, GWL_EXSTYLE, GetClassLongPtrW, GetForegroundWindow, GetWindow,
+    GetWindowLongW, GetWindowTextW, ICON_BIG, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
+    SW_MINIMIZE, SW_RESTORE, SendMessageCallbackW, SetForegroundWindow, ShowWindowAsync, WM_CLOSE, WM_GETICON,
+    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::BOOL;
 
@@ -211,7 +212,21 @@ pub fn activate_or_minimize(h: HWND, foreground: HWND) {
         if iconic {
             let _ = ShowWindowAsync(h, SW_RESTORE);
         }
+        if !SetForegroundWindow(h).as_bool() {
+            force_foreground(h);
+        }
+    }
+}
+
+fn force_foreground(h: HWND) {
+    let fg = window_ids(unsafe { GetForegroundWindow() }).0;
+    let me = unsafe { GetCurrentThreadId() };
+    if fg == 0 || fg == me || !unsafe { AttachThreadInput(me, fg, true) }.as_bool() {
+        return;
+    }
+    unsafe {
         let _ = SetForegroundWindow(h);
+        let _ = AttachThreadInput(me, fg, false);
     }
 }
 

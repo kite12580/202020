@@ -49,7 +49,7 @@ impl Color {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Font {
     Text,
-    Digits,
+    Clock,
     Glyph,
 }
 
@@ -72,6 +72,7 @@ pub struct Gfx {
     dwrite: IDWriteFactory,
     wic: IWICImagingFactory,
     text: IDWriteTextFormat,
+    clock: IDWriteTextFormat,
     glyph: IDWriteTextFormat,
     tabular: IDWriteTypography,
     next_id: Cell<u64>,
@@ -97,22 +98,27 @@ impl Gfx {
                 Ok(f)
             };
             let text = format(w!("Segoe UI Variable Text"), 12.0)?;
+            let clock = format(w!("Segoe UI Variable Text"), 11.0)?;
             let glyph = format(w!("Segoe Fluent Icons"), 12.0)?;
             let tabular = dwrite.CreateTypography()?;
             tabular.AddFontFeature(DWRITE_FONT_FEATURE {
                 nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
                 parameter: 1,
             })?;
-            Ok(Self { d2d, dwrite, wic, text, glyph, tabular, next_id: Cell::new(1) })
+            Ok(Self { d2d, dwrite, wic, text, clock, glyph, tabular, next_id: Cell::new(1) })
         }
     }
 
     pub fn text(&self, s: &str, font: Font) -> Result<Text> {
         let units: Vec<u16> = s.encode_utf16().collect();
-        let format = if font == Font::Glyph { &self.glyph } else { &self.text };
+        let format = match font {
+            Font::Text => &self.text,
+            Font::Clock => &self.clock,
+            Font::Glyph => &self.glyph,
+        };
         unsafe {
             let layout = self.dwrite.CreateTextLayout(&units, format, 10_000.0, 100.0)?;
-            if font == Font::Digits {
+            if font == Font::Clock {
                 layout
                     .SetTypography(&self.tabular, DWRITE_TEXT_RANGE { startPosition: 0, length: units.len() as u32 })?;
             }
@@ -229,19 +235,6 @@ impl Surface {
     pub fn dot(&self, x: f32, y: f32, radius: f32, c: Color) {
         let e = D2D1_ELLIPSE { point: Vector2 { X: x, Y: y }, radiusX: radius, radiusY: radius };
         unsafe { self.rt.FillEllipse(&e, self.brush(c)) };
-    }
-
-    pub fn vline(&self, x: f32, y0: f32, y1: f32, c: Color) {
-        let x = self.snap(x) + 0.5 * 96.0 / self.dpi as f32;
-        unsafe {
-            self.rt.DrawLine(
-                Vector2 { X: x, Y: y0 },
-                Vector2 { X: x, Y: y1 },
-                self.brush(c),
-                96.0 / self.dpi as f32,
-                None,
-            );
-        }
     }
 
     pub fn text(&self, t: &Text, x: f32, y: f32, c: Color) {
