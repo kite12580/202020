@@ -2,6 +2,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WAIT_OBJECT_0};
+use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, INFINITE, OpenEventW, OpenProcess, PROCESS_SYNCHRONIZE,
     SYNCHRONIZATION_SYNCHRONIZE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
@@ -95,6 +96,7 @@ pub fn restore(saved: &Saved) {
     let Some(tray) = find_real_tray() else { return };
     set_ab_state(tray, saved.ab_state);
     unsafe {
+        SetWindowRgn(tray, None, true);
         let _ = ShowWindow(tray, SW_SHOWNA);
     }
     if saved.work_area != RECT::default() {
@@ -122,6 +124,12 @@ unsafe extern "system" fn on_tray_shown(
             let _ = ShowWindow(h, SW_HIDE);
         }
     }
+}
+
+/// An empty window region keeps the taskbar invisible even while it is
+/// shown, which explorer requires to handle Win+number.
+unsafe fn erase(tray: HWND) {
+    unsafe { SetWindowRgn(tray, Some(CreateRectRgn(0, 0, 0, 0)), false) };
 }
 
 pub struct Takeover {
@@ -159,6 +167,7 @@ impl Takeover {
     pub fn apply(&mut self, tray: HWND) {
         set_ab_state(tray, ABS_AUTOHIDE);
         unsafe {
+            erase(tray);
             let _ = ShowWindow(tray, SW_HIDE);
             if !self.show_hook.is_invalid() {
                 let _ = UnhookWinEvent(self.show_hook);
@@ -178,12 +187,12 @@ impl Takeover {
         log::info!("taskbar hidden");
     }
 
-    /// Shows the auto-hidden taskbar, which stays collapsed off-screen, so
-    /// explorer handles its Win+number shortcuts.
+    /// Shows the erased taskbar so explorer handles its Win+number shortcuts.
     pub fn reveal(&self) {
         REVEALED.store(true, Ordering::Relaxed);
         if let Some(tray) = real_tray() {
             unsafe {
+                erase(tray);
                 let _ = ShowWindow(tray, SW_SHOWNA);
             }
         }
