@@ -53,6 +53,7 @@ const WM_DISMISS: u32 = WM_APP + 2;
 const WM_BAR_EXITED: u32 = WM_APP + 3;
 const WM_BAR_QUIT: u32 = WM_APP + 4;
 const WM_BAR_DISABLE: u32 = WM_APP + 5;
+const WM_BAR_RESTART: u32 = WM_APP + 6;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
 const TIMER_TICK: usize = 1;
@@ -130,6 +131,7 @@ struct App {
     brk: Option<Break>,
     bar_opts: capsule::Options,
     bar: BarState,
+    restarting: bool,
     quitting: bool,
 }
 
@@ -348,12 +350,21 @@ impl App {
         self.set_bar(false);
     }
 
+    fn restart_bar(&mut self) {
+        if matches!(self.bar, BarState::Running(_)) {
+            self.restarting = true;
+            self.stop_bar();
+        }
+    }
+
     fn on_bar_exited(&mut self) {
         if let BarState::Running(bar) | BarState::Stopping(bar) = std::mem::replace(&mut self.bar, BarState::Off) {
             bar.join();
         }
         if self.quitting {
             self.quit();
+        } else if std::mem::take(&mut self.restarting) {
+            self.start_bar();
         }
     }
 
@@ -515,6 +526,9 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_BAR_DISABLE => {
             with_app(App::disable_bar);
         }
+        WM_BAR_RESTART => {
+            with_app(App::restart_bar);
+        }
         WM_POWERBROADCAST if wparam.0 == PBT_APMRESUMEAUTOMATIC as usize => {
             with_app(App::reset_timer);
         }
@@ -642,8 +656,10 @@ fn main() {
                 exited_msg: WM_BAR_EXITED,
                 quit_msg: WM_BAR_QUIT,
                 disable_msg: WM_BAR_DISABLE,
+                restart_msg: WM_BAR_RESTART,
             },
             bar: BarState::Off,
+            restarting: false,
             quitting: false,
         };
         app.refresh_icon();

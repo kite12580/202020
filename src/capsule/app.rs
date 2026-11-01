@@ -79,6 +79,7 @@ pub struct Options {
     pub exited_msg: u32,
     pub quit_msg: u32,
     pub disable_msg: u32,
+    pub restart_msg: u32,
 }
 
 impl Options {
@@ -143,6 +144,7 @@ const MENU_OPEN_CONFIG: u32 = 1;
 const MENU_RELOAD_CONFIG: u32 = 2;
 const MENU_DISABLE: u32 = 3;
 const MENU_QUIT: u32 = 4;
+const MENU_RESTART: u32 = 5;
 
 const GLYPH_CHEVRON: &str = "\u{E70E}";
 const GLYPH_MUTE: &str = "\u{E74F}";
@@ -1825,7 +1827,7 @@ impl App {
         if let Some(i) = pins.iter().position(|p| *p == pin) {
             pins.remove(i);
         } else {
-            pins.push(pin);
+            pins.insert(0, pin);
         }
         self.cfg.save_pinned();
         self.relayout();
@@ -2082,6 +2084,7 @@ fn app_menu() {
     let items = [
         menu::command(MENU_OPEN_CONFIG, "Open config"),
         menu::command(MENU_RELOAD_CONFIG, "Reload config"),
+        menu::command(MENU_RESTART, "Reload capsule bar"),
         Item::Separator,
         menu::command(MENU_DISABLE, "Disable capsule bar"),
         menu::command(MENU_QUIT, "Quit"),
@@ -2095,6 +2098,7 @@ fn app_menu() {
     with_app(|a| match id {
         MENU_OPEN_CONFIG => config_store::open_in_editor(&a.cfg.path),
         MENU_RELOAD_CONFIG => a.reload_config(),
+        MENU_RESTART => a.opts.post_owner(a.opts.restart_msg),
         MENU_DISABLE => a.opts.post_owner(a.opts.disable_msg),
         MENU_QUIT => a.opts.post_owner(a.opts.quit_msg),
         _ => {}

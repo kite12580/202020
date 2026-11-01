@@ -29,7 +29,7 @@ Hold the left button anywhere on the capsule and drag to move it (the position i
 | Pinned tray icons | Click, double-click and right-click behave as on the native taskbar |
 | Keyboard layout | Shows the current layout (中 / EN …); shows 英 when a Chinese IME is in English mode. Left: next layout; right: list all layouts |
 | Volume | Wheel adjusts volume; click opens Quick Settings (like `Win+A`); hover shows the percentage |
-| Clock | Time on top, date (month/day/year) below. Click opens notifications and calendar (like `Win+N`); right-click for Open config, Reload config, Disable capsule bar, Quit. Hover shows the full date and weekday |
+| Clock | Time on top, date (month/day/year) below. Click opens notifications and calendar (like `Win+N`); right-click for Open config, Reload config, Reload capsule bar, Disable capsule bar, Quit. Hover shows the full date and weekday |
 
 The capsule hides while a foreground program is fullscreen (games, F11, fullscreen video, slideshows) and during breaks.
 
