@@ -5,23 +5,22 @@ mod render;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::mem::{size_of, zeroed};
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ab_glyph::FontVec;
 use tiny_skia::Pixmap;
-use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Power::RegisterSuspendResumeNotification;
-use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::HiDpi::*;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-use windows_sys::Win32::UI::Shell::*;
-use windows_sys::Win32::UI::WindowsAndMessaging::*;
-use windows_sys::core::{PCWSTR, w};
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Power::RegisterSuspendResumeNotification;
+use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::HiDpi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::Shell::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::{PCWSTR, w};
 
 use render::{IconFace, Overlay};
 
@@ -60,12 +59,12 @@ const HOTKEY_TOGGLE: i32 = 1;
 const TIMER_TICK: usize = 1;
 const TIMER_FRAME: usize = 2;
 const TIMER_BREAK_END: usize = 3;
-const CMD_TOGGLE: usize = 1;
-const CMD_BREAK: usize = 2;
-const CMD_RESET: usize = 3;
-const CMD_QUIT: usize = 4;
-const CMD_BAR: usize = 5;
-const CMD_EDIT_CONFIG: usize = 6;
+const CMD_TOGGLE: i32 = 1;
+const CMD_BREAK: i32 = 2;
+const CMD_RESET: i32 = 3;
+const CMD_QUIT: i32 = 4;
+const CMD_BAR: i32 = 5;
+const CMD_EDIT_CONFIG: i32 = 6;
 
 static MAIN_HWND: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -98,7 +97,7 @@ fn startup_progress_at(elapsed: f64) -> f32 {
 
 struct Break {
     hwnd: HWND,
-    hook: HHOOK,
+    hook: Option<HHOOK>,
     started_at: f64,
     overlay: Overlay,
 }
@@ -142,18 +141,20 @@ impl App {
     }
 
     fn notify(&self, message: NOTIFY_ICON_MESSAGE) {
+        let mut data = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_ID,
+            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+            uCallbackMessage: WM_TRAY,
+            hIcon: self.icon,
+            ..Default::default()
+        };
+        for (dst, src) in data.szTip.iter_mut().zip("202020".encode_utf16()) {
+            *dst = src;
+        }
         unsafe {
-            let mut data: NOTIFYICONDATAW = zeroed();
-            data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-            data.hWnd = self.hwnd;
-            data.uID = TRAY_ID;
-            data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            data.uCallbackMessage = WM_TRAY;
-            data.hIcon = self.icon;
-            for (dst, src) in data.szTip.iter_mut().zip("202020".encode_utf16()) {
-                *dst = src;
-            }
-            Shell_NotifyIconW(message, &data);
+            let _ = Shell_NotifyIconW(message, &data);
         }
     }
 
@@ -164,8 +165,8 @@ impl App {
             let size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(self.hwnd)).max(16) as u32;
             let previous = std::mem::replace(&mut self.icon, create_icon(&render::tray_icon(&self.font, size, face)));
             self.notify(NIM_MODIFY);
-            if !previous.is_null() {
-                DestroyIcon(previous);
+            if !previous.is_invalid() {
+                let _ = DestroyIcon(previous);
             }
         }
     }
@@ -193,37 +194,38 @@ impl App {
             return;
         }
         unsafe {
-            let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-            let mut info: MONITORINFO = zeroed();
-            info.cbSize = size_of::<MONITORINFO>() as u32;
-            GetMonitorInfoW(monitor, &mut info);
+            let monitor = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let _ = GetMonitorInfoW(monitor, &mut info);
             let r = info.rcMonitor;
             let (width, height) = ((r.right - r.left) as u32, (r.bottom - r.top) as u32);
             let (mut dpi_x, mut dpi_y) = (96, 96);
-            GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
             let overlay = Overlay::new(width, height, dpi_x as f32 / 96.0);
 
-            let instance = GetModuleHandleW(null());
-            let hwnd = CreateWindowExW(
+            let Ok(instance) = GetModuleHandleW(None) else { return };
+            let Ok(hwnd) = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                 OVERLAY_CLASS,
-                null(),
+                PCWSTR::null(),
                 WS_POPUP,
                 r.left,
                 r.top,
                 width as i32,
                 height as i32,
-                null_mut(),
-                null_mut(),
-                instance,
-                null(),
-            );
-            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0);
+                None,
+                None,
+                Some(instance.into()),
+                None,
+            ) else {
+                return;
+            };
+            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), Some(instance.into()), 0).ok();
             self.brk = Some(Break { hwnd, hook, started_at: now(), overlay });
             capsule::set_break(true, self.bar());
-            SetTimer(self.hwnd, TIMER_FRAME, 1000 / 30, None);
-            SetTimer(self.hwnd, TIMER_BREAK_END, (BREAK_SECONDS * 1000.0) as u32, None);
-            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            SetTimer(Some(self.hwnd), TIMER_FRAME, 1000 / 30, None);
+            SetTimer(Some(self.hwnd), TIMER_BREAK_END, (BREAK_SECONDS * 1000.0) as u32, None);
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
     }
 
@@ -235,17 +237,21 @@ impl App {
         }
         if let Some(dirty) = brk.overlay.draw_progress(startup_progress_at(elapsed)) {
             let rect = RECT { left: dirty.left(), top: dirty.top(), right: dirty.right(), bottom: dirty.bottom() };
-            unsafe { InvalidateRect(brk.hwnd, &rect, 0) };
+            unsafe {
+                let _ = InvalidateRect(Some(brk.hwnd), Some(&rect), false);
+            }
         }
     }
 
     fn dismiss_break(&mut self) {
         let Some(brk) = self.brk.take() else { return };
         unsafe {
-            KillTimer(self.hwnd, TIMER_FRAME);
-            KillTimer(self.hwnd, TIMER_BREAK_END);
-            UnhookWindowsHookEx(brk.hook);
-            DestroyWindow(brk.hwnd);
+            let _ = KillTimer(Some(self.hwnd), TIMER_FRAME);
+            let _ = KillTimer(Some(self.hwnd), TIMER_BREAK_END);
+            if let Some(hook) = brk.hook {
+                let _ = UnhookWindowsHookEx(hook);
+            }
+            let _ = DestroyWindow(brk.hwnd);
         }
         capsule::set_break(false, self.bar());
         self.deadline = now() + WORK_SECONDS;
@@ -327,40 +333,45 @@ impl App {
         }
         self.dismiss_break();
         self.notify(NIM_DELETE);
-        unsafe { DestroyWindow(self.hwnd) };
+        unsafe {
+            let _ = DestroyWindow(self.hwnd);
+        }
     }
 }
 
 fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
-    let mut bmi: BITMAPINFO = unsafe { zeroed() };
-    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    bmi
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 fn create_icon(pixmap: &Pixmap) -> HICON {
     let (w, h) = (pixmap.width() as i32, pixmap.height() as i32);
     unsafe {
         let mut bits: *mut c_void = null_mut();
-        let color = CreateDIBSection(null_mut(), &bitmap_info(w, h), DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-        if color.is_null() {
-            return null_mut();
-        }
+        let Ok(color) = CreateDIBSection(None, &bitmap_info(w, h), DIB_RGB_COLORS, &mut bits, None, 0) else {
+            return HICON::default();
+        };
         let dst = std::slice::from_raw_parts_mut(bits as *mut [u8; 4], (w * h) as usize);
         for (dst, px) in dst.iter_mut().zip(pixmap.pixels()) {
             let c = px.demultiply();
             *dst = [c.blue(), c.green(), c.red(), c.alpha()];
         }
         let mask_bits = vec![0u8; (w as usize).div_ceil(16) * 2 * h as usize];
-        let mask = CreateBitmap(w, h, 1, 1, mask_bits.as_ptr() as *const c_void);
-        let info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
-        let icon = CreateIconIndirect(&info);
-        DeleteObject(color);
-        DeleteObject(mask);
+        let mask = CreateBitmap(w, h, 1, 1, Some(mask_bits.as_ptr() as *const c_void));
+        let info = ICONINFO { fIcon: true.into(), xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+        let icon = CreateIconIndirect(&info).unwrap_or_default();
+        let _ = DeleteObject(color.into());
+        let _ = DeleteObject(mask.into());
         icon
     }
 }
@@ -397,22 +408,27 @@ fn show_menu(hwnd: HWND) {
         return;
     };
     let cmd = unsafe {
-        let menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") });
-        AppendMenuW(menu, MF_STRING, CMD_BREAK, w!("Break now"));
-        AppendMenuW(menu, MF_STRING, CMD_RESET, w!("Reset timer"));
-        AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        AppendMenuW(menu, MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar"));
-        AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG, w!("Edit config"));
-        AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        AppendMenuW(menu, MF_STRING, CMD_QUIT, w!("Quit"));
-        let mut pt: POINT = zeroed();
-        GetCursorPos(&mut pt);
-        SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, null());
-        PostMessageW(hwnd, WM_NULL, 0, 0);
-        DestroyMenu(menu);
-        cmd as usize
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let items = [
+            (MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") }),
+            (MF_STRING, CMD_BREAK, w!("Break now")),
+            (MF_STRING, CMD_RESET, w!("Reset timer")),
+            (MF_SEPARATOR, 0, PCWSTR::null()),
+            (MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar")),
+            (MF_STRING, CMD_EDIT_CONFIG, w!("Edit config")),
+            (MF_SEPARATOR, 0, PCWSTR::null()),
+            (MF_STRING, CMD_QUIT, w!("Quit")),
+        ];
+        for (flags, id, text) in items {
+            let _ = AppendMenuW(menu, flags, id as usize, text);
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        cmd.0
     };
     match cmd {
         CMD_TOGGLE => with_app(App::toggle_pause),
@@ -430,21 +446,21 @@ fn show_menu(hwnd: HWND) {
 
 unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
-        if code == HC_ACTION as i32 && wparam == WM_KEYDOWN as usize {
-            let vk = (*(lparam as *const KBDLLHOOKSTRUCT)).vkCode;
-            if vk == VK_ESCAPE as u32 || vk == VK_SPACE as u32 {
-                PostMessageW(MAIN_HWND.load(Ordering::Relaxed), WM_DISMISS, 0, 0);
-                return 1;
+        if code == HC_ACTION as i32 && wparam.0 == WM_KEYDOWN as usize {
+            let vk = (*(lparam.0 as *const KBDLLHOOKSTRUCT)).vkCode;
+            if vk == u32::from(VK_ESCAPE.0) || vk == u32::from(VK_SPACE.0) {
+                let _ = PostMessageW(Some(HWND(MAIN_HWND.load(Ordering::Relaxed))), WM_DISMISS, WPARAM(0), LPARAM(0));
+                return LRESULT(1);
             }
         }
-        CallNextHookEx(null_mut(), code, wparam, lparam)
+        CallNextHookEx(None, code, wparam, lparam)
     }
 }
 
 unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_TIMER => {
-            with_app(|app| match wparam {
+            with_app(|app| match wparam.0 {
                 TIMER_TICK => app.tick(),
                 TIMER_FRAME => app.advance_overlay(),
                 TIMER_BREAK_END => app.dismiss_break(),
@@ -466,23 +482,25 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_BAR_DISABLE => {
             with_app(App::disable_bar);
         }
-        WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC as usize => {
+        WM_POWERBROADCAST if wparam.0 == PBT_APMRESUMEAUTOMATIC as usize => {
             with_app(App::reset_timer);
         }
         WM_TRAY => {
-            if matches!(lparam as u32, WM_LBUTTONUP | WM_RBUTTONUP) {
+            if matches!(lparam.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP) {
                 show_menu(hwnd);
             }
         }
         WM_DESTROY => unsafe { PostQuitMessage(0) },
         _ if msg == TASKBAR_CREATED.load(Ordering::Relaxed) => {
             if with_app(|app| app.notify(NIM_ADD)).is_none() {
-                unsafe { PostMessageW(hwnd, msg, wparam, lparam) };
+                unsafe {
+                    let _ = PostMessageW(Some(hwnd), msg, wparam, lparam);
+                }
             }
         }
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
-    0
+    LRESULT(0)
 }
 
 unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -490,16 +508,16 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         if msg == WM_PAINT {
             let painted = APP.with(|app| {
                 let Ok(app) = app.try_borrow() else { return false };
-                let mut ps: PAINTSTRUCT = zeroed();
+                let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
                 if let Some(brk) = app.as_ref().and_then(|app| app.brk.as_ref()) {
                     paint_overlay(hdc, &brk.overlay);
                 }
-                EndPaint(hwnd, &ps);
+                let _ = EndPaint(hwnd, &ps);
                 true
             });
             if painted {
-                return 0;
+                return LRESULT(0);
             }
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -512,9 +530,9 @@ fn register_class(instance: HINSTANCE, name: PCWSTR, proc: WNDPROC, background: 
             lpfnWndProc: proc,
             hInstance: instance,
             lpszClassName: name,
-            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             hbrBackground: background,
-            ..zeroed()
+            ..Default::default()
         };
         RegisterClassW(&class);
     }
@@ -546,14 +564,15 @@ fn main() {
         }));
     }
     unsafe {
-        CreateMutexW(null(), 0, w!("Local\\202020"));
+        let _ = CreateMutexW(None, false, w!("Local\\202020"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return;
         }
-        let instance = GetModuleHandleW(null());
-        register_class(instance, MAIN_CLASS, Some(main_proc), null_mut());
-        register_class(instance, OVERLAY_CLASS, Some(overlay_proc), GetStockObject(BLACK_BRUSH) as HBRUSH);
-        let hwnd = CreateWindowExW(
+        let Ok(instance) = GetModuleHandleW(None) else { return };
+        let instance = HINSTANCE::from(instance);
+        register_class(instance, MAIN_CLASS, Some(main_proc), HBRUSH::default());
+        register_class(instance, OVERLAY_CLASS, Some(overlay_proc), HBRUSH(GetStockObject(BLACK_BRUSH).0));
+        let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             MAIN_CLASS,
             w!("202020"),
@@ -562,19 +581,21 @@ fn main() {
             0,
             0,
             0,
-            null_mut(),
-            null_mut(),
-            instance,
-            null(),
-        );
-        MAIN_HWND.store(hwnd, Ordering::Relaxed);
+            None,
+            None,
+            Some(instance),
+            None,
+        ) else {
+            return;
+        };
+        MAIN_HWND.store(hwnd.0, Ordering::Relaxed);
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
 
         let now = now();
         let mut app = App {
             hwnd,
             font: render::load_font(),
-            icon: null_mut(),
+            icon: HICON::default(),
             paused: false,
             deadline: now + WORK_SECONDS,
             paused_remaining: WORK_SECONDS,
@@ -584,7 +605,7 @@ fn main() {
             bar_opts: capsule::Options {
                 safe: flag("--safe"),
                 diag,
-                owner: hwnd as isize,
+                owner: hwnd.0 as isize,
                 exited_msg: WM_BAR_EXITED,
                 quit_msg: WM_BAR_QUIT,
                 disable_msg: WM_BAR_DISABLE,
@@ -599,13 +620,13 @@ fn main() {
             with_app(App::start_bar);
         }
 
-        SetTimer(hwnd, TIMER_TICK, 1000, None);
-        RegisterHotKey(hwnd, HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);
-        RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
+        SetTimer(Some(hwnd), TIMER_TICK, 1000, None);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);
+        let _ = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);
 
-        let mut msg: MSG = zeroed();
-        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&msg);
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
