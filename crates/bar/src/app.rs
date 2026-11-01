@@ -35,19 +35,19 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, ChangeWindowMessageFilterEx, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
-    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW, GA_ROOTOWNER, GWL_STYLE,
-    GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON,
-    HWND_BROADCAST, HWND_MESSAGE, HWND_TOPMOST, IDC_ARROW, IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG,
-    MSGFLT_ALLOW, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
-    PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG,
-    SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SendNotifyMessageW, SetCoalescableTimer,
-    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT,
-    WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
-    WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, FindWindowW, GA_ROOTOWNER, GWL_STYLE, GetAncestor,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_TOPMOST, IDC_ARROW,
+    IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE,
+    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW,
+    RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA,
+    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SendMessageW, SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
+    WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE,
+    WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 use windows::core::{GUID, PCWSTR, w};
 
@@ -583,7 +583,9 @@ impl App {
             let _ = SetCoalescableTimer(Some(h), TIMER_SLOW, 2000, None, 1000);
         }
         self.register_appbar();
-        self.broadcast_taskbar_created();
+        if let Some(spy) = &self.spy {
+            spy.reclaim();
+        }
         unsafe {
             let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
             SendMessageW(h, WM_NCACTIVATE, Some(WPARAM(1)), Some(LPARAM(0)));
@@ -621,22 +623,6 @@ impl App {
             ..Default::default()
         };
         unsafe { SHAppBarMessage(ABM_NEW, &mut d) };
-    }
-
-    /// Reaches message-only windows too, which `HWND_BROADCAST` skips but
-    /// some apps use as their notify-icon owner.
-    fn broadcast_taskbar_created(&self) {
-        let msg = self.taskbar_created_msg;
-        unsafe {
-            let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
-            let mut prev = None;
-            while let Ok(h) = FindWindowExW(Some(HWND_MESSAGE), prev, PCWSTR::null(), PCWSTR::null()) {
-                if !own_window(h) {
-                    let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
-                }
-                prev = Some(h);
-            }
-        }
     }
 
     fn root(&self, h: HWND) -> HWND {
@@ -1033,9 +1019,6 @@ impl App {
         }
         log::info!("explorer restarted");
         REAL_TRAY.store(real.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
-        if let Some(spy) = &self.spy {
-            spy.raise_only();
-        }
         if let (Some(t), Some(real)) = (&mut self.takeover, real) {
             t.apply(real);
         }
@@ -1043,15 +1026,17 @@ impl App {
         self.tray.icons.clear();
         self.relayout();
         self.register_appbar();
-        self.broadcast_taskbar_created();
+        if let Some(spy) = &self.spy {
+            spy.reclaim();
+        }
     }
 
     fn guard_tray_order(&self) {
         let Some(spy) = &self.spy else { return };
         let first = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) };
         if first.is_ok_and(|f| f != spy.hwnd()) {
-            log::debug!("spy lost tray z-order");
-            spy.raise_only();
+            log::info!("spy lost tray z-order");
+            spy.reclaim();
         }
     }
 
@@ -1383,6 +1368,7 @@ impl App {
             }
         } else {
             t.conceal();
+            self.guard_tray_order();
         }
     }
 

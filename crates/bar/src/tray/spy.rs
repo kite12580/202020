@@ -12,18 +12,19 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CopyIcon, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, GetIconInfo, GetMessageW, HICON, HWND_TOPMOST, ICONINFO, MSG, MSGFLT_ALLOW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SMTO_ABORTIFHUNG, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SendMessageTimeoutW, SetWindowPos, WM_ACTIVATEAPP, WM_APP, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_USER,
-    WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    DispatchMessageW, FindWindowExW, GetIconInfo, GetMessageW, HICON, HWND_BROADCAST, HWND_MESSAGE, HWND_TOPMOST,
+    ICONINFO, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW, SMTO_ABORTIFHUNG, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageTimeoutW, SendNotifyMessageW, SetWindowPos, WM_ACTIVATEAPP,
+    WM_APP, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
 use super::TrayKey;
 use crate::shell::real_tray;
-use crate::util::{hwnd, make_long};
+use crate::util::{hwnd, make_long, window_ids};
 
 pub struct TrayEvent {
     pub msg: NotifyIconMessage,
@@ -51,6 +52,7 @@ pub struct Rects {
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 
 const SPY_QUIT: u32 = WM_APP + 0x3F0;
+const SPY_RECLAIM: u32 = WM_APP + 0x3F1;
 
 pub struct Spy {
     hwnd: Arc<AtomicIsize>,
@@ -101,17 +103,27 @@ impl Spy {
         }
     }
 
-    pub fn raise_only(&self) {
+    /// Retakes the top of the `Shell_TrayWnd` z-order and asks apps to
+    /// re-add their icons, which went to explorer while it was above us.
+    pub fn reclaim(&self) {
         unsafe {
-            let _ = SetWindowPos(
-                self.hwnd(),
-                Some(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS,
-            );
+            let _ = PostMessageW(Some(self.hwnd()), SPY_RECLAIM, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// Reaches message-only windows too, which `HWND_BROADCAST` skips but some
+/// apps use as their notify-icon owner.
+fn announce_taskbar(msg: u32) {
+    let own = unsafe { GetCurrentProcessId() };
+    unsafe {
+        let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
+        let mut prev = None;
+        while let Ok(h) = FindWindowExW(Some(HWND_MESSAGE), prev, PCWSTR::null(), PCWSTR::null()) {
+            if window_ids(h).1 != own {
+                let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
+            }
+            prev = Some(h);
         }
     }
 }
@@ -238,6 +250,15 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 },
                 _ => forward(msg, wparam, lparam),
             }
+        }
+        SPY_RECLAIM => {
+            unsafe {
+                let _ = SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+            }
+            if let Some(shared) = SHARED.get() {
+                announce_taskbar(shared.taskbar_created_msg);
+            }
+            LRESULT(0)
         }
         SPY_QUIT => {
             unsafe {
