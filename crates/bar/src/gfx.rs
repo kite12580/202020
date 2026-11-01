@@ -249,7 +249,7 @@ impl Surface {
     }
 
     /// Draws `img` centered on `(cx, cy)` at its native pixel size.
-    pub fn image(&mut self, img: &Image, cx: f32, cy: f32, opacity: f32) {
+    pub fn image(&mut self, img: &Image, cx: f32, cy: f32) {
         let size = img.px as f32 * 96.0 / self.dpi as f32;
         let x = self.snap(cx - size / 2.0);
         let y = self.snap(cy - size / 2.0);
@@ -266,7 +266,7 @@ impl Surface {
         self.used.push(img.id);
         let dest = D2D_RECT_F { left: x, top: y, right: x + size, bottom: y + size };
         unsafe {
-            self.rt.DrawBitmap(&bitmap, Some(&dest), opacity, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, None);
+            self.rt.DrawBitmap(&bitmap, Some(&dest), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, None);
         }
     }
 

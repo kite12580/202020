@@ -1,23 +1,28 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 
+use capsule_core::taskband::{Pin, slot};
 use capsule_core::winfilter::{WindowFacts, taskbar_window};
-use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{ERROR_SUCCESS, FILETIME, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, GetProcessTimes, OpenProcess,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GCLP_HICON, GCLP_HICONSM, GW_OWNER, GWL_EXSTYLE, GetClassLongPtrW, GetForegroundWindow, GetWindow,
     GetWindowLongW, GetWindowTextW, ICON_BIG, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
     SW_MINIMIZE, SW_RESTORE, SendMessageCallbackW, SetForegroundWindow, ShowWindowAsync, WM_CLOSE, WM_GETICON,
     WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, PWSTR};
 
 use crate::gfx::Image;
-use crate::util::{OwnedHandle, class_name, make_long, window_ids};
+use crate::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, class_name, make_long, process_path, window_ids};
 
 const WM_POPUPSYSTEMMENU: u32 = 0x0313;
 
@@ -38,7 +43,16 @@ pub struct Window {
     pub rank: IconRank,
     /// The HICON `image` was made from, to skip unchanged refetches.
     pub src: isize,
-    pub minimized: bool,
+    aumid: Option<String>,
+    exe: Option<String>,
+    /// Index of the taskbar pin the window groups under, or `usize::MAX`.
+    slot: usize,
+}
+
+impl Window {
+    fn order(&self) -> (usize, u64) {
+        (self.slot, self.seq)
+    }
 }
 
 #[derive(Default)]
@@ -46,7 +60,8 @@ pub struct WindowList {
     pub items: Vec<Window>,
     seen: HashMap<isize, u64>,
     next_seq: u64,
-    replaced_at: Option<usize>,
+    replaced_seq: Option<u64>,
+    pins: Vec<Pin>,
     diag: bool,
 }
 
@@ -128,18 +143,34 @@ impl WindowList {
         self.items.iter().position(|w| w.hwnd == h)
     }
 
-    fn insert(&mut self, h: HWND) -> usize {
-        let seq = *self.seen.entry(h.0 as isize).or_insert_with(|| {
-            self.next_seq += 1;
-            self.next_seq
-        });
-        let at = match self.replaced_at.take() {
-            Some(i) => i.min(self.items.len()),
-            None => self.items.partition_point(|w| w.seq < seq),
+    fn insert(&mut self, h: HWND) {
+        let seq = match self.replaced_seq.take() {
+            Some(seq) => *self.seen.entry(h.0 as isize).insert_entry(seq).get(),
+            None => *self.seen.entry(h.0 as isize).or_insert_with(|| {
+                self.next_seq += 1;
+                self.next_seq
+            }),
         };
-        let minimized = unsafe { IsIconic(h) }.as_bool();
-        self.items.insert(at, Window { hwnd: h, seq, image: None, rank: IconRank::None, src: 0, minimized });
-        at
+        let aumid = aumid(h).or_else(|| package_aumid(window_ids(h).1));
+        let exe = process_path(window_ids(h).1);
+        let slot = slot(&self.pins, aumid.as_deref(), exe.as_deref()).unwrap_or(usize::MAX);
+        let w = Window { hwnd: h, seq, image: None, rank: IconRank::None, src: 0, aumid, exe, slot };
+        let at = self.items.partition_point(|o| o.order() < w.order());
+        self.items.insert(at, w);
+    }
+
+    /// Regroups windows behind the native taskbar's pins. Returns whether
+    /// the order changed.
+    pub fn set_pins(&mut self, pins: Vec<Pin>) -> bool {
+        self.pins = pins;
+        for w in &mut self.items {
+            w.slot = slot(&self.pins, w.aumid.as_deref(), w.exe.as_deref()).unwrap_or(usize::MAX);
+        }
+        if self.items.is_sorted_by_key(Window::order) {
+            return false;
+        }
+        self.items.sort_by_key(Window::order);
+        true
     }
 
     pub fn add(&mut self, h: HWND) -> bool {
@@ -160,13 +191,10 @@ impl WindowList {
         }
     }
 
-    /// `HSHELL_WINDOWREPLACED`: the next added window takes `h`'s slot.
+    /// `HSHELL_WINDOWREPLACED`: the next added window takes `h`'s place.
     pub fn replaced(&mut self, h: HWND) -> bool {
         let i = self.index(h);
-        if let Some(i) = i {
-            self.items.remove(i);
-        }
-        self.replaced_at = i;
+        self.replaced_seq = i.map(|i| self.items.remove(i).seq);
         i.is_some()
     }
 
@@ -178,6 +206,28 @@ impl WindowList {
         self.seen.retain(|&h, _| unsafe { IsWindow(Some(crate::util::hwnd(h))) }.as_bool());
         before != self.items.len()
     }
+}
+
+/// The window's explicit AppUserModelID.
+pub fn aumid(h: HWND) -> Option<String> {
+    unsafe {
+        let store: IPropertyStore = SHGetPropertyStoreForWindow(h).ok()?;
+        let value = store.GetValue(&PKEY_APP_USER_MODEL_ID).ok()?;
+        let s = PropVariantToStringAlloc(&value).ok()?;
+        let out = s.to_string().ok();
+        CoTaskMemFree(Some(s.0 as *const _));
+        out.filter(|s| !s.is_empty())
+    }
+}
+
+fn package_aumid(pid: u32) -> Option<String> {
+    let p = OwnedHandle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?);
+    let mut buf = [0u16; 256];
+    let mut len = buf.len() as u32;
+    if unsafe { GetApplicationUserModelId(p.0, &mut len, Some(PWSTR(buf.as_mut_ptr()))) } != ERROR_SUCCESS {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]))
 }
 
 pub fn request_window_icon(h: HWND, small: bool, callback: unsafe extern "system" fn(HWND, u32, usize, LRESULT)) {

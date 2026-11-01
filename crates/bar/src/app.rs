@@ -10,10 +10,7 @@ use capsule_core::{clock, kbd};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Globalization::{DATE_LONGDATE, GetDateFormatEx, GetTimeFormatEx, TIME_FORMAT_FLAGS};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HGDIOBJ, InvalidateRect, ScreenToClient, ValidateRect};
-use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
-use windows::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
-};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{POWERBROADCAST_SETTING, RegisterPowerSettingNotification};
 use windows::Win32::System::RemoteDesktop::{NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification};
@@ -28,7 +25,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, ReleaseCapture, SetCapture, TME_HOVER, TME_LEAVE,
     TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
 };
-use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::Shell::{
     ABM_NEW, ABM_REMOVE, APPBARDATA, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHAppBarMessage,
     SHQueryUserNotificationState, ShellExecuteW,
@@ -57,6 +53,7 @@ use crate::icons::IconWorker;
 use crate::keyboard;
 use crate::keyhook::{self, KeyHook};
 use crate::menu::{self, Item};
+use crate::pinned;
 use crate::popup::Popup;
 use crate::shell::{self, REAL_TRAY, Takeover};
 use crate::theme::{self, Theme};
@@ -89,6 +86,7 @@ const TIMER_WORK_AREA: usize = 5;
 const TIMER_AUDIO: usize = 6;
 const TIMER_WIN_DIGIT: usize = 7;
 const TIMER_REVEAL: usize = 8;
+const TIMER_PINS: usize = 9;
 
 const HOTKEY_EXIT: i32 = 1;
 
@@ -104,12 +102,8 @@ const WTS_SESSION_UNLOCK: usize = 8;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
 const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 const GUID_CONSOLE_DISPLAY_STATE: GUID = GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
-const PKEY_APP_USER_MODEL_ID: windows::Win32::Foundation::PROPERTYKEY =
-    windows::Win32::Foundation::PROPERTYKEY { fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3), pid: 5 };
 
 const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
-const EVENT_SYSTEM_MINIMIZESTART: u32 = 0x0016;
-const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
 const EVENT_OBJECT_CLOAKED: u32 = 0x8017;
 const EVENT_OBJECT_UNCLOAKED: u32 = 0x8018;
 
@@ -179,6 +173,7 @@ pub struct App {
     takeover: Option<Takeover>,
     volume: Volume,
     keyhook: Option<KeyHook>,
+    pin_watch: Option<pinned::Watch>,
     keyboard_layout: isize,
     keyboard_iso: String,
     keyboard_label: String,
@@ -299,11 +294,17 @@ fn create_windows() -> Option<(HWND, HWND)> {
 fn message_loop() {
     let mut msg = MSG::default();
     loop {
-        let watch = with_app(|a| a.cfg.watch_handle()).unwrap_or_default();
-        let handles: Vec<HANDLE> = if watch.is_invalid() { Vec::new() } else { vec![watch] };
+        let watches =
+            with_app(|a| [a.cfg.watch_handle(), a.pin_watch.as_ref().map_or_else(HANDLE::default, |w| w.handle())])
+                .unwrap_or_default();
+        let handles: Vec<HANDLE> = watches.into_iter().filter(|h| !h.is_invalid()).collect();
         let r = unsafe { MsgWaitForMultipleObjectsEx(Some(&handles), u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
-        if !handles.is_empty() && r == WAIT_OBJECT_0 {
-            with_app(App::on_config_signal);
+        if let Some(&signaled) = handles.get(r.0.wrapping_sub(WAIT_OBJECT_0.0) as usize) {
+            if signaled == watches[0] {
+                with_app(App::on_config_signal);
+            } else {
+                with_app(App::on_pins_signal);
+            }
             continue;
         }
         while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
@@ -430,17 +431,6 @@ fn fullscreen_foreground() -> bool {
     r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
 
-fn aumid(h: HWND) -> Option<String> {
-    unsafe {
-        let store: IPropertyStore = SHGetPropertyStoreForWindow(h).ok()?;
-        let value = store.GetValue(&PKEY_APP_USER_MODEL_ID).ok()?;
-        let s = PropVariantToStringAlloc(&value).ok()?;
-        let out = s.to_string().ok();
-        CoTaskMemFree(Some(s.0 as *const _));
-        out.filter(|s| !s.is_empty())
-    }
-}
-
 fn long_date() -> String {
     let st = unsafe { GetLocalTime() };
     let mut buf = [0u16; 128];
@@ -483,6 +473,7 @@ impl App {
             takeover: None,
             volume: Volume::new(hwnd.0 as isize, WM_APP_VOLUME, WM_APP_AUDIO_DEVICE),
             keyhook: None,
+            pin_watch: pinned::Watch::new(),
             keyboard_layout: 0,
             keyboard_iso: String::new(),
             keyboard_label: String::new(),
@@ -537,6 +528,7 @@ impl App {
             self.takeover = Takeover::start(real);
         }
 
+        self.windows.set_pins(pinned::read());
         self.windows.enumerate();
         self.foreground = self.root(unsafe { GetForegroundWindow() });
         for i in 0..self.windows.items.len() {
@@ -557,11 +549,9 @@ impl App {
 
         unsafe {
             let _ = RegisterShellHookWindow(h);
-            for (min, max) in [
-                (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
-                (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
-                (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
-            ] {
+            for (min, max) in
+                [(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND), (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED)]
+            {
                 let hook = SetWinEventHook(
                     min,
                     max,
@@ -833,7 +823,7 @@ impl App {
         }
         let px = self.window_icon_px();
         if class_name(h) == "ApplicationFrameWindow"
-            && let Some(id) = aumid(h)
+            && let Some(id) = winlist::aumid(h)
         {
             self.request_shell_icon(h, format!("shell:AppsFolder\\{id}"), IconRank::Package, px);
             return;
@@ -973,12 +963,6 @@ impl App {
     fn on_winevent(&mut self, event: u32, h: HWND) {
         match event {
             EVENT_SYSTEM_FOREGROUND => self.on_foreground(h),
-            EVENT_SYSTEM_MINIMIZESTART | EVENT_SYSTEM_MINIMIZEEND => {
-                if let Some(i) = self.windows.index(h) {
-                    self.windows.items[i].minimized = event == EVENT_SYSTEM_MINIMIZESTART;
-                    self.invalidate();
-                }
-            }
             EVENT_OBJECT_CLOAKED => self.remove_window(h),
             EVENT_OBJECT_UNCLOAKED => self.add_window(h),
             _ => {}
@@ -1121,6 +1105,21 @@ impl App {
         }
     }
 
+    fn on_pins_signal(&mut self) {
+        if let Some(w) = &self.pin_watch {
+            w.rearm();
+        }
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_PINS, 300, None);
+        }
+    }
+
+    fn refresh_pins(&mut self) {
+        if self.windows.set_pins(pinned::read()) {
+            self.relayout();
+        }
+    }
+
     fn on_config_signal(&mut self) {
         self.cfg.rearm_watch();
         unsafe {
@@ -1214,6 +1213,7 @@ impl App {
                 }
             }
             TIMER_REVEAL => self.conceal_when_idle(),
+            TIMER_PINS => self.refresh_pins(),
             TIMER_AUDIO => {
                 self.volume.attach();
                 self.refresh_volume();
@@ -1622,9 +1622,8 @@ impl App {
                         s.fill(highlight, pal.active, 4.0);
                         s.fill(Rect { x: r.center_x() - 6.0, y: h - 6.5, w: 12.0, h: 2.5 }, pal.text.alpha(0.75), 1.25);
                     }
-                    let opacity = if w.minimized { 0.55 } else { 1.0 };
                     match &w.image {
-                        Some(img) => s.image(img, r.center_x(), cy - 0.5, opacity),
+                        Some(img) => s.image(img, r.center_x(), cy - 0.5),
                         None => s.dot(r.center_x(), cy, 3.0, pal.text.alpha(0.5)),
                     }
                 }
@@ -1636,7 +1635,7 @@ impl App {
                 }
                 Hit::Tray(i) => {
                     if let Some(img) = &self.tray.icons[self.bar_tray[i]].image {
-                        s.image(img, r.center_x(), cy, 1.0);
+                        s.image(img, r.center_x(), cy);
                     }
                 }
                 Hit::Keyboard => {
@@ -1696,7 +1695,7 @@ impl App {
             }
             let i = &self.tray.icons[icon];
             if let Some(img) = &i.image {
-                s.image(img, r.center_x(), r.y + r.h / 2.0 - 1.0, 1.0);
+                s.image(img, r.center_x(), r.y + r.h / 2.0 - 1.0);
             }
             if pins.contains(&i.pin) {
                 s.dot(r.center_x(), r.y + r.h - 5.0, 1.5, pal.text.alpha(0.7));

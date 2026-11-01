@@ -8,6 +8,7 @@ mod keyboard;
 mod keyhook;
 mod logger;
 mod menu;
+mod pinned;
 mod popup;
 mod shell;
 mod theme;
