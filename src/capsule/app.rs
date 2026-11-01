@@ -211,6 +211,8 @@ pub struct App {
     keyboard_iso: String,
     keyboard_label: String,
     keyboard_retries: u8,
+    ime_native: Option<bool>,
+    ime_query: usize,
     volume_glyph: &'static str,
     pending_win_digits: Vec<u16>,
     last_win_digit: Option<Instant>,
@@ -411,6 +413,14 @@ unsafe extern "system" fn on_winevent(
     }
 }
 
+unsafe extern "system" fn on_ime_open(ime: HWND, _msg: u32, query: usize, open: LRESULT) {
+    with_app(|a| a.on_ime_open(ime, query, open.0 != 0));
+}
+
+unsafe extern "system" fn on_ime_mode(_ime: HWND, _msg: u32, query: usize, mode: LRESULT) {
+    with_app(|a| a.on_ime_mode(query, keyboard::native_mode(mode.0 as usize)));
+}
+
 unsafe extern "system" fn on_window_icon(h: HWND, _msg: u32, small: usize, result: LRESULT) {
     with_app(|a| a.on_window_icon(h, small != 0, result.0));
 }
@@ -499,6 +509,8 @@ impl App {
             keyboard_iso: String::new(),
             keyboard_label: String::new(),
             keyboard_retries: 0,
+            ime_native: None,
+            ime_query: 0,
             volume_glyph: "",
             pending_win_digits: Vec::new(),
             last_win_digit: None,
@@ -734,9 +746,36 @@ impl App {
         if hkl != self.keyboard_layout {
             self.keyboard_layout = hkl;
             self.keyboard_iso = keyboard::iso(hkl);
+            self.ime_native = None;
         }
-        let native = if kbd::has_ime(&self.keyboard_iso) { keyboard::ime_native(target) } else { None };
-        let label = kbd::label(&self.keyboard_iso, &self.cfg.config.keyboard.labels, native);
+        self.ime_query = self.ime_query.wrapping_add(1);
+        if !kbd::has_ime(&self.keyboard_iso) || !keyboard::query_ime_open(target, self.ime_query, on_ime_open) {
+            self.ime_native = None;
+        }
+        self.update_keyboard_label();
+    }
+
+    fn on_ime_open(&mut self, ime: HWND, query: usize, open: bool) {
+        if query != self.ime_query {
+            return;
+        }
+        if !open {
+            self.ime_native = Some(false);
+        } else if !keyboard::query_ime_mode(ime, query, on_ime_mode) {
+            self.ime_native = None;
+        }
+        self.update_keyboard_label();
+    }
+
+    fn on_ime_mode(&mut self, query: usize, native: bool) {
+        if query == self.ime_query {
+            self.ime_native = Some(native);
+            self.update_keyboard_label();
+        }
+    }
+
+    fn update_keyboard_label(&mut self) {
+        let label = kbd::label(&self.keyboard_iso, &self.cfg.config.keyboard.labels, self.ime_native);
         if label != self.keyboard_label {
             self.texts.keyboard = self.gfx.text(&label, Font::Text).ok();
             self.keyboard_label = label;

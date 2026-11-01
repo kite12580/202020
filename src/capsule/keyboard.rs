@@ -1,12 +1,12 @@
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Globalization::{
     GetLocaleInfoEx, LCIDToLocaleName, LOCALE_SISO639LANGNAME, LOCALE_SLOCALIZEDDISPLAYNAME,
 };
 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList, HKL};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GUITHREADINFO, GetGUIThreadInfo, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
-    WM_IME_CONTROL, WM_INPUTLANGCHANGEREQUEST,
+    FindWindowExW, GUITHREADINFO, GetGUIThreadInfo, PostMessageW, SendMessageCallbackW, WM_IME_CONTROL,
+    WM_INPUTLANGCHANGEREQUEST,
 };
 use windows::core::{PCWSTR, w};
 
@@ -55,23 +55,26 @@ fn focus_window(fg: HWND) -> HWND {
     }
 }
 
-/// Whether the IME of `fg`'s focused thread is in native (non-Latin) mode.
-pub fn ime_native(fg: HWND) -> Option<bool> {
+pub type ImeCallback = unsafe extern "system" fn(HWND, u32, usize, LRESULT);
+
+fn query_ime(ime: HWND, cmd: usize, data: usize, callback: ImeCallback) -> bool {
+    unsafe { SendMessageCallbackW(ime, WM_IME_CONTROL, WPARAM(cmd), LPARAM(0), Some(callback), data) }.is_ok()
+}
+
+/// Asks the IME of `fg`'s focused thread whether it is open. `callback`
+/// gets the IME window, `data` and the open status.
+pub fn query_ime_open(fg: HWND, data: usize, callback: ImeCallback) -> bool {
     let ime = unsafe { ImmGetDefaultIMEWnd(focus_window(fg)) };
-    if ime.is_invalid() {
-        return None;
-    }
-    let query = |cmd| {
-        let mut r = 0usize;
-        let ok = unsafe {
-            SendMessageTimeoutW(ime, WM_IME_CONTROL, WPARAM(cmd), LPARAM(0), SMTO_ABORTIFHUNG, 100, Some(&mut r))
-        };
-        (ok.0 != 0).then_some(r)
-    };
-    if query(IMC_GETOPENSTATUS)? == 0 {
-        return Some(false);
-    }
-    Some(query(IMC_GETCONVERSIONMODE)? & IME_CMODE_NATIVE != 0)
+    !ime.is_invalid() && query_ime(ime, IMC_GETOPENSTATUS, data, callback)
+}
+
+/// Asks an open IME for its conversion mode; see `native_mode`.
+pub fn query_ime_mode(ime: HWND, data: usize, callback: ImeCallback) -> bool {
+    query_ime(ime, IMC_GETCONVERSIONMODE, data, callback)
+}
+
+pub fn native_mode(mode: usize) -> bool {
+    mode & IME_CMODE_NATIVE != 0
 }
 
 pub fn display_name(hkl: isize) -> String {
