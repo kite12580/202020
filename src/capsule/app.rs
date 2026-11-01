@@ -274,16 +274,11 @@ pub fn run(opts: Options, ready: impl FnOnce(Option<HWND>)) {
         unsafe { CoUninitialize() };
         return;
     };
-    match App::new(bar, popup, opts) {
-        Ok(app) => {
-            APP.with(|c| *c.borrow_mut() = Some(app));
-            with_app(App::start);
-            message_loop();
-            with_app(App::stop);
-            APP.with(|c| c.borrow_mut().take());
-        }
-        Err(e) => log::error!("startup: {e}"),
-    }
+    APP.with(|c| *c.borrow_mut() = Some(App::new(bar, popup, opts)));
+    with_app(App::start);
+    message_loop();
+    with_app(App::stop);
+    APP.with(|c| c.borrow_mut().take());
     unsafe {
         let _ = DestroyWindow(bar);
         CoUninitialize();
@@ -497,7 +492,7 @@ fn long_date() -> String {
 }
 
 impl App {
-    fn new(hwnd: HWND, popup: HWND, opts: Options) -> windows::core::Result<App> {
+    fn new(hwnd: HWND, popup: HWND, opts: Options) -> App {
         BAR.store(hwnd.0 as isize, Ordering::Relaxed);
         let cfg = ConfigStore::open();
         let theme = Theme::read();
@@ -509,9 +504,9 @@ impl App {
             notify: AtomicIsize::new(hwnd.0 as isize),
             notify_msg: WM_APP_TRAY,
         });
-        Ok(App {
+        App {
             hwnd,
-            gfx: Gfx::new()?,
+            gfx: Gfx::new(),
             surface: None,
             dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
             layout: Layout::default(),
@@ -570,7 +565,7 @@ impl App {
             theme,
             cfg,
             opts,
-        })
+        }
     }
 
     fn start(&mut self) {
@@ -719,13 +714,13 @@ impl App {
 
     fn rebuild_static_texts(&mut self) {
         let t = &mut self.texts;
-        t.chevron = self.gfx.text(GLYPH_CHEVRON, Font::Glyph).ok();
+        t.chevron = self.gfx.text(GLYPH_CHEVRON, Font::Glyph);
         t.clock_slot = clock::WIDTH_CANDIDATES
             .iter()
-            .filter_map(|s| self.gfx.text(s, Font::Clock).ok())
+            .filter_map(|s| self.gfx.text(s, Font::Clock))
             .map(|t| t.width.ceil())
             .fold(0.0, f32::max);
-        let glyph = GLYPH_VOLUME.iter().chain([&GLYPH_MUTE]).filter_map(|g| self.gfx.text(g, Font::Glyph).ok());
+        let glyph = GLYPH_VOLUME.iter().chain([&GLYPH_MUTE]).filter_map(|g| self.gfx.text(g, Font::Glyph));
         t.volume_slot = glyph.map(|t| t.width).fold(0.0, f32::max).ceil();
         self.measure_keyboard_slot();
     }
@@ -743,15 +738,15 @@ impl App {
             }
         }
         self.texts.keyboard_slot =
-            labels.iter().filter_map(|l| self.gfx.text(l, Font::Text).ok()).map(|t| t.width.ceil()).fold(0.0, f32::max);
+            labels.iter().filter_map(|l| self.gfx.text(l, Font::Text)).map(|t| t.width.ceil()).fold(0.0, f32::max);
     }
 
     fn refresh_clock(&mut self) {
         let t = unsafe { GetLocalTime() };
         let s = (clock::time(t.wHour, t.wMinute), clock::date(t.wYear, t.wMonth, t.wDay));
         if s != self.clock {
-            self.texts.clock_time = self.gfx.text(&s.0, Font::Clock).ok();
-            self.texts.clock_date = self.gfx.text(&s.1, Font::Clock).ok();
+            self.texts.clock_time = self.gfx.text(&s.0, Font::Clock);
+            self.texts.clock_date = self.gfx.text(&s.1, Font::Clock);
             self.clock = s;
             self.invalidate();
         }
@@ -813,7 +808,7 @@ impl App {
         let label = kbd::label(&self.keyboard_iso, &self.cfg.config.keyboard.labels, self.ime_native);
         if label != self.keyboard_label {
             log::debug!("keyboard label {label}");
-            self.texts.keyboard = self.gfx.text(&label, Font::Text).ok();
+            self.texts.keyboard = self.gfx.text(&label, Font::Text);
             self.keyboard_label = label;
             self.relayout();
         }
@@ -832,7 +827,7 @@ impl App {
             }]
         };
         if glyph != self.volume_glyph {
-            self.texts.volume_glyph = self.gfx.text(glyph, Font::Glyph).ok();
+            self.texts.volume_glyph = self.gfx.text(glyph, Font::Glyph);
             self.volume_glyph = glyph;
             self.invalidate();
         }
@@ -891,7 +886,7 @@ impl App {
         unsafe {
             let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
         }
-        if let Some(s) = &self.surface {
+        if let Some(s) = &mut self.surface {
             s.resize(w as u32, h as u32);
         }
         if let Some(spy) = &self.spy {
@@ -1002,7 +997,7 @@ impl App {
         if rank < w.rank || (rank == w.rank && w.src == icon && w.image.as_ref().is_some_and(|i| i.px == px)) {
             return;
         }
-        if let Ok(img) = self.gfx.image_from_hicon(HICON(icon as *mut _), px) {
+        if let Some(img) = self.gfx.image_from_hicon(HICON(icon as *mut _), px) {
             let w = &mut self.windows.items[i];
             w.image = Some(img);
             w.rank = rank;
@@ -1025,7 +1020,7 @@ impl App {
         if bitmap.is_invalid() {
             return;
         }
-        let img = key.as_ref().and_then(|k| self.gfx.image_from_hbitmap(bitmap, k.1).ok());
+        let img = key.as_ref().and_then(|k| self.gfx.image_from_hbitmap(bitmap, k.1));
         unsafe {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
         }
@@ -1376,10 +1371,6 @@ impl App {
         if c.appearance.backdrop != old.appearance.backdrop {
             theme::apply(self.hwnd, c.appearance.backdrop, &self.theme);
             theme::apply(self.popup.hwnd, c.appearance.backdrop, &self.theme);
-        }
-        if c.appearance.render != old.appearance.render {
-            self.surface = None;
-            self.popup.surface = None;
         }
         if c.keyboard.labels != old.keyboard.labels {
             self.measure_keyboard_slot();
@@ -1752,7 +1743,7 @@ impl App {
         unsafe {
             let _ = SetWindowPos(self.popup.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
         }
-        if let Some(s) = &self.popup.surface {
+        if let Some(s) = &mut self.popup.surface {
             s.resize(w as u32, h as u32);
         }
         self.publish_tray_rects();
@@ -1842,10 +1833,11 @@ impl App {
     }
 
     fn new_surface(&self, hwnd: HWND, w: i32, h: i32) -> Option<Surface> {
-        let software = self.cfg.config.appearance.render == capsule_core::config::Render::Software;
-        Surface::new(&self.gfx, hwnd, w as u32, h as u32, self.dpi, software)
-            .map_err(|e| log::error!("surface: {e}"))
-            .ok()
+        let s = Surface::new(hwnd, w as u32, h as u32, self.dpi);
+        if s.is_none() {
+            log::error!("surface creation failed");
+        }
+        s
     }
 
     fn ensure_surface(&mut self) -> bool {
@@ -1931,10 +1923,7 @@ impl App {
                 }
             }
         }
-        if !s.end() {
-            self.surface = None;
-            self.invalidate();
-        }
+        s.end();
     }
 
     fn paint_popup(&mut self) {
@@ -1970,10 +1959,7 @@ impl App {
                 s.dot(r.center_x(), r.y + r.h - 5.0, 1.5, pal.text.alpha(0.7));
             }
         }
-        if !s.end() {
-            self.popup.surface = None;
-            self.invalidate_popup();
-        }
+        s.end();
     }
 
     fn bar_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {

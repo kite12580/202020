@@ -12,7 +12,7 @@ if grep -qi 'vcruntime' <<<"$imports"; then
   echo "error: exe depends on the VC++ runtime" >&2
   exit 1
 fi
-if grep -qiE 'DLL Name: (d2d1|dwrite|ole32|combase)\.dll' <<<"$imports"; then
+if grep -qiE 'DLL Name: (ole32|combase)\.dll' <<<"$imports"; then
   echo "error: capsule bar DLLs are not delay-loaded" >&2
   exit 1
 fi

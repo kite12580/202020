@@ -76,7 +76,7 @@ impl Icon {
         if self.hicon == 0 {
             return false;
         }
-        self.image = gfx.image_from_hicon(HICON(self.hicon as *mut _), px).ok();
+        self.image = gfx.image_from_hicon(HICON(self.hicon as *mut _), px);
         self.image.is_some()
     }
 

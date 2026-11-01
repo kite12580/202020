@@ -273,7 +273,6 @@ dependencies = [
  "tiny-skia",
  "windows",
  "windows-core",
- "windows-numerics",
 ]
 
 [[package]]

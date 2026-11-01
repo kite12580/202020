@@ -47,7 +47,7 @@ fn gray(white: f32) -> Paint<'static> {
     paint(v, v, v, 255)
 }
 
-fn rounded_rect(rect: Rect, radius: f32) -> Option<Path> {
+pub fn rounded_rect(rect: Rect, radius: f32) -> Option<Path> {
     let (x, y, w, h) = (rect.x(), rect.y(), rect.width(), rect.height());
     let r = radius.min(w / 2.0).min(h / 2.0);
     let c = r * (1.0 - KAPPA);
