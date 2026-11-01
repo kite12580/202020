@@ -651,7 +651,7 @@ impl App {
 
     fn refresh_clock(&mut self) {
         let t = unsafe { GetLocalTime() };
-        let s = (clock::time(t.wHour, t.wMinute), clock::date(t.wMonth, t.wDay));
+        let s = (clock::time(t.wHour, t.wMinute), clock::date(t.wYear, t.wMonth, t.wDay));
         if s != self.clock {
             self.texts.clock_time = self.gfx.text(&s.0, Font::Clock).ok();
             self.texts.clock_date = self.gfx.text(&s.1, Font::Clock).ok();
@@ -1298,7 +1298,8 @@ impl App {
             }
             (WM_LBUTTONUP, Hit::Chevron) => self.toggle_popup(),
             (WM_LBUTTONUP | WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(Deferred::KeyboardMenu),
-            (WM_LBUTTONUP, Hit::Volume) => self.volume.toggle_mute(),
+            (WM_LBUTTONUP, Hit::Volume) => keyhook::press_win(b'A'),
+            (WM_LBUTTONUP, Hit::Clock) => keyhook::press_win(b'N'),
             (WM_RBUTTONUP, Hit::Grip) => self.deferred.push_back(Deferred::GripMenu),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
             _ => {}

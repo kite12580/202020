@@ -161,14 +161,6 @@ impl Volume {
             }
         }
     }
-
-    pub fn toggle_mute(&self) {
-        if let Some((ep, _)) = &self.endpoint {
-            unsafe {
-                let _ = ep.SetMute(!self.muted(), &GUID::zeroed());
-            }
-        }
-    }
 }
 
 impl Drop for Volume {

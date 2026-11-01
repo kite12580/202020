@@ -5,9 +5,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RSHIFT, VK_RWIN,
-    VK_SHIFT, VK_SPACE,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_MENU,
+    VK_RCONTROL, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE, PeekMessageW,
@@ -153,11 +153,26 @@ pub fn input_handled() {
     INPUT_PENDING.store(false, Relaxed);
 }
 
-fn mask_start_menu() {
-    let key = |flags| INPUT {
+fn key(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
         r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_MASK, dwFlags: flags, ..Default::default() } },
-    };
-    let inputs = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: flags, ..Default::default() } },
+    }
+}
+
+fn mask_start_menu() {
+    let inputs = [key(VK_MASK, KEYBD_EVENT_FLAGS(0)), key(VK_MASK, KEYEVENTF_KEYUP)];
+    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+}
+
+/// Sends the shell shortcut Win+`letter`.
+pub fn press_win(letter: u8) {
+    let vk = VIRTUAL_KEY(u16::from(letter));
+    let inputs = [
+        key(VK_LWIN, KEYEVENTF_EXTENDEDKEY),
+        key(vk, KEYBD_EVENT_FLAGS(0)),
+        key(vk, KEYEVENTF_KEYUP),
+        key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
+    ];
     unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
 }
