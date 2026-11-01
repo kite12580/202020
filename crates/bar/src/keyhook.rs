@@ -10,9 +10,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE, PeekMessageW,
-    PostMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT,
-    WM_SYSKEYDOWN, WM_USER,
+    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, PeekMessageW, PostMessageW,
+    PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
+    WM_USER,
 };
 
 use crate::util::hwnd;
@@ -23,6 +23,10 @@ static INPUT_MSG: AtomicU32 = AtomicU32::new(0);
 static DIGITS: AtomicBool = AtomicBool::new(false);
 static SWALLOWED: AtomicU32 = AtomicU32::new(0);
 static INPUT_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Tags our own `SendInput` events so the hook passes them through while
+/// still handling keys injected by remappers such as AutoHotkey.
+const OWN_INPUT: usize = 0x4342_4152;
 
 /// Low-level keyboard hook on its own thread. When enabled, swallows Win+0..9
 /// and posts `digit_msg(vk)` so the caller can replay it once explorer's
@@ -73,7 +77,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code == HC_ACTION as i32 {
         let k = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
         let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-        if k.flags.0 & LLKHF_INJECTED.0 == 0 && on_key(k.vkCode, down) {
+        if k.dwExtraInfo != OWN_INPUT && on_key(k.vkCode, down) {
             return LRESULT(1);
         }
     }
@@ -130,7 +134,7 @@ pub fn input_handled() {
 fn key(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: flags, ..Default::default() } },
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: flags, dwExtraInfo: OWN_INPUT, ..Default::default() } },
     }
 }
 
