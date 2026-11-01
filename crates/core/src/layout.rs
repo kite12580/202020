@@ -23,7 +23,6 @@ impl Rect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Hit {
-    Grip,
     Window(usize),
     Chevron,
     Tray(usize),
@@ -35,7 +34,6 @@ pub enum Hit {
 pub struct Metrics {
     pub height: f32,
     pub pad: f32,
-    pub grip: f32,
     pub window_item: f32,
     pub tray_item: f32,
     pub chevron: f32,
@@ -46,7 +44,6 @@ pub struct Metrics {
 pub const METRICS: Metrics = Metrics {
     height: 32.0,
     pad: 4.0,
-    grip: 14.0,
     window_item: 30.0,
     tray_item: 24.0,
     chevron: 22.0,
@@ -79,7 +76,6 @@ impl Layout {
             *x += w;
         };
 
-        push(&mut out, Hit::Grip, m.grip, &mut x);
         for i in 0..input.windows {
             push(&mut out, Hit::Window(i), m.window_item, &mut x);
         }
@@ -153,26 +149,11 @@ mod tests {
         let hits: Vec<Hit> = l.items.iter().map(|(h, _)| *h).collect();
         assert_eq!(
             hits,
-            [
-                Hit::Grip,
-                Hit::Window(0),
-                Hit::Window(1),
-                Hit::Chevron,
-                Hit::Tray(0),
-                Hit::Keyboard,
-                Hit::Volume,
-                Hit::Clock
-            ]
+            [Hit::Window(0), Hit::Window(1), Hit::Chevron, Hit::Tray(0), Hit::Keyboard, Hit::Volume, Hit::Clock]
         );
         let m = &METRICS;
-        let expected = m.pad * 2.0
-            + m.grip
-            + 2.0 * m.window_item
-            + m.chevron
-            + m.tray_item
-            + 110.0
-            + 3.0 * m.text_pad
-            + 3.0 * m.tight_pad;
+        let expected =
+            m.pad * 2.0 + 2.0 * m.window_item + m.chevron + m.tray_item + 110.0 + 3.0 * m.text_pad + 3.0 * m.tight_pad;
         assert!((l.width - expected).abs() < 0.01);
         for w in l.items.windows(2) {
             assert!(w[0].1.right() <= w[1].1.x + 0.001);
@@ -184,7 +165,7 @@ mod tests {
         let l = Layout::compute(&METRICS, &Input::default());
         assert_eq!(l.rect(Hit::Chevron), None);
         assert_eq!(l.hit(1.0), None);
-        assert_eq!(l.hit(METRICS.pad + 1.0), Some(Hit::Grip));
+        assert_eq!(l.hit(METRICS.pad + 1.0), Some(Hit::Keyboard));
     }
 
     #[test]

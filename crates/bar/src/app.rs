@@ -35,11 +35,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DeregisterShellHookWindow, DestroyWindow,
-    DispatchMessageW, FindWindowW, GA_ROOTOWNER, GWL_STYLE, GetAncestor, GetCursorPos, GetForegroundWindow,
-    GetWindowLongW, GetWindowRect, HICON, HWND_BROADCAST, HWND_TOPMOST, IDC_ARROW, IsZoomed, KillTimer, LoadCursorW,
-    MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
-    PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW,
-    SPI_SETHIGHCONTRAST, SPI_SETWORKAREA, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE,
+    DispatchMessageW, FindWindowExW, FindWindowW, GA_ROOTOWNER, GWL_STYLE, GetAncestor, GetCursorPos,
+    GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_BROADCAST, HWND_MESSAGE,
+    HWND_TOPMOST, IDC_ARROW, IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE,
+    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW,
+    RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA,
+    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SendMessageW, SendNotifyMessageW, SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
     TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP,
     WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY,
@@ -126,7 +127,7 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
 /// Work that pumps messages (menus, window destruction) and so must run
 /// with the app unborrowed.
 enum Deferred {
-    GripMenu,
+    AppMenu,
     KeyboardMenu,
     TrayMenu(usize),
     Exit,
@@ -135,6 +136,7 @@ enum Deferred {
 struct Drag {
     cursor: POINT,
     origin: POINT,
+    moved: bool,
 }
 
 #[derive(Default)]
@@ -144,6 +146,7 @@ struct Texts {
     volume_glyph: Option<Text>,
     clock_time: Option<Text>,
     clock_date: Option<Text>,
+    keyboard_slot: f32,
     volume_slot: f32,
     clock_slot: f32,
 }
@@ -306,7 +309,7 @@ fn message_loop() {
 fn run_deferred() {
     while let Some(d) = with_app(|a| a.deferred.pop_front()).flatten() {
         match d {
-            Deferred::GripMenu => grip_menu(),
+            Deferred::AppMenu => app_menu(),
             Deferred::KeyboardMenu => keyboard_menu(),
             Deferred::TrayMenu(i) => tray_menu(i),
             Deferred::Exit => {
@@ -601,9 +604,19 @@ impl App {
         unsafe { SHAppBarMessage(ABM_NEW, &mut d) };
     }
 
+    /// Reaches message-only windows too, which `HWND_BROADCAST` skips but
+    /// some apps use as their notify-icon owner.
     fn broadcast_taskbar_created(&self) {
+        let msg = self.taskbar_created_msg;
         unsafe {
-            let _ = SendNotifyMessageW(HWND_BROADCAST, self.taskbar_created_msg, WPARAM(0), LPARAM(0));
+            let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
+            let mut prev = None;
+            while let Ok(h) = FindWindowExW(Some(HWND_MESSAGE), prev, PCWSTR::null(), PCWSTR::null()) {
+                if !own_window(h) {
+                    let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
+                }
+                prev = Some(h);
+            }
         }
     }
 
@@ -647,6 +660,23 @@ impl App {
             .fold(0.0, f32::max);
         let glyph = GLYPH_VOLUME.iter().chain([&GLYPH_MUTE]).filter_map(|g| self.gfx.text(g, Font::Glyph).ok());
         t.volume_slot = glyph.map(|t| t.width).fold(0.0, f32::max).ceil();
+        self.measure_keyboard_slot();
+    }
+
+    /// Widest label any installed layout can show, so switching layouts or
+    /// IME modes never resizes the bar.
+    fn measure_keyboard_slot(&mut self) {
+        let overrides = &self.cfg.config.keyboard.labels;
+        let mut labels = Vec::new();
+        for hkl in keyboard::installed() {
+            let iso = keyboard::iso(hkl);
+            labels.push(kbd::label(&iso, overrides, None));
+            if kbd::has_ime(&iso) {
+                labels.push(kbd::label(&iso, overrides, Some(false)));
+            }
+        }
+        self.texts.keyboard_slot =
+            labels.iter().filter_map(|l| self.gfx.text(l, Font::Text).ok()).map(|t| t.width.ceil()).fold(0.0, f32::max);
     }
 
     fn refresh_clock(&mut self) {
@@ -700,6 +730,9 @@ impl App {
             }]
         };
         self.texts.volume_glyph = self.gfx.text(glyph, Font::Glyph).ok();
+        if self.hover == Some(Hit::Volume) {
+            self.show_tip();
+        }
         self.invalidate();
     }
 
@@ -709,7 +742,7 @@ impl App {
             windows: self.windows.items.len(),
             tray: self.bar_tray.len(),
             chevron: !self.tray.popup_icons().is_empty(),
-            keyboard_w: self.texts.keyboard.as_ref().map_or(12.0, |t| t.width.ceil()),
+            keyboard_w: self.texts.keyboard.as_ref().map_or(0.0, |t| t.width.ceil()).max(self.texts.keyboard_slot),
             volume_w: self.texts.volume_slot,
             clock_w: self.texts.clock_slot,
         };
@@ -738,7 +771,7 @@ impl App {
         };
         self.bounds = RECT { left: x, top: y, right: x + w, bottom: y + h };
         unsafe {
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+            let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
         }
         if let Some(s) = &self.surface {
             s.resize(w as u32, h as u32);
@@ -1003,6 +1036,10 @@ impl App {
         }
         unsafe {
             let _ = ShowWindow(self.hwnd, if hide { SW_HIDE } else { SW_SHOWNOACTIVATE });
+            if !hide {
+                let _ =
+                    SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+            }
         }
     }
 
@@ -1070,6 +1107,7 @@ impl App {
             self.popup.surface = None;
         }
         if c.keyboard.labels != old.keyboard.labels {
+            self.measure_keyboard_slot();
             self.refresh_keyboard();
         }
         self.relayout();
@@ -1217,7 +1255,6 @@ impl App {
             Hit::Volume if self.volume.muted() => "已静音".into(),
             Hit::Volume => format!("音量 {}%", (self.volume.level() * 100.0).round()),
             Hit::Clock => long_date(),
-            Hit::Grip => "拖动以移动，右键打开菜单".into(),
             Hit::Chevron => return,
         };
         self.tooltip.show(&text, x, top);
@@ -1238,6 +1275,17 @@ impl App {
         }
         if !skip && let Some(f) = i.follow_up(msg) {
             i.send(f, (p.x, p.y));
+        }
+    }
+
+    fn next_keyboard_layout(&mut self) {
+        let layouts = keyboard::installed();
+        let next = layouts.iter().position(|&h| h == self.keyboard_layout).map_or(0, |i| (i + 1) % layouts.len());
+        let Some(&hkl) = layouts.get(next) else { return };
+        keyboard::switch(self.input_target(), hkl);
+        self.keyboard_retries = 2;
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_KEYBOARD, 40, None);
         }
     }
 
@@ -1266,13 +1314,25 @@ impl App {
 
     fn on_bar_mouse(&mut self, msg: u32, lparam: LPARAM) {
         let hit = self.layout.hit(self.to_dip(lparam_point(lparam).0));
-        if let Some(d) = &self.drag {
+        if let Some(d) = &mut self.drag {
             match msg {
                 WM_MOUSEMOVE => {
                     let p = cursor();
-                    self.drag_to(d.origin.x + p.x - d.cursor.x, d.origin.y + p.y - d.cursor.y);
+                    let (dx, dy) = (p.x - d.cursor.x, p.y - d.cursor.y);
+                    let threshold = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+                    d.moved |= dx.abs() > threshold.0 || dy.abs() > threshold.1;
+                    if d.moved {
+                        let origin = d.origin;
+                        self.drag_to(origin.x + dx, origin.y + dy);
+                    }
                 }
-                WM_LBUTTONUP => self.end_drag(),
+                WM_LBUTTONUP => {
+                    let moved = d.moved;
+                    self.end_drag();
+                    if !moved && hit == Some(Hit::Clock) {
+                        keyhook::press_win(b'N');
+                    }
+                }
                 _ => {}
             }
             return;
@@ -1284,8 +1344,9 @@ impl App {
         self.tooltip.hide();
         let Some(hit) = hit else { return };
         match (msg, hit) {
-            (WM_LBUTTONDOWN, Hit::Grip) => {
-                self.drag = Some(Drag { cursor: cursor(), origin: POINT { x: self.bounds.left, y: self.bounds.top } });
+            (WM_LBUTTONDOWN, Hit::Clock) => {
+                let origin = POINT { x: self.bounds.left, y: self.bounds.top };
+                self.drag = Some(Drag { cursor: cursor(), origin, moved: false });
                 unsafe { SetCapture(self.hwnd) };
             }
             (WM_LBUTTONUP, Hit::Window(i)) => {
@@ -1297,10 +1358,10 @@ impl App {
                 winlist::system_menu(self.windows.items[i].hwnd, p.x, p.y);
             }
             (WM_LBUTTONUP, Hit::Chevron) => self.toggle_popup(),
-            (WM_LBUTTONUP | WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(Deferred::KeyboardMenu),
+            (WM_LBUTTONUP, Hit::Keyboard) => self.next_keyboard_layout(),
+            (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(Deferred::KeyboardMenu),
             (WM_LBUTTONUP, Hit::Volume) => keyhook::press_win(b'A'),
-            (WM_LBUTTONUP, Hit::Clock) => keyhook::press_win(b'N'),
-            (WM_RBUTTONUP, Hit::Grip) => self.deferred.push_back(Deferred::GripMenu),
+            (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(Deferred::AppMenu),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
             _ => {}
         }
@@ -1313,7 +1374,7 @@ impl App {
         let y = y.clamp(mon.top, mon.bottom - h);
         self.bounds = RECT { left: x, top: y, right: x + w, bottom: y + h };
         unsafe {
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+            let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
         }
     }
 
@@ -1363,7 +1424,7 @@ impl App {
         let y = if above >= mon.top { above } else { self.bounds.bottom + self.px(POPUP_GAP) };
         self.popup.origin = (x, y);
         unsafe {
-            let _ = SetWindowPos(self.popup.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+            let _ = SetWindowPos(self.popup.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
         }
         if let Some(s) = &self.popup.surface {
             s.resize(w as u32, h as u32);
@@ -1482,23 +1543,11 @@ impl App {
         s.fill(Rect { x: 0.0, y: 0.0, w: self.layout.width, h }, pal.tint, 0.0);
         for &(hit, r) in &self.layout.items {
             let highlight = Rect { x: r.x + 1.0, y: 4.0, w: r.w - 2.0, h: h - 8.0 };
-            if self.hover == Some(hit) && hit != Hit::Grip {
+            if self.hover == Some(hit) {
                 s.fill(highlight, pal.hover, 4.0);
             }
             let center = |t: &Text| (r.center_x() - t.width / 2.0, cy - t.height / 2.0);
             match hit {
-                Hit::Grip => {
-                    for row in 0..3 {
-                        for col in 0..2 {
-                            s.dot(
-                                r.center_x() - 2.0 + col as f32 * 4.0,
-                                cy - 4.0 + row as f32 * 4.0,
-                                1.1,
-                                pal.text.alpha(0.55),
-                            );
-                        }
-                    }
-                }
                 Hit::Window(i) => {
                     let w = &self.windows.items[i];
                     if w.hwnd == self.foreground {
@@ -1701,8 +1750,8 @@ fn menu_anchor(a: &App, hit: Hit) -> (i32, i32) {
     (x, a.bounds.top - a.px(4.0))
 }
 
-fn grip_menu() {
-    let Some((owner, prev, (x, y))) = with_app(|a| (a.hwnd, a.foreground, menu_anchor(a, Hit::Grip))) else { return };
+fn app_menu() {
+    let Some((owner, prev, (x, y))) = with_app(|a| (a.hwnd, a.foreground, menu_anchor(a, Hit::Clock))) else { return };
     let items =
         [menu::command(1, "打开配置文件"), menu::command(2, "重新加载配置"), Item::Separator, menu::command(3, "退出")];
     let id = menu::show(owner, &items, x, y);

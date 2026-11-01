@@ -120,7 +120,7 @@ impl Tray {
         let d = &ev.msg.data;
         let key = TrayKey { hwnd: d.hwnd, uid: d.uid, guid: d.guid };
         let pos = self.icons.iter().position(|i| i.key.same(&key));
-        log::debug!("tray msg {} {:?} flags {:#x} pos {:?}", ev.msg.message, key, d.flags, pos);
+        log::debug!("tray msg {} {:?} flags {:#x} pos {:?} tip {:?}", ev.msg.message, key, d.flags, pos, d.tip);
         match ev.msg.message {
             NIM_ADD | NIM_MODIFY => {
                 let idx = pos.unwrap_or_else(|| {
