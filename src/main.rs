@@ -9,7 +9,6 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ab_glyph::FontVec;
 use tiny_skia::Pixmap;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -22,7 +21,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use render::{IconFace, Overlay};
+use render::{Digits, IconFace, Overlay};
 
 const WORK_SECONDS: f64 = 20.0 * 60.0;
 const BREAK_SECONDS: f64 = 20.0;
@@ -85,6 +84,23 @@ fn minutes_left(seconds: u32) -> u32 {
     seconds.div_ceil(60).max(1)
 }
 
+/// Seconds until the tray icon changes, `left` seconds before the break. The
+/// boundaries follow the rounding in `App::remaining`.
+fn next_face_change(left: f64) -> f64 {
+    if left <= 0.0 {
+        return 1.0;
+    }
+    let rem = (left + 0.5).floor() as u32;
+    let at = if rem > COUNTDOWN_SECONDS {
+        (60 * (minutes_left(rem) - 1)).max(COUNTDOWN_SECONDS) as f64 + 0.5
+    } else if rem > 0 {
+        rem as f64 - 0.5
+    } else {
+        0.0
+    };
+    left - at
+}
+
 fn startup_progress_at(elapsed: f64) -> f32 {
     for pair in STARTUP_PROGRESS.windows(2) {
         let ((t0, v0), (t1, v1)) = (pair[0], pair[1]);
@@ -104,12 +120,12 @@ struct Break {
 
 struct App {
     hwnd: HWND,
-    font: FontVec,
+    digits: Digits,
     icon: HICON,
     paused: bool,
     deadline: f64,
     paused_remaining: f64,
-    last_tick: f64,
+    tick_due: f64,
     last_face: Option<IconFace>,
     brk: Option<Break>,
     bar_opts: capsule::Options,
@@ -163,11 +179,25 @@ impl App {
         self.last_face = Some(face);
         unsafe {
             let size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(self.hwnd)).max(16) as u32;
-            let previous = std::mem::replace(&mut self.icon, create_icon(&render::tray_icon(&self.font, size, face)));
+            let previous = std::mem::replace(&mut self.icon, create_icon(&render::tray_icon(&self.digits, size, face)));
             self.notify(NIM_MODIFY);
             if !previous.is_invalid() {
                 let _ = DestroyIcon(previous);
             }
+        }
+        self.schedule_tick();
+    }
+
+    fn schedule_tick(&mut self) {
+        unsafe {
+            if self.paused || self.brk.is_some() {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TICK);
+                return;
+            }
+            let now = now();
+            let delay = next_face_change(self.deadline - now);
+            self.tick_due = now + delay;
+            SetTimer(Some(self.hwnd), TIMER_TICK, (delay * 1000.0).ceil() as u32 + 20, None);
         }
     }
 
@@ -260,16 +290,17 @@ impl App {
 
     fn tick(&mut self) {
         let now = now();
-        let gap = now - self.last_tick;
-        self.last_tick = now;
-        if gap > SLEEP_GAP_THRESHOLD {
+        if now - self.tick_due > SLEEP_GAP_THRESHOLD {
             return self.reset_timer();
         }
         if !self.paused && now >= self.deadline && self.brk.is_none() {
-            return self.show_break();
+            self.show_break();
+            return self.schedule_tick();
         }
         if self.last_face != Some(self.face()) {
             self.refresh_icon();
+        } else {
+            self.schedule_tick();
         }
     }
 
@@ -377,22 +408,24 @@ fn create_icon(pixmap: &Pixmap) -> HICON {
 }
 
 fn paint_overlay(hdc: HDC, overlay: &Overlay) {
-    let (w, h) = (overlay.width(), overlay.height());
-    unsafe {
-        SetDIBitsToDevice(
-            hdc,
-            0,
-            0,
-            w,
-            h,
-            0,
-            0,
-            0,
-            h,
-            overlay.pixels().as_ptr() as *const c_void,
-            &bitmap_info(w as i32, h as i32),
-            DIB_RGB_COLORS,
-        );
+    for patch in overlay.patches() {
+        let (w, h) = (patch.rect.width(), patch.rect.height());
+        unsafe {
+            SetDIBitsToDevice(
+                hdc,
+                patch.rect.x(),
+                patch.rect.y(),
+                w,
+                h,
+                0,
+                0,
+                0,
+                h,
+                patch.pixels.as_ptr() as *const c_void,
+                &bitmap_info(w as i32, h as i32),
+                DIB_RGB_COLORS,
+            );
+        }
     }
 }
 
@@ -594,12 +627,12 @@ fn main() {
         let now = now();
         let mut app = App {
             hwnd,
-            font: render::load_font(),
+            digits: render::load_digits(),
             icon: HICON::default(),
             paused: false,
             deadline: now + WORK_SECONDS,
             paused_remaining: WORK_SECONDS,
-            last_tick: now,
+            tick_due: now,
             last_face: None,
             brk: None,
             bar_opts: capsule::Options {
@@ -620,7 +653,6 @@ fn main() {
             with_app(App::start_bar);
         }
 
-        SetTimer(Some(hwnd), TIMER_TICK, 1000, None);
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);
         let _ = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);
 

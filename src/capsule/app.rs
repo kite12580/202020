@@ -111,6 +111,9 @@ const TIMER_AUDIO: usize = 6;
 const TIMER_WIN_DIGIT: usize = 7;
 const TIMER_REVEAL: usize = 8;
 const TIMER_PINS: usize = 9;
+const TIMER_ICONS: usize = 10;
+
+const PRUNE_EVERY: u32 = 5;
 
 const WINDOW_ICON: f32 = 20.0;
 const TASK_ICON_LIFT: f32 = 1.5;
@@ -223,6 +226,7 @@ pub struct App {
     icon_waiters: HashMap<IconKey, Vec<IconTarget>>,
     icon_cache: HashMap<IconKey, Image>,
     next_icon_request: u64,
+    icon_refresh: Vec<HWND>,
     foreground: HWND,
     hover: Option<Hit>,
     drag: Option<Drag>,
@@ -242,6 +246,7 @@ pub struct App {
     taskbar_created_msg: u32,
     last_work_area_fix: Option<Instant>,
     deferred: VecDeque<DeferredMenu>,
+    slow_ticks: u32,
     stopped: bool,
 }
 
@@ -521,6 +526,7 @@ impl App {
             icon_waiters: HashMap::new(),
             icon_cache: HashMap::new(),
             next_icon_request: 1,
+            icon_refresh: Vec::new(),
             foreground: HWND::default(),
             hover: None,
             drag: None,
@@ -540,6 +546,7 @@ impl App {
             taskbar_created_msg,
             last_work_area_fix: None,
             deferred: VecDeque::new(),
+            slow_ticks: 0,
             stopped: false,
             theme,
             cfg,
@@ -1029,6 +1036,24 @@ impl App {
         }
     }
 
+    fn prune_icon_cache(&mut self) {
+        let live: Vec<u64> = (self.windows.items.iter().map(|w| &w.image))
+            .chain(self.pins.iter().map(|p| &p.image))
+            .chain(self.tray.icons.iter().map(|i| &i.image))
+            .flatten()
+            .map(Image::id)
+            .collect();
+        self.icon_cache.retain(|_, img| live.contains(&img.id()));
+    }
+
+    fn refresh_window_icons(&mut self) {
+        for h in std::mem::take(&mut self.icon_refresh) {
+            if self.windows.index(h).is_some() && class_name(h) != FRAME_CLASS {
+                winlist::request_window_icon(h, false, on_window_icon);
+            }
+        }
+    }
+
     fn refetch_icons(&mut self) {
         self.icon_cache.clear();
         for w in &mut self.windows.items {
@@ -1101,8 +1126,13 @@ impl App {
             }
             ACTIVATED => self.on_foreground(h),
             REDRAW => {
-                if self.windows.index(h).is_some() && class_name(h) != FRAME_CLASS {
-                    winlist::request_window_icon(h, false, on_window_icon);
+                if self.windows.index(h).is_some() && !self.icon_refresh.contains(&h) {
+                    if self.icon_refresh.is_empty() {
+                        unsafe {
+                            SetTimer(Some(self.hwnd), TIMER_ICONS, 500, None);
+                        }
+                    }
+                    self.icon_refresh.push(h);
                 }
             }
             LANGUAGE => self.refresh_keyboard(),
@@ -1189,11 +1219,18 @@ impl App {
     }
 
     fn slow_tick(&mut self) {
-        self.refresh_keyboard();
         self.update_visibility();
-        self.guard_tray_order();
         if let Some(t) = &self.takeover {
             t.ensure_hidden();
+        }
+        if self.hidden {
+            return;
+        }
+        self.refresh_keyboard();
+        self.guard_tray_order();
+        self.slow_ticks = self.slow_ticks.wrapping_add(1);
+        if !self.slow_ticks.is_multiple_of(PRUNE_EVERY) {
+            return;
         }
         let mut changed = self.windows.prune();
         if self.tray.prune_dead() {
@@ -1203,6 +1240,7 @@ impl App {
         if changed {
             self.relayout();
         }
+        self.prune_icon_cache();
     }
 
     fn set_paused(&mut self, locked: bool, display_off: bool) {
@@ -1359,6 +1397,7 @@ impl App {
             }
             TIMER_REVEAL => self.conceal_when_idle(),
             TIMER_PINS => self.refresh_pins(),
+            TIMER_ICONS => self.refresh_window_icons(),
             TIMER_AUDIO => {
                 self.volume.attach();
                 self.refresh_volume();
@@ -1691,6 +1730,7 @@ impl App {
         }
         self.popup.open = false;
         self.popup.hover = None;
+        self.popup.surface = None;
         self.close_icon_popup();
         self.tooltip.hide();
         unsafe {

@@ -67,6 +67,12 @@ pub struct Image {
     pub px: u32,
 }
 
+impl Image {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
 pub struct Gfx {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,

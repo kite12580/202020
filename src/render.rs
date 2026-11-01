@@ -1,4 +1,4 @@
-use ab_glyph::{Font, FontVec, OutlineCurve};
+use ab_glyph::{Font, FontRef, Outline, OutlineCurve};
 use tiny_skia::{Color, FillRule, IntRect, Paint, Path, PathBuilder, Pixmap, Rect, Transform};
 
 const ICON_CANVAS: f32 = 64.0;
@@ -17,10 +17,22 @@ pub enum IconFace {
     Paused,
 }
 
-pub fn load_font() -> FontVec {
+pub struct Digits {
+    units_per_em: f32,
+    glyphs: [(Option<Outline>, f32); 10],
+    kern: [[f32; 10]; 10],
+}
+
+pub fn load_digits() -> Digits {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let data = std::fs::read(format!(r"{windir}\Fonts\seguisb.ttf")).expect("Segoe UI Semibold font");
-    FontVec::try_from_vec(data).expect("valid font")
+    let font = FontRef::try_from_slice(&data).expect("valid font");
+    let ids = std::array::from_fn::<_, 10, _>(|d| font.glyph_id(char::from(b'0' + d as u8)));
+    Digits {
+        units_per_em: font.units_per_em().expect("scalable font"),
+        glyphs: ids.map(|id| (font.outline(id), font.h_advance_unscaled(id))),
+        kern: ids.map(|a| ids.map(|b| font.kern_unscaled(a, b))),
+    }
 }
 
 fn paint(r: u8, g: u8, b: u8, a: u8) -> Paint<'static> {
@@ -59,17 +71,18 @@ fn fill_rounded(pixmap: &mut Pixmap, rect: Option<Rect>, radius: f32, paint: &Pa
     }
 }
 
-fn text_path(font: &FontVec, text: &str, size: f32) -> Option<(Path, f32)> {
-    let scale = size / font.units_per_em()?;
+fn text_path(digits: &Digits, text: &str, size: f32) -> Option<(Path, f32)> {
+    let scale = size / digits.units_per_em;
     let mut pb = PathBuilder::new();
     let mut pen = 0.0;
-    let mut prev = None;
+    let mut prev: Option<usize> = None;
     for ch in text.chars() {
-        let id = font.glyph_id(ch);
+        let d = ch.to_digit(10)? as usize;
         if let Some(prev) = prev {
-            pen += font.kern_unscaled(prev, id) * scale;
+            pen += digits.kern[prev][d] * scale;
         }
-        if let Some(outline) = font.outline(id) {
+        let (outline, advance) = &digits.glyphs[d];
+        if let Some(outline) = outline {
             let pt = |p: &ab_glyph::Point| (pen + p.x * scale, -p.y * scale);
             let mut last = None;
             for curve in &outline.curves {
@@ -99,13 +112,13 @@ fn text_path(font: &FontVec, text: &str, size: f32) -> Option<(Path, f32)> {
                 last = Some(*to);
             }
         }
-        pen += font.h_advance_unscaled(id) * scale;
-        prev = Some(id);
+        pen += advance * scale;
+        prev = Some(d);
     }
     Some((pb.finish()?, pen))
 }
 
-pub fn tray_icon(font: &FontVec, size: u32, face: IconFace) -> Pixmap {
+pub fn tray_icon(digits: &Digits, size: u32, face: IconFace) -> Pixmap {
     let mut pixmap = Pixmap::new(size, size).expect("non-zero icon size");
     let k = size as f32 / ICON_CANVAS;
     let t = Transform::from_scale(k, k);
@@ -128,7 +141,7 @@ pub fn tray_icon(font: &FontVec, size: u32, face: IconFace) -> Pixmap {
         IconFace::Minutes(value) | IconFace::Countdown(value) => {
             let text = value.to_string();
             let text_size = if text.len() <= 2 { 34.0 } else { 28.0 };
-            if let Some((path, advance)) = text_path(font, &text, text_size) {
+            if let Some((path, advance)) = text_path(digits, &text, text_size) {
                 let b = path.bounds();
                 let t =
                     t.pre_translate((ICON_CANVAS - advance) / 2.0, ICON_CANVAS / 2.0 - (b.top() + b.bottom()) / 2.0);
@@ -168,71 +181,77 @@ fn logo_path() -> Option<Path> {
     pb.finish()
 }
 
+/// Pixels of one screen area, as 0x00RRGGBB.
+pub struct Patch {
+    pub rect: IntRect,
+    pub pixels: Vec<u32>,
+}
+
+impl Patch {
+    fn paint(screen: IntRect, area: Rect, draw: impl FnOnce(&mut Pixmap, Transform)) -> Option<Patch> {
+        let rect = area.round_out()?.intersect(&screen)?;
+        let mut pixmap = Pixmap::new(rect.width(), rect.height())?;
+        pixmap.fill(Color::BLACK);
+        draw(&mut pixmap, Transform::from_translate(-rect.x() as f32, -rect.y() as f32));
+        let pixels = pixmap
+            .pixels()
+            .iter()
+            .map(|px| (px.red() as u32) << 16 | (px.green() as u32) << 8 | px.blue() as u32)
+            .collect();
+        Some(Patch { rect, pixels })
+    }
+}
+
+/// Only the logo and the progress bar are drawn; the rest of the screen is the
+/// window's black background.
 pub struct Overlay {
-    width: u32,
-    height: u32,
+    screen: IntRect,
     scale: f32,
-    pixels: Vec<u32>,
     bar: Rect,
     fill: Rect,
+    logo: Option<Patch>,
+    progress: Option<Patch>,
+    done_px: Option<f32>,
 }
 
 impl Overlay {
     pub fn new(width: u32, height: u32, scale: f32) -> Self {
         let (w, h) = (width as f32, height as f32);
+        let screen = IntRect::from_xywh(0, 0, width.max(1), height.max(1)).unwrap();
         let (bar_w, bar_h, border) = (236.0 * scale, 8.0 * scale, scale);
         let bar = Rect::from_xywh((w - bar_w) / 2.0, h * 0.904 - bar_h / 2.0, bar_w, bar_h).unwrap();
         let fill =
             Rect::from_xywh(bar.x() + border, bar.y() + border, bar_w - border * 2.0, bar_h - border * 2.0).unwrap();
-        let mut overlay = Self { width, height, scale, pixels: vec![0; (width * height) as usize], bar, fill };
 
         let (logo_w, logo_h) = (84.0 * scale, 116.0 * scale);
-        let logo = Rect::from_xywh((w - logo_w) / 2.0, h * 0.5 - logo_h / 2.0, logo_w, logo_h).unwrap();
+        let logo_rect = Rect::from_xywh((w - logo_w) / 2.0, h * 0.5 - logo_h / 2.0, logo_w, logo_h).unwrap();
         let unit = logo_h / LOGO_VIEWBOX_HEIGHT;
-        overlay.paint_region(logo, |pixmap, t| {
+        let logo = Patch::paint(screen, logo_rect, |pixmap, t| {
             if let Some(path) = logo_path() {
-                let t = t.pre_translate(logo.x(), logo.bottom()).pre_scale(unit, -unit);
+                let t = t.pre_translate(logo_rect.x(), logo_rect.bottom()).pre_scale(unit, -unit);
                 pixmap.fill_path(&path, &paint(255, 255, 255, 230), FillRule::Winding, t, None);
             }
         });
-        overlay
+        Self { screen, scale, bar, fill, logo, progress: None, done_px: None }
     }
 
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    pub fn pixels(&self) -> &[u32] {
-        &self.pixels
+    pub fn patches(&self) -> impl Iterator<Item = &Patch> {
+        self.logo.iter().chain(&self.progress)
     }
 
     pub fn draw_progress(&mut self, progress: f32) -> Option<IntRect> {
         let (bar, fill, s) = (self.bar, self.fill, self.scale);
-        self.paint_region(bar, |pixmap, t| {
+        let done_px = (fill.width() * progress).round();
+        if self.done_px == Some(done_px) {
+            return None;
+        }
+        self.done_px = Some(done_px);
+        self.progress = Patch::paint(self.screen, bar, |pixmap, t| {
             fill_rounded(pixmap, Some(bar), 4.0 * s, &gray(0.20), t);
             fill_rounded(pixmap, Some(fill), 3.0 * s, &gray(0.13), t);
-            let done = Rect::from_xywh(fill.x(), fill.y(), fill.width() * progress, fill.height());
+            let done = Rect::from_xywh(fill.x(), fill.y(), done_px, fill.height());
             fill_rounded(pixmap, done, 3.0 * s, &gray(0.80), t);
-        })
-    }
-
-    fn paint_region(&mut self, area: Rect, draw: impl FnOnce(&mut Pixmap, Transform)) -> Option<IntRect> {
-        let screen = IntRect::from_xywh(0, 0, self.width, self.height)?;
-        let area = area.round_out()?.intersect(&screen)?;
-        let mut pixmap = Pixmap::new(area.width(), area.height())?;
-        pixmap.fill(Color::BLACK);
-        draw(&mut pixmap, Transform::from_translate(-area.x() as f32, -area.y() as f32));
-        let row_len = area.width() as usize;
-        for (row, src) in pixmap.pixels().chunks(row_len).enumerate() {
-            let start = (area.y() as usize + row) * self.width as usize + area.x() as usize;
-            for (dst, px) in self.pixels[start..start + row_len].iter_mut().zip(src) {
-                *dst = (px.red() as u32) << 16 | (px.green() as u32) << 8 | px.blue() as u32;
-            }
-        }
-        Some(area)
+        });
+        self.progress.as_ref().map(|p| p.rect)
     }
 }

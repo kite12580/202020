@@ -46,8 +46,8 @@ pub enum Backdrop {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Render {
-    #[default]
     Hardware,
+    #[default]
     Software,
 }
 
@@ -61,7 +61,7 @@ pub struct Appearance {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { backdrop: Backdrop::Acrylic, opacity: 0.25, render: Render::Hardware }
+        Self { backdrop: Backdrop::Acrylic, opacity: 0.25, render: Render::Software }
     }
 }
 
@@ -107,8 +107,8 @@ bottom_gap = 6.0
 backdrop = "acrylic"
 # Opacity of the background tint (0.0 – 1.0).
 opacity = 0.25
-# "hardware" or "software".
-render = "hardware"
+# "software" or "hardware". Hardware loads the GPU driver into 202020, which uses more memory.
+render = "software"
 
 [capsule_bar.volume]
 # Volume change per wheel notch, in percent.
