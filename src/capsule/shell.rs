@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
 use windows::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcessId, INFINITE, OpenEventW, PROCESS_SYNCHRONIZE, SYNCHRONIZATION_SYNCHRONIZE,
-    SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, GetCurrentProcess, GetCurrentProcessId, INFINITE, OpenEventW, PROCESS_SYNCHRONIZE,
+    SYNCHRONIZATION_SYNCHRONIZE, SetEvent, SetProcessWorkingSetSize, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Shell::{ABM_GETSTATE, ABM_SETSTATE, APPBARDATA, SHAppBarMessage};
@@ -256,6 +256,9 @@ pub fn run_watchdog(args: &[String]) -> i32 {
         return 1;
     };
     let event = OwnedHandle(event);
+    unsafe {
+        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
     let r = unsafe { WaitForMultipleObjects(&[process.0, event.0], false, INFINITE) };
     if r == WAIT_OBJECT_0 && unsafe { WaitForSingleObject(event.0, 0) } != WAIT_OBJECT_0 {
         log::warn!("202020 {pid} exited without cleanup");
