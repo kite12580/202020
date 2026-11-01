@@ -12,13 +12,14 @@ impl Pin {
     }
 }
 
-/// The pin a window groups under, mirroring explorer: a window with an
-/// AppUserModelID only joins the pin with that ID, so a PWA does not land
-/// on its browser's pin; a window without one joins by executable path.
-pub fn slot(pins: &[Pin], aumid: Option<&str>, exe: Option<&str>) -> Option<usize> {
-    if let Some(id) = aumid.filter(|s| !s.is_empty()) {
-        let id = id.to_lowercase();
-        return pins.iter().position(|p| p.aumid.as_deref() == Some(id.as_str()));
+/// The pin a window groups under, mirroring explorer: a window with
+/// AppUserModelIDs (its own, then its package's) only joins a pin with one
+/// of them, so a PWA does not land on its browser's pin; a window without
+/// any joins by executable path.
+pub fn slot<S: AsRef<str>>(pins: &[Pin], aumids: &[S], exe: Option<&str>) -> Option<usize> {
+    let ids: Vec<String> = aumids.iter().map(|s| s.as_ref().to_lowercase()).filter(|s| !s.is_empty()).collect();
+    if !ids.is_empty() {
+        return ids.iter().find_map(|id| pins.iter().position(|p| p.aumid.as_deref() == Some(id.as_str())));
     }
     let exe = exe?.to_lowercase();
     pins.iter().position(|p| p.target.as_deref() == Some(exe.as_str()))
@@ -70,15 +71,17 @@ mod tests {
             Pin::new(None, Some(r"C:\Tools\Editor.exe")),
             Pin::new(Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"), None),
         ];
-        assert_eq!(slot(&pins, Some("chrome"), None), Some(1));
+        let none: [&str; 0] = [];
+        assert_eq!(slot(&pins, &["chrome"], None), Some(1));
         assert_eq!(
-            slot(&pins, Some("Chrome._crx_abc"), Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe")),
+            slot(&pins, &["Chrome._crx_abc"], Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe")),
             None
         );
-        assert_eq!(slot(&pins, None, Some(r"c:\tools\editor.EXE")), Some(2));
-        assert_eq!(slot(&pins, None, Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe")), Some(1));
-        assert_eq!(slot(&pins, Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"), None), Some(3));
-        assert_eq!(slot(&pins, None, Some(r"C:\Other.exe")), None);
-        assert_eq!(slot(&pins, None, None), None);
+        assert_eq!(slot(&pins, &none, Some(r"c:\tools\editor.EXE")), Some(2));
+        assert_eq!(slot(&pins, &none, Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe")), Some(1));
+        assert_eq!(slot(&pins, &["Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"], None), Some(3));
+        assert_eq!(slot(&pins, &["Terminal.Window", "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"], None), Some(3));
+        assert_eq!(slot(&pins, &none, Some(r"C:\Other.exe")), None);
+        assert_eq!(slot(&pins, &none, None), None);
     }
 }

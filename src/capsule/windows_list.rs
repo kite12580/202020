@@ -43,7 +43,7 @@ pub struct Window {
     pub rank: IconRank,
     /// The HICON `image` was made from, to skip unchanged refetches.
     pub src: isize,
-    aumid: Option<String>,
+    aumids: Vec<String>,
     exe: Option<String>,
     /// Index of the taskbar pin the window groups under, or `usize::MAX`.
     slot: usize,
@@ -151,10 +151,12 @@ impl WindowList {
                 self.next_seq
             }),
         };
-        let aumid = aumid(h).or_else(|| package_aumid(window_ids(h).1));
-        let exe = process_path(window_ids(h).1);
-        let slot = slot(&self.pins, aumid.as_deref(), exe.as_deref()).unwrap_or(usize::MAX);
-        let w = Window { hwnd: h, seq, image: None, rank: IconRank::None, src: 0, aumid, exe, slot };
+        let pid = window_ids(h).1;
+        let aumids: Vec<String> = aumid(h).into_iter().chain(package_aumid(pid)).collect();
+        let exe = process_path(pid);
+        let slot = slot(&self.pins, &aumids, exe.as_deref()).unwrap_or(usize::MAX);
+        log::debug!("window {:?} {aumids:?} {exe:?} -> pin {slot}", h.0);
+        let w = Window { hwnd: h, seq, image: None, rank: IconRank::None, src: 0, aumids, exe, slot };
         let at = self.items.partition_point(|o| o.order() < w.order());
         self.items.insert(at, w);
     }
@@ -163,7 +165,7 @@ impl WindowList {
     pub fn set_pins(&mut self, pins: Vec<Pin>) {
         self.pins = pins;
         for w in &mut self.items {
-            w.slot = slot(&self.pins, w.aumid.as_deref(), w.exe.as_deref()).unwrap_or(usize::MAX);
+            w.slot = slot(&self.pins, &w.aumids, w.exe.as_deref()).unwrap_or(usize::MAX);
         }
         self.items.sort_by_key(Window::order);
     }
