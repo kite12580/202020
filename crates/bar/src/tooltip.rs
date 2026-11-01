@@ -8,7 +8,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
-use crate::util::{make_long, wide};
+use crate::util::{make_long, primary_monitor, wide};
+
+const GAP: i32 = 6;
 
 pub struct Tooltip {
     hwnd: HWND,
@@ -64,8 +66,9 @@ impl Tooltip {
         }
     }
 
-    /// Shows `text` centered horizontally on `x`, just above `top` (screen px).
-    pub fn show(&mut self, text: &str, x: i32, top: i32) {
+    /// Shows `text` centered horizontally on `x`, just above `top`, or just
+    /// below `bottom` when there is no room above (screen px).
+    pub fn show(&mut self, text: &str, x: i32, top: i32, bottom: i32) {
         if text.is_empty() {
             self.hide();
             return;
@@ -81,7 +84,10 @@ impl Tooltip {
             SendMessageW(self.hwnd, TTM_UPDATETIPTEXTW, None, lp);
             let size = SendMessageW(self.hwnd, TTM_GETBUBBLESIZE, None, lp).0 as u32;
             let (w, h) = ((size & 0xFFFF) as i32, (size >> 16) as i32);
-            let pos = make_long(x - w / 2, top - h - 6);
+            let mon = primary_monitor();
+            let above = top - h - GAP;
+            let y = if above >= mon.top { above } else { bottom + GAP };
+            let pos = make_long((x - w / 2).clamp(mon.left, (mon.right - w).max(mon.left)), y);
             SendMessageW(self.hwnd, TTM_TRACKPOSITION, None, Some(LPARAM(pos as isize)));
             if !self.shown {
                 SendMessageW(self.hwnd, TTM_TRACKACTIVATE, Some(WPARAM(1)), lp);

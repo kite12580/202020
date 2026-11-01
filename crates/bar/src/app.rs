@@ -1276,7 +1276,7 @@ impl App {
         self.invalidate();
     }
 
-    fn tray_tip(&mut self, icon: usize, x: i32, top: i32) {
+    fn tray_tip(&mut self, icon: usize, x: i32, top: i32, bottom: i32) {
         let i = &self.tray.icons[icon];
         if i.wants_popup() {
             let p = cursor();
@@ -1284,7 +1284,7 @@ impl App {
             self.tray_popup_open = Some(i.key);
         } else {
             let tip = i.tip.clone();
-            self.tooltip.show(&tip, x, top);
+            self.tooltip.show(&tip, x, top, bottom);
         }
     }
 
@@ -1292,10 +1292,9 @@ impl App {
         let Some(hit) = self.hover else { return };
         let Some(r) = self.layout.rect(hit) else { return };
         let x = self.bounds.left + self.px(r.center_x());
-        let top = self.bounds.top;
         let text = match hit {
             Hit::Window(i) => winlist::title(self.windows.items[i].hwnd),
-            Hit::Tray(i) => return self.tray_tip(self.bar_tray[i], x, top),
+            Hit::Tray(i) => return self.tray_tip(self.bar_tray[i], x, self.bounds.top, self.bounds.bottom),
             Hit::Keyboard => keyboard::display_name(self.keyboard_layout),
             Hit::Volume if !self.volume.available() => "没有音频输出设备".into(),
             Hit::Volume if self.volume.muted() => "已静音".into(),
@@ -1303,7 +1302,7 @@ impl App {
             Hit::Clock => long_date(),
             Hit::Chevron => return,
         };
-        self.tooltip.show(&text, x, top);
+        self.tooltip.show(&text, x, self.bounds.top, self.bounds.bottom);
     }
 
     /// Forwards a mouse message to a tray icon, adding explorer's follow-up
@@ -1315,7 +1314,7 @@ impl App {
         }
         let p = cursor();
         if !i.send(msg, (p.x, p.y)) {
-            self.tooltip.show(ELEVATED_HINT, p.x, p.y - self.px(12.0));
+            self.tooltip.show(ELEVATED_HINT, p.x, p.y - self.px(12.0), p.y + self.px(20.0));
             return;
         }
         let skip = msg == WM_LBUTTONUP && std::mem::take(&mut self.double_click);
@@ -1568,7 +1567,8 @@ impl App {
         let r = self.popup.cell_rect(c);
         let x = self.popup.origin.0 + self.px(r.center_x());
         let top = self.popup.origin.1 + self.px(r.y);
-        self.tray_tip(self.popup.cells[c], x, top);
+        let bottom = self.popup.origin.1 + self.px(r.y + r.h);
+        self.tray_tip(self.popup.cells[c], x, top, bottom);
     }
 
     fn toggle_pin(&mut self, icon: usize) {
