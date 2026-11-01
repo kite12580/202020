@@ -637,7 +637,7 @@ impl App {
         }
         self.register_appbar();
         if let Some(spy) = &self.spy {
-            spy.reclaim();
+            spy.reclaim(Vec::new());
         }
         unsafe {
             let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
@@ -1191,7 +1191,7 @@ impl App {
         self.relayout();
         self.register_appbar();
         if let Some(spy) = &self.spy {
-            spy.reclaim();
+            spy.reclaim(Vec::new());
         }
     }
 
@@ -1200,7 +1200,7 @@ impl App {
         let first = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) };
         if first.is_ok_and(|f| f != spy.hwnd()) {
             log::info!("spy lost tray z-order");
-            spy.reclaim();
+            spy.reclaim(self.tray.icons.iter().map(|i| i.key.hwnd).collect());
         }
     }
 

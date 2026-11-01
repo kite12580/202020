@@ -15,8 +15,8 @@ use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CopyIcon, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, FindWindowExW, GetIconInfo, GetMessageW, HICON, HWND_BROADCAST, HWND_MESSAGE, HWND_TOPMOST,
-    ICONINFO, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW, SMTO_ABORTIFHUNG, SWP_ASYNCWINDOWPOS,
+    DispatchMessageW, FindWindowExW, GetIconInfo, GetMessageW, HICON, HWND_MESSAGE, HWND_TOPMOST, ICONINFO, MSG,
+    MSGFLT_ALLOW, PostMessageW, PostQuitMessage, RegisterClassExW, SMTO_ABORTIFHUNG, SWP_ASYNCWINDOWPOS,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageTimeoutW, SendNotifyMessageW, SetWindowPos, WM_ACTIVATEAPP,
     WM_APP, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_USER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -111,22 +111,26 @@ impl Spy {
 
     /// Retakes the top of the `Shell_TrayWnd` z-order and asks apps to
     /// re-add their icons, which went to explorer while it was above us.
-    pub fn reclaim(&self) {
-        unsafe {
-            let _ = PostMessageW(Some(self.hwnd()), SPY_RECLAIM, WPARAM(0), LPARAM(0));
+    /// Owners in `known` already have their icons here and are not asked;
+    /// many apps re-add by deleting their icon first, which flickers it.
+    pub fn reclaim(&self, known: Vec<u32>) {
+        let known = Box::into_raw(Box::new(known));
+        if unsafe { PostMessageW(Some(self.hwnd()), SPY_RECLAIM, WPARAM(0), LPARAM(known as isize)) }.is_err() {
+            drop(unsafe { Box::from_raw(known) });
         }
     }
 }
 
-/// Reaches message-only windows too, which `HWND_BROADCAST` skips but some
-/// apps use as their notify-icon owner.
-fn announce_taskbar(msg: u32) {
-    unsafe {
-        let _ = SendNotifyMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
+/// Includes message-only windows, which some apps use as their notify-icon
+/// owner.
+fn announce_taskbar(msg: u32, known: &[u32]) {
+    for parent in [None, Some(HWND_MESSAGE)] {
         let mut prev = None;
-        while let Ok(h) = FindWindowExW(Some(HWND_MESSAGE), prev, PCWSTR::null(), PCWSTR::null()) {
-            if !own_window(h) {
-                let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
+        while let Ok(h) = unsafe { FindWindowExW(parent, prev, PCWSTR::null(), PCWSTR::null()) } {
+            if !(parent.is_some() && own_window(h)) && !known.contains(&(h.0 as usize as u32)) {
+                unsafe {
+                    let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
+                }
             }
             prev = Some(h);
         }
@@ -257,11 +261,12 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
         }
         SPY_RECLAIM => {
+            let known = unsafe { Box::from_raw(lparam.0 as *mut Vec<u32>) };
             unsafe {
                 let _ = SetWindowPos(h, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
             }
             if let Some(shared) = shared() {
-                announce_taskbar(shared.taskbar_created_msg);
+                announce_taskbar(shared.taskbar_created_msg, &known);
             }
             LRESULT(0)
         }
