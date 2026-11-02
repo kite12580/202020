@@ -30,16 +30,16 @@ pub struct Position {
 
 impl Default for Position {
     fn default() -> Self {
-        Self { center_x: 0.5, bottom_gap: 6.0 }
+        Self { center_x: 0.5, bottom_gap: 0.0 }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Backdrop {
-    #[default]
     Acrylic,
     Accent,
+    #[default]
     None,
 }
 
@@ -52,7 +52,7 @@ pub struct Appearance {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { backdrop: Backdrop::Acrylic, opacity: 0.25 }
+        Self { backdrop: Backdrop::None, opacity: 0.8 }
     }
 }
 
@@ -89,15 +89,16 @@ enabled = false
 
 [capsule_bar.position]
 # Horizontal center of the capsule as a fraction of the screen width (0.0 – 1.0). Updated when dragged.
+# 0.0 and 1.0 keep the capsule against the left or right edge as it grows and shrinks.
 center_x = 0.5
 # Distance from the capsule to the bottom of the screen (DIPs). Updated when dragged.
-bottom_gap = 6.0
+bottom_gap = 0.0
 
 [capsule_bar.appearance]
 # "acrylic" (system acrylic), "accent" (legacy blur, for when acrylic doesn't work) or "none" (plain transparent).
-backdrop = "acrylic"
+backdrop = "none"
 # Opacity of the background tint (0.0 – 1.0).
-opacity = 0.25
+opacity = 0.8
 
 [capsule_bar.volume]
 # Volume change per wheel notch, in percent.

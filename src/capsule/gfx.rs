@@ -4,7 +4,10 @@ use std::rc::Rc;
 
 use ab_glyph::{Font as _, FontRef, GlyphId, PxScale, VariableFont, point};
 use capsule_core::layout::Rect;
-use tiny_skia::{FillRule, IntSize, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Transform};
+use tiny_skia::{
+    FillRule, GradientStop, IntSize, LinearGradient, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Point,
+    SpreadMode, Transform,
+};
 use windows::Win32::Foundation::{GENERIC_READ, HWND};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
@@ -32,11 +35,13 @@ impl Color {
     }
 
     /// Surfaces hold BGRA pixels, which tiny-skia treats as RGBA.
+    fn skia(self) -> tiny_skia::Color {
+        tiny_skia::Color::from_rgba(self.2, self.1, self.0, self.3).unwrap_or(tiny_skia::Color::TRANSPARENT)
+    }
+
     fn paint(self) -> Paint<'static> {
         let mut p = Paint::default();
-        p.set_color(
-            tiny_skia::Color::from_rgba(self.2, self.1, self.0, self.3).unwrap_or(tiny_skia::Color::TRANSPARENT),
-        );
+        p.set_color(self.skia());
         p.anti_alias = true;
         p
     }
@@ -442,6 +447,34 @@ impl Surface {
             pm.fill_rect(rect, &paint, t, None);
         } else if let Some(path) = rounded_rect(rect, radius) {
             pm.fill_path(&path, &paint, FillRule::Winding, t, None);
+        }
+    }
+
+    /// Fills `rects` with a single gradient running from the top-left to the
+    /// bottom-right corner of their bounds.
+    pub fn fill_gradient(&mut self, rects: &[Rect], radius: f32, from: Color, to: Color) {
+        let left = rects.iter().map(|r| r.x).fold(f32::INFINITY, f32::min);
+        let top = rects.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+        let right = rects.iter().map(Rect::right).fold(f32::NEG_INFINITY, f32::max);
+        let bottom = rects.iter().map(|r| r.y + r.h).fold(f32::NEG_INFINITY, f32::max);
+        let stops = vec![GradientStop::new(0.0, from.skia()), GradientStop::new(1.0, to.skia())];
+        let Some(shader) = LinearGradient::new(
+            Point::from_xy(left, top),
+            Point::from_xy(right, bottom),
+            stops,
+            SpreadMode::Pad,
+            Transform::identity(),
+        ) else {
+            return;
+        };
+        let paint = Paint { shader, anti_alias: true, ..Default::default() };
+        let t = Transform::from_scale(self.scale(), self.scale());
+        let mut pm = self.pixmap();
+        for r in rects {
+            let path = tiny_skia::Rect::from_xywh(r.x, r.y, r.w, r.h).and_then(|rect| rounded_rect(rect, radius));
+            if let Some(path) = path {
+                pm.fill_path(&path, &paint, FillRule::Winding, t, None);
+            }
         }
     }
 

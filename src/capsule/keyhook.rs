@@ -160,6 +160,11 @@ pub fn win_held() -> bool {
     held(VK_LWIN) || held(VK_RWIN)
 }
 
+pub fn press_start() {
+    let inputs = [key(VK_LWIN, KEYEVENTF_EXTENDEDKEY), key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP)];
+    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+}
+
 /// Sends the shell shortcut Win+`letter`.
 pub fn press_win(letter: u8) {
     let vk = VIRTUAL_KEY(u16::from(letter));

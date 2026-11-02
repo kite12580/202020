@@ -23,6 +23,7 @@ impl Rect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Hit {
+    Start,
     Task(usize),
     Chevron,
     Tray(usize),
@@ -69,6 +70,7 @@ impl Layout {
             *x += w;
         };
 
+        push(&mut out, Hit::Start, m.task_item, &mut x);
         for i in 0..input.tasks {
             push(&mut out, Hit::Task(i), m.task_item, &mut x);
         }
@@ -122,9 +124,26 @@ pub fn place(monitor: PxRect, w: i32, h: i32, center_x: f32, bottom_gap: i32) ->
     (x, y)
 }
 
-/// Inverse of [`place`]: the anchor for a capsule at `(x, y)`.
+/// Moves a `w`×`h` capsule at `(x, y)` onto the left edge, the center or the
+/// right edge, and onto the bottom, when it is within `threshold` pixels.
+pub fn snap(monitor: PxRect, x: i32, y: i32, w: i32, h: i32, threshold: i32) -> (i32, i32) {
+    let center = place(monitor, w, h, 0.5, 0).0;
+    let x = [monitor.left, center, monitor.right - w].into_iter().find(|t| (x - t).abs() <= threshold).unwrap_or(x);
+    let y = if (monitor.bottom - h - y).abs() <= threshold { monitor.bottom - h } else { y };
+    (x, y)
+}
+
+/// Inverse of [`place`]: the anchor for a capsule at `(x, y)`. A capsule
+/// touching a side edge anchors at 0.0 or 1.0, so it stays on that edge when
+/// its width changes.
 pub fn anchor(monitor: PxRect, x: i32, y: i32, w: i32, h: i32) -> (f32, i32) {
-    let center_x = ((x + w / 2 - monitor.left) as f32 / monitor.width().max(1) as f32).clamp(0.0, 1.0);
+    let center_x = if x <= monitor.left {
+        0.0
+    } else if x + w >= monitor.right {
+        1.0
+    } else {
+        ((x + w / 2 - monitor.left) as f32 / monitor.width().max(1) as f32).clamp(0.0, 1.0)
+    };
     let bottom_gap = (monitor.bottom - (y + h)).max(0);
     (center_x, bottom_gap)
 }
@@ -142,11 +161,20 @@ mod tests {
         let hits: Vec<Hit> = l.items.iter().map(|(h, _)| *h).collect();
         assert_eq!(
             hits,
-            [Hit::Task(0), Hit::Task(1), Hit::Chevron, Hit::Tray(0), Hit::Keyboard, Hit::Volume, Hit::Clock]
+            [
+                Hit::Start,
+                Hit::Task(0),
+                Hit::Task(1),
+                Hit::Chevron,
+                Hit::Tray(0),
+                Hit::Keyboard,
+                Hit::Volume,
+                Hit::Clock
+            ]
         );
         let m = &METRICS;
         let expected =
-            m.pad * 2.0 + 2.0 * m.task_item + m.chevron + m.tray_item + 110.0 + 3.0 * m.text_pad + 3.0 * m.tight_pad;
+            m.pad * 2.0 + 3.0 * m.task_item + m.chevron + m.tray_item + 110.0 + 3.0 * m.text_pad + 3.0 * m.tight_pad;
         assert!((l.width - expected).abs() < 0.01);
         for w in l.items.windows(2) {
             assert!(w[0].1.right() <= w[1].1.x + 0.001);
@@ -158,7 +186,8 @@ mod tests {
         let l = Layout::compute(&METRICS, &Input::default());
         assert_eq!(l.rect(Hit::Chevron), None);
         assert_eq!(l.hit(1.0), None);
-        assert_eq!(l.hit(METRICS.pad + 1.0), Some(Hit::Keyboard));
+        assert_eq!(l.hit(METRICS.pad + 1.0), Some(Hit::Start));
+        assert_eq!(l.hit(METRICS.pad + METRICS.task_item + 1.0), Some(Hit::Keyboard));
     }
 
     #[test]
@@ -171,5 +200,23 @@ mod tests {
         assert_eq!(place(MON, 400, 48, 0.0, 9).0, 0);
         assert_eq!(place(MON, 400, 48, 1.0, 9).0, 1520);
         assert_eq!(place(MON, 400, 48, 0.5, 5000).1, 0);
+    }
+
+    #[test]
+    fn edge_anchors_survive_resizes() {
+        assert_eq!(anchor(MON, 1520, 1023, 400, 48).0, 1.0);
+        assert_eq!(place(MON, 300, 48, 1.0, 9).0 + 300, 1920);
+        assert_eq!(anchor(MON, 0, 1023, 400, 48).0, 0.0);
+        assert_eq!(place(MON, 500, 48, 0.0, 9).0, 0);
+    }
+
+    #[test]
+    fn snaps_to_edges_center_and_bottom() {
+        assert_eq!(snap(MON, 10, 1020, 400, 48, 12), (0, 1032));
+        assert_eq!(snap(MON, 1510, 900, 400, 48, 12), (1520, 900));
+        assert_eq!(snap(MON, 770, 1000, 400, 48, 12), (760, 1000));
+        assert_eq!(snap(MON, 700, 1000, 401, 48, 12), (700, 1000));
+        let (x, _) = snap(MON, 755, 0, 401, 48, 12);
+        assert_eq!(anchor(MON, x, 0, 401, 48).0, 0.5);
     }
 }

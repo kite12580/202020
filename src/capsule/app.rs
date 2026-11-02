@@ -49,8 +49,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{GUID, PCWSTR, w};
 
-use crate::capsule::config_store::{self, ConfigStore};
-use crate::capsule::gfx::{Font, Gfx, Image, Surface, Text};
+use crate::capsule::config_store::ConfigStore;
+use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
 use crate::capsule::icons::IconWorker;
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
@@ -75,7 +75,6 @@ pub struct Options {
     /// Window that receives the `*_msg` messages.
     pub owner: isize,
     pub exited_msg: u32,
-    pub quit_msg: u32,
     pub disable_msg: u32,
     pub restart_msg: u32,
 }
@@ -99,6 +98,7 @@ const WM_APP_INPUT: u32 = WM_APP + 8;
 pub const WM_APP_STOP: u32 = WM_APP + 9;
 pub const WM_APP_BREAK: u32 = WM_APP + 10;
 const WM_APP_REPOSITION: u32 = WM_APP + 11;
+pub const WM_APP_RELOAD_CONFIG: u32 = WM_APP + 12;
 
 pub static STOP: AtomicBool = AtomicBool::new(false);
 pub static BREAK: AtomicBool = AtomicBool::new(false);
@@ -120,6 +120,11 @@ const WINDOW_ICON: f32 = 20.0;
 const TASK_ICON_LIFT: f32 = 1.5;
 const TRAY_ICON: f32 = 16.0;
 const POPUP_GAP: f32 = 6.0;
+const START_LOGO: f32 = 16.0;
+const START_LOGO_GAP: f32 = 1.0;
+const SNAP: f32 = 12.0;
+const START_LOGO_FROM: Color = Color(0.29, 0.79, 1.0, 1.0);
+const START_LOGO_TO: Color = Color(0.0, 0.40, 0.80, 1.0);
 const CLOCK_LINE_OVERLAP: f32 = 2.0;
 const ELEVATED_HINT: &str = "This program runs as administrator. Run 202020 as administrator to use its icon.";
 
@@ -138,11 +143,8 @@ const EVENT_OBJECT_UNCLOAKED: u32 = 0x8018;
 const FRAME_CLASS: &str = "ApplicationFrameWindow";
 const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
 
-const MENU_OPEN_CONFIG: u32 = 1;
-const MENU_RELOAD_CONFIG: u32 = 2;
-const MENU_DISABLE: u32 = 3;
-const MENU_QUIT: u32 = 4;
-const MENU_RESTART: u32 = 5;
+const MENU_RESTART: u32 = 1;
+const MENU_QUIT: u32 = 2;
 
 const GLYPH_CHEVRON: &str = "\u{E70E}";
 const GLYPH_MUTE: &str = "\u{E74F}";
@@ -1511,6 +1513,7 @@ impl App {
             Hit::Volume if self.volume.muted() => "Muted".into(),
             Hit::Volume => format!("Volume {}%", (self.volume.level() * 100.0).round()),
             Hit::Clock => long_date(),
+            Hit::Start => "Start".into(),
             Hit::Chevron => return,
         };
         self.tooltip.show(&text, x, self.bounds.top, self.bounds.bottom);
@@ -1617,7 +1620,12 @@ impl App {
             unsafe { SetCapture(self.hwnd) };
             return;
         }
-        let Some(hit) = hit else { return };
+        let Some(hit) = hit else {
+            if msg == WM_RBUTTONUP {
+                self.deferred.push_back(DeferredMenu::App);
+            }
+            return;
+        };
         match (msg, hit) {
             (WM_MBUTTONUP, Hit::Task(i)) => {
                 if let Some(h) = self.task_window(i) {
@@ -1630,6 +1638,7 @@ impl App {
                     winlist::system_menu(h, p.x, p.y);
                 }
             }
+            (WM_RBUTTONUP, Hit::Start) => keyhook::press_win(b'X'),
             (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(DeferredMenu::Keyboard),
             (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(DeferredMenu::App),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
@@ -1647,6 +1656,7 @@ impl App {
     /// A left click that did not turn into a drag.
     fn left_click(&mut self, hit: Hit, double: bool) {
         match hit {
+            Hit::Start => keyhook::press_start(),
             Hit::Task(i) => match self.tasks[i] {
                 Task::Window(w) => winlist::activate_or_minimize(self.windows.items[w].hwnd, self.foreground_root()),
                 Task::Pin(p) => pinned::launch(&self.pins[p].parsing_name),
@@ -1666,6 +1676,7 @@ impl App {
     fn drag_to(&mut self, x: i32, y: i32) {
         let mon = primary_monitor();
         let (w, h) = (self.bounds.right - self.bounds.left, self.bounds.bottom - self.bounds.top);
+        let (x, y) = layout::snap(mon, x, y, w, h, self.px(SNAP));
         let x = x.clamp(mon.left, mon.right - w);
         let y = y.clamp(mon.top, mon.bottom - h);
         self.bounds = RECT { left: x, top: y, right: x + w, bottom: y + h };
@@ -1845,6 +1856,17 @@ impl App {
             }
             let center = |t: &Text| (r.center_x() - t.width / 2.0, cy - t.height / 2.0);
             match hit {
+                Hit::Start => {
+                    let size = (START_LOGO - START_LOGO_GAP) / 2.0;
+                    let (left, top) = (r.center_x() - START_LOGO / 2.0, cy - START_LOGO / 2.0);
+                    let squares = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(col, row)| Rect {
+                        x: left + col * (size + START_LOGO_GAP),
+                        y: top + row * (size + START_LOGO_GAP),
+                        w: size,
+                        h: size,
+                    });
+                    s.fill_gradient(&squares, 1.0, START_LOGO_FROM, START_LOGO_TO);
+                }
                 Hit::Task(i) => {
                     let image = match self.tasks[i] {
                         Task::Window(w) => {
@@ -1957,6 +1979,7 @@ impl App {
                 let _ = EndMenu();
             },
             WM_APP_BREAK => self.update_visibility(),
+            WM_APP_RELOAD_CONFIG => self.reload_config(),
             WM_APP_REPOSITION => {
                 if self.reposition_pending {
                     self.reposition();
@@ -2054,27 +2077,18 @@ fn menu_anchor(a: &App, hit: Hit) -> (i32, i32) {
 }
 
 fn app_menu() {
-    let Some((owner, prev, (x, y))) = with_app(|a| (a.hwnd, a.foreground, menu_anchor(a, Hit::Clock))) else { return };
-    let items = [
-        menu::command(MENU_OPEN_CONFIG, "Open config"),
-        menu::command(MENU_RELOAD_CONFIG, "Reload config"),
-        menu::command(MENU_RESTART, "Reload capsule bar"),
-        Item::Separator,
-        menu::command(MENU_DISABLE, "Disable capsule bar"),
-        menu::command(MENU_QUIT, "Quit"),
-    ];
+    let Some((owner, prev, y)) = with_app(|a| (a.hwnd, a.foreground, a.bounds.top - a.px(4.0))) else { return };
+    let x = cursor().x;
+    let items = [menu::command(MENU_RESTART, "Restart capsule bar"), menu::command(MENU_QUIT, "Quit capsule bar")];
     let id = menu::show(owner, &items, x, y);
-    if id != MENU_QUIT && !prev.is_invalid() {
+    if !prev.is_invalid() {
         unsafe {
             let _ = SetForegroundWindow(prev);
         }
     }
     with_app(|a| match id {
-        MENU_OPEN_CONFIG => config_store::open_in_editor(&a.cfg.path),
-        MENU_RELOAD_CONFIG => a.reload_config(),
         MENU_RESTART => a.opts.post_owner(a.opts.restart_msg),
-        MENU_DISABLE => a.opts.post_owner(a.opts.disable_msg),
-        MENU_QUIT => a.opts.post_owner(a.opts.quit_msg),
+        MENU_QUIT => a.opts.post_owner(a.opts.disable_msg),
         _ => {}
     });
 }
@@ -2091,7 +2105,7 @@ fn keyboard_menu() {
         .iter()
         .zip(&names)
         .enumerate()
-        .map(|(i, (&h, name))| Item::Command { id: i as u32 + 1, text: name, checked: h == current })
+        .map(|(i, (&h, name))| Item { id: i as u32 + 1, text: name, checked: h == current })
         .collect();
     let id = menu::show(owner, &items, x, y);
     if !target.is_invalid() {

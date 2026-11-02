@@ -51,9 +51,8 @@ const OVERLAY_CLASS: PCWSTR = w!("202020Overlay");
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_DISMISS: u32 = WM_APP + 2;
 const WM_BAR_EXITED: u32 = WM_APP + 3;
-const WM_BAR_QUIT: u32 = WM_APP + 4;
-const WM_BAR_DISABLE: u32 = WM_APP + 5;
-const WM_BAR_RESTART: u32 = WM_APP + 6;
+const WM_BAR_DISABLE: u32 = WM_APP + 4;
+const WM_BAR_RESTART: u32 = WM_APP + 5;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
 const TIMER_TICK: usize = 1;
@@ -65,6 +64,7 @@ const CMD_RESET: i32 = 3;
 const CMD_QUIT: i32 = 4;
 const CMD_BAR: i32 = 5;
 const CMD_EDIT_CONFIG: i32 = 6;
+const CMD_RELOAD_CONFIG: i32 = 7;
 
 static MAIN_HWND: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -357,6 +357,12 @@ impl App {
         }
     }
 
+    fn reload_config(&mut self) {
+        if let BarState::Running(bar) = &self.bar {
+            bar.reload_config();
+        }
+    }
+
     fn on_bar_exited(&mut self) {
         if let BarState::Running(bar) | BarState::Stopping(bar) = std::mem::replace(&mut self.bar, BarState::Off) {
             bar.join();
@@ -454,12 +460,14 @@ fn show_menu(hwnd: HWND) {
     let cmd = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let items = [
+            (MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar")),
+            (MF_SEPARATOR, 0, PCWSTR::null()),
             (MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") }),
             (MF_STRING, CMD_BREAK, w!("Break now")),
             (MF_STRING, CMD_RESET, w!("Reset timer")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
-            (MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar")),
             (MF_STRING, CMD_EDIT_CONFIG, w!("Edit config")),
+            (MF_STRING, CMD_RELOAD_CONFIG, w!("Reload config")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
             (MF_STRING, CMD_QUIT, w!("Quit")),
         ];
@@ -484,6 +492,7 @@ fn show_menu(hwnd: HWND) {
             capsule::edit_config();
             None
         }
+        CMD_RELOAD_CONFIG => with_app(App::reload_config),
         _ => None,
     };
 }
@@ -519,9 +528,6 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         }
         WM_BAR_EXITED => {
             with_app(App::on_bar_exited);
-        }
-        WM_BAR_QUIT => {
-            with_app(App::quit);
         }
         WM_BAR_DISABLE => {
             with_app(App::disable_bar);
@@ -654,7 +660,6 @@ fn main() {
                 diag,
                 owner: hwnd.0 as isize,
                 exited_msg: WM_BAR_EXITED,
-                quit_msg: WM_BAR_QUIT,
                 disable_msg: WM_BAR_DISABLE,
                 restart_msg: WM_BAR_RESTART,
             },

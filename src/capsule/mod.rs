@@ -65,6 +65,12 @@ impl Bar {
         }
     }
 
+    pub fn reload_config(&self) {
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), app::WM_APP_RELOAD_CONFIG, WPARAM(0), LPARAM(0));
+        }
+    }
+
     pub fn join(self) {
         let _ = self.thread.join();
     }
