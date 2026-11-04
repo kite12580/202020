@@ -6,6 +6,7 @@ use toml_edit::{Array, DocumentMut, value};
 #[serde(default)]
 pub struct Config {
     pub capsule_bar: CapsuleBar,
+    pub launcher: Launcher,
     pub logging: Logging,
 }
 
@@ -113,6 +114,137 @@ pub struct Tray {
     pub pinned: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Launcher {
+    pub enabled: bool,
+    pub hotkey: String,
+    pub max_results: usize,
+    pub idle_unload_minutes: u32,
+    pub prefixes: Prefixes,
+    pub apps: AppsSource,
+    pub windows: WindowsSource,
+    pub commands: CommandsSource,
+    pub folders: FoldersSource,
+}
+
+impl Default for Launcher {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hotkey: "Alt+Space".into(),
+            max_results: 8,
+            idle_unload_minutes: 10,
+            prefixes: Prefixes::default(),
+            apps: AppsSource::default(),
+            windows: WindowsSource::default(),
+            commands: CommandsSource::default(),
+            folders: FoldersSource::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Prefixes {
+    pub apps: String,
+    pub commands: String,
+    pub folders: String,
+    pub windows: String,
+}
+
+impl Default for Prefixes {
+    fn default() -> Self {
+        Self { apps: String::new(), commands: ">".into(), folders: "/".into(), windows: "@".into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct AppsSource {
+    pub enabled: bool,
+    pub weight: f32,
+}
+
+impl Default for AppsSource {
+    fn default() -> Self {
+        Self { enabled: true, weight: 1.0 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WindowsSource {
+    pub enabled: bool,
+    pub weight: f32,
+}
+
+impl Default for WindowsSource {
+    fn default() -> Self {
+        Self { enabled: true, weight: 0.9 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct CommandsSource {
+    pub enabled: bool,
+    pub weight: f32,
+    pub custom: Vec<CustomCommand>,
+}
+
+impl Default for CommandsSource {
+    fn default() -> Self {
+        Self { enabled: true, weight: 0.8, custom: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[serde(default)]
+pub struct CustomCommand {
+    pub name: String,
+    pub command: String,
+    pub args: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct FoldersSource {
+    pub enabled: bool,
+    pub weight: f32,
+    pub roots: Vec<FolderRoot>,
+}
+
+impl Default for FoldersSource {
+    fn default() -> Self {
+        Self { enabled: true, weight: 0.7, roots: vec![FolderRoot::default()] }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct FolderRoot {
+    pub path: String,
+    pub depth: u32,
+    pub extensions: Vec<String>,
+    pub exclude: Vec<String>,
+    pub include_dirs: bool,
+    pub max_items: usize,
+}
+
+impl Default for FolderRoot {
+    fn default() -> Self {
+        Self {
+            path: r"%USERPROFILE%\Documents".into(),
+            depth: 3,
+            extensions: Vec::new(),
+            exclude: vec!["node_modules".into(), ".git".into(), "target".into()],
+            include_dirs: true,
+            max_items: 20_000,
+        }
+    }
+}
+
 pub const DEFAULT_TEXT: &str = r#"# 202020 settings. Capsule bar changes apply on save while it is running.
 
 [capsule_bar]
@@ -145,6 +277,61 @@ step = 2
 # Tray icons shown on the capsule. Right-click an icon in the ^ popup to pin or unpin it.
 pinned = []
 
+[launcher]
+# Spotlight-style search, opened with the hotkey. Toggle it from the tray menu.
+enabled = true
+# Modifiers (Alt, Ctrl, Shift, Win) and a key, e.g. "Alt+Space" or "Ctrl+Shift+K". Applied by Reload config.
+hotkey = "Alt+Space"
+# Rows shown at most (1 – 20).
+max_results = 8
+# Free the search index after this many minutes without opening the launcher.
+idle_unload_minutes = 10
+
+[launcher.prefixes]
+# Typing a prefix first searches only that source. "" turns a prefix off.
+apps = ""
+commands = ">"
+folders = "/"
+windows = "@"
+
+# Each source can be turned off; its weight scales its results' ranking (0.0 – 2.0).
+[launcher.apps]
+enabled = true
+weight = 1.0
+
+[launcher.windows]
+enabled = true
+weight = 0.9
+
+[launcher.commands]
+enabled = true
+weight = 0.8
+custom = []
+# Your own entries:
+# [[launcher.commands.custom]]
+# name = "Calculator 计算器"
+# command = "calc.exe"
+# args = ""
+
+[launcher.folders]
+enabled = true
+weight = 0.7
+
+# Folders whose files and subfolders are searchable by name. Repeat the table for more roots.
+[[launcher.folders.roots]]
+# %VARIABLES% are expanded.
+path = "%USERPROFILE%\\Documents"
+# Subfolder levels to descend; 0 searches only the folder itself.
+depth = 3
+# Only files with these extensions, e.g. ["pdf", "docx"]; [] means all.
+extensions = []
+# File or folder names to skip; * and ? are wildcards.
+exclude = ["node_modules", ".git", "target"]
+# Also list folders themselves.
+include_dirs = true
+# Stop scanning this root after this many entries.
+max_items = 20000
+
 [logging]
 # Write logs to the logs folder next to the exe: "off", "error", "warn", "info", "debug" or "trace". Use "debug" when
 # reporting a problem; "trace" also logs why each window was shown on or left off the capsule bar. Read at startup.
@@ -160,6 +347,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
     c.volume.step = c.volume.step.clamp(1, 20);
     c.keyboard.labels =
         std::mem::take(&mut c.keyboard.labels).into_iter().map(|(k, v)| (k.to_ascii_lowercase(), v)).collect();
+    let l = &mut config.launcher;
+    l.max_results = l.max_results.clamp(1, 20);
+    l.idle_unload_minutes = l.idle_unload_minutes.clamp(1, 24 * 60);
+    for w in [&mut l.apps.weight, &mut l.windows.weight, &mut l.commands.weight, &mut l.folders.weight] {
+        *w = w.clamp(0.0, 2.0);
+    }
     Ok(config)
 }
 
@@ -188,6 +381,10 @@ pub fn set_pinned(text: &str, pinned: &[String]) -> String {
 
 pub fn set_enabled(text: &str, enabled: bool) -> String {
     edit(text, |doc| doc["capsule_bar"]["enabled"] = value(enabled))
+}
+
+pub fn set_launcher_enabled(text: &str, enabled: bool) -> String {
+    edit(text, |doc| doc["launcher"]["enabled"] = value(enabled))
 }
 
 #[cfg(test)]
@@ -231,6 +428,21 @@ mod tests {
         assert!(t.contains("# Replace the Windows taskbar"));
         assert!(parse(&t).unwrap().capsule_bar.enabled);
         assert!(!parse(&set_enabled(&t, false)).unwrap().capsule_bar.enabled);
+    }
+
+    #[test]
+    fn launcher_section() {
+        let l = parse("[launcher.windows]\nenabled = false\n[launcher.folders]\nweight = 9").unwrap().launcher;
+        assert!(l.enabled && l.apps.enabled && !l.windows.enabled);
+        assert_eq!((l.windows.weight, l.folders.weight), (0.9, 2.0));
+        assert_eq!(l.folders.roots, [FolderRoot::default()]);
+        let l = parse("[[launcher.folders.roots]]\npath = 'D:\\x'\n[launcher]\nmax_results = 0").unwrap().launcher;
+        assert_eq!(l.folders.roots.len(), 1);
+        assert_eq!((l.folders.roots[0].path.as_str(), l.folders.roots[0].depth), (r"D:\x", 3));
+        assert_eq!(l.max_results, 1);
+        let t = set_launcher_enabled(DEFAULT_TEXT, false);
+        assert!(t.contains("# Spotlight-style search"));
+        assert!(!parse(&t).unwrap().launcher.enabled);
     }
 
     #[test]

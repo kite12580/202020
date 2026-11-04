@@ -21,6 +21,8 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
+use capsule::launcher::{self, AppCommand};
+use capsule_core::launcher::hotkey;
 use render::{Digits, IconFace, Overlay};
 
 const WORK_SECONDS: f64 = 20.0 * 60.0;
@@ -53,8 +55,10 @@ const WM_DISMISS: u32 = WM_APP + 2;
 const WM_BAR_EXITED: u32 = WM_APP + 3;
 const WM_BAR_DISABLE: u32 = WM_APP + 4;
 const WM_BAR_RESTART: u32 = WM_APP + 5;
+const WM_LAUNCHER_CMD: u32 = WM_APP + 6;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
+const HOTKEY_LAUNCHER: i32 = 2;
 const TIMER_TICK: usize = 1;
 const TIMER_FRAME: usize = 2;
 const TIMER_BREAK_END: usize = 3;
@@ -65,6 +69,16 @@ const CMD_QUIT: i32 = 4;
 const CMD_BAR: i32 = 5;
 const CMD_EDIT_CONFIG: i32 = 6;
 const CMD_RELOAD_CONFIG: i32 = 7;
+const CMD_LAUNCHER: i32 = 8;
+
+const LAUNCHER_COMMANDS: &[AppCommand] = &[
+    AppCommand { id: CMD_TOGGLE as u32, name: "Pause or resume timer  暂停 继续计时" },
+    AppCommand { id: CMD_BREAK as u32, name: "Break now  立即休息" },
+    AppCommand { id: CMD_RESET as u32, name: "Reset timer  重置计时" },
+    AppCommand { id: CMD_BAR as u32, name: "Toggle capsule bar  切换胶囊栏" },
+    AppCommand { id: CMD_EDIT_CONFIG as u32, name: "Edit config  编辑配置" },
+    AppCommand { id: CMD_RELOAD_CONFIG as u32, name: "Reload config  重新加载配置" },
+];
 
 static MAIN_HWND: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -131,8 +145,17 @@ struct App {
     brk: Option<Break>,
     bar_opts: capsule::Options,
     bar: BarState,
+    launcher: LauncherState,
     restarting: bool,
     quitting: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LauncherState {
+    Off,
+    On,
+    /// Enabled, but the hotkey is invalid or taken by another program.
+    NoHotkey,
 }
 
 enum BarState {
@@ -252,6 +275,7 @@ impl App {
             ) else {
                 return;
             };
+            launcher::hide();
             let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), Some(instance.into()), 0).ok();
             self.brk = Some(Break { hwnd, hook, started_at: now(), overlay });
             capsule::set_break(true, self.bar());
@@ -361,6 +385,32 @@ impl App {
         if let BarState::Running(bar) = &self.bar {
             bar.reload_config();
         }
+        self.apply_launcher();
+    }
+
+    /// Registers the launcher hotkey from the config, or frees the launcher.
+    fn apply_launcher(&mut self) {
+        unsafe {
+            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_LAUNCHER);
+        }
+        let (cfg, _) = capsule::launcher_config();
+        if !cfg.enabled {
+            self.launcher = LauncherState::Off;
+            launcher::unload();
+            return;
+        }
+        let registered = hotkey::parse(&cfg.hotkey).is_some_and(|(mods, vk)| unsafe {
+            RegisterHotKey(Some(self.hwnd), HOTKEY_LAUNCHER, HOT_KEY_MODIFIERS(mods) | MOD_NOREPEAT, vk).is_ok()
+        });
+        if !registered {
+            log::warn!("launcher hotkey {:?} is invalid or in use", cfg.hotkey);
+        }
+        self.launcher = if registered { LauncherState::On } else { LauncherState::NoHotkey };
+    }
+
+    fn toggle_launcher(&mut self) {
+        capsule::set_launcher_enabled(self.launcher == LauncherState::Off);
+        self.apply_launcher();
     }
 
     fn on_bar_exited(&mut self) {
@@ -380,6 +430,8 @@ impl App {
             return self.stop_bar();
         }
         self.dismiss_break();
+        launcher::flush_history();
+        launcher::unload();
         self.notify(NIM_DELETE);
         unsafe {
             let _ = DestroyWindow(self.hwnd);
@@ -447,13 +499,13 @@ fn paint_overlay(hdc: HDC, overlay: &Overlay) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let Some((paused, bar_flags)) = with_app(|app| {
+    let Some((paused, bar_flags, launcher)) = with_app(|app| {
         let bar_flags = match app.bar {
             BarState::Off => MF_UNCHECKED,
             BarState::Running(_) => MF_CHECKED,
             BarState::Stopping(_) => MF_GRAYED,
         };
-        (app.paused, bar_flags)
+        (app.paused, bar_flags, app.launcher)
     }) else {
         return;
     };
@@ -461,6 +513,11 @@ fn show_menu(hwnd: HWND) {
         let Ok(menu) = CreatePopupMenu() else { return };
         let items = [
             (MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar")),
+            match launcher {
+                LauncherState::Off => (MF_STRING | MF_UNCHECKED, CMD_LAUNCHER, w!("Launcher")),
+                LauncherState::On => (MF_STRING | MF_CHECKED, CMD_LAUNCHER, w!("Launcher")),
+                LauncherState::NoHotkey => (MF_STRING | MF_CHECKED, CMD_LAUNCHER, w!("Launcher (hotkey unavailable)")),
+            },
             (MF_SEPARATOR, 0, PCWSTR::null()),
             (MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") }),
             (MF_STRING, CMD_BREAK, w!("Break now")),
@@ -482,12 +539,17 @@ fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
         cmd.0
     };
+    run_command(cmd);
+}
+
+fn run_command(cmd: i32) {
     match cmd {
         CMD_TOGGLE => with_app(App::toggle_pause),
         CMD_BREAK => with_app(App::show_break),
         CMD_RESET => with_app(App::reset_timer),
         CMD_QUIT => with_app(App::quit),
         CMD_BAR => with_app(App::toggle_bar),
+        CMD_LAUNCHER => with_app(App::toggle_launcher),
         CMD_EDIT_CONFIG => {
             capsule::edit_config();
             None
@@ -520,9 +582,16 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 _ => {}
             });
         }
+        WM_HOTKEY if wparam.0 as i32 == HOTKEY_LAUNCHER => {
+            if with_app(|app| app.brk.is_none()) == Some(true) {
+                launcher::toggle();
+            }
+        }
         WM_HOTKEY => {
             with_app(App::toggle_pause);
         }
+        WM_LAUNCHER_CMD => run_command(wparam.0 as i32),
+        WM_ENDSESSION if wparam.0 != 0 => launcher::flush_history(),
         WM_DISMISS => {
             with_app(App::dismiss_break);
         }
@@ -653,6 +722,7 @@ fn main() {
                 restart_msg: WM_BAR_RESTART,
             },
             bar: BarState::Off,
+            launcher: LauncherState::Off,
             restarting: false,
             quitting: false,
         };
@@ -662,6 +732,12 @@ fn main() {
         if capsule::enabled() {
             with_app(App::start_bar);
         }
+        launcher::init(launcher::Options {
+            owner: hwnd.0 as isize,
+            command_msg: WM_LAUNCHER_CMD,
+            commands: LAUNCHER_COMMANDS,
+        });
+        with_app(App::apply_launcher);
 
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);
         let _ = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);

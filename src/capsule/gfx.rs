@@ -52,6 +52,10 @@ pub enum Font {
     Text,
     Clock,
     Glyph,
+    Small,
+    Title,
+    Search,
+    SearchGlyph,
 }
 
 const TEXT_FONTS: &[(&str, u32)] = &[
@@ -152,6 +156,17 @@ pub struct Text {
     pub height: f32,
 }
 
+impl Text {
+    /// Left edge of character `i`, or the end of the line past the last one.
+    pub fn x_at(&self, i: usize) -> f32 {
+        self.glyphs.get(i).map_or(self.width, |g| g.x)
+    }
+
+    pub fn len(&self) -> usize {
+        self.glyphs.len()
+    }
+}
+
 /// Device-independent icon pixels, pre-scaled to their on-screen size.
 #[derive(Clone)]
 pub struct Image {
@@ -180,8 +195,11 @@ impl Gfx {
     pub fn text(&self, s: &str, font: Font) -> Option<Text> {
         let (chain, size) = match font {
             Font::Text => (&self.text, 12.0),
-            Font::Clock => (&self.text, 11.0),
+            Font::Clock | Font::Small => (&self.text, 11.0),
             Font::Glyph => (&self.glyph, 12.0),
+            Font::Title => (&self.text, 14.0),
+            Font::Search => (&self.text, 20.0),
+            Font::SearchGlyph => (&self.glyph, 18.0),
         };
         let primary = chain.face(0)?;
         let units = |f: &FontRef| size / f.units_per_em().unwrap_or(1000.0);
@@ -221,6 +239,18 @@ impl Gfx {
             width: pen,
             height: (f.height_unscaled() + f.line_gap_unscaled()) * k,
         })
+    }
+
+    /// Lays out `s`, cut short with an ellipsis if wider than `max`.
+    pub fn text_fit(&self, s: &str, font: Font, max: f32) -> Option<Text> {
+        let t = self.text(s, font)?;
+        if t.width <= max {
+            return Some(t);
+        }
+        let ellipsis = self.text("…", font)?.width;
+        let keep = t.glyphs.iter().take_while(|g| g.x + ellipsis <= max).count().saturating_sub(1);
+        let cut: String = s.chars().take(keep).collect();
+        self.text(&format!("{cut}…"), font)
     }
 
     fn finish(&self, w: u32, h: u32, pixels: Vec<u8>, px: u32) -> Option<Image> {
@@ -485,11 +515,17 @@ impl Surface {
     }
 
     pub fn text(&mut self, t: &Text, x: f32, y: f32, c: Color) {
+        self.text_colored(t, x, y, |_| c);
+    }
+
+    /// Draws character `i` of `t` in `color(i)`.
+    pub fn text_colored(&mut self, t: &Text, x: f32, y: f32, color: impl Fn(usize) -> Color) {
         let s = self.scale();
         let (ox, baseline) = ((x * s).round(), ((y + t.ascent) * s).round());
         let (w, h) = (self.width as i32, self.height as i32);
         let data = self.data();
-        for g in &t.glyphs {
+        for (i, g) in t.glyphs.iter().enumerate() {
+            let c = color(i);
             let font = &g.face.font;
             let scale = PxScale::from(t.size * s * font.height_unscaled() / font.units_per_em().unwrap_or(1000.0));
             let glyph = g.id.with_scale_and_position(scale, point(ox + g.x * s, baseline));

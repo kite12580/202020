@@ -41,6 +41,7 @@ name = "capsule-core"
 version = "0.1.0"
 dependencies = [
  "log",
+ "nucleo-matcher",
  "serde",
  "toml",
  "toml_edit",
@@ -93,6 +94,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "nucleo-matcher"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf33f538733d1a5a3494b836ba913207f14d9d4a1d3cd67030c5061bdd2cac85"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "owned_ttf_parser"

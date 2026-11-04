@@ -1,4 +1,4 @@
-use capsule_core::config::{self, CapsuleBar, Config};
+use capsule_core::config::{self, Appearance, CapsuleBar, Config, Launcher};
 use std::path::PathBuf;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
@@ -51,6 +51,22 @@ pub fn set_enabled(enabled: bool) {
     if let Err(e) = std::fs::write(&path, config::set_enabled(&text, enabled)) {
         log::error!("config write: {e}");
     }
+}
+
+pub fn launcher() -> (Launcher, Appearance) {
+    let c = read().2;
+    (c.launcher, c.capsule_bar.appearance)
+}
+
+pub fn set_launcher_enabled(enabled: bool) {
+    let (path, text, _) = read();
+    if let Err(e) = std::fs::write(&path, config::set_launcher_enabled(&text, enabled)) {
+        log::error!("config write: {e}");
+    }
+}
+
+pub fn modified() -> Option<std::time::SystemTime> {
+    std::fs::metadata(app_dir().join("config.toml")).and_then(|m| m.modified()).ok()
 }
 
 pub fn open_in_editor(path: &std::path::Path) {

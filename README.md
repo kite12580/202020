@@ -1,9 +1,9 @@
 # 202020
 
-Windows tray app for the 20-20-20 rule: every 20 minutes, a fullscreen overlay on the primary monitor asks you to look away for 20 seconds. It can also replace the Windows 11 taskbar with the capsule bar.
+Windows tray app for the 20-20-20 rule: every 20 minutes, a fullscreen overlay on the primary monitor asks you to look away for 20 seconds. It can also replace the Windows 11 taskbar with the capsule bar, and comes with a Spotlight-style launcher on `Alt+Space`.
 
 - Tray icon shows minutes left, a 10-second countdown before a break, or a pause symbol.
-- Click the tray icon for Capsule bar, Pause/Resume, Break now, Reset timer, Edit config, Reload config, Quit.
+- Click the tray icon for Capsule bar, Launcher, Pause/Resume, Break now, Reset timer, Edit config, Reload config, Quit.
 - `Win+Alt+C` toggles pause.
 - `Esc` or `Space` ends a break early.
 - The timer resets after the system sleeps.
@@ -48,6 +48,29 @@ While the bar is running, a `--watchdog` child process restores the taskbar's au
 - Two input methods of the same language (e.g. Pinyin and Wubi) show the same name in the layout menu.
 - The wheel only adjusts volume when "Scroll inactive windows" is on (the Windows default).
 
+## Launcher
+
+`Alt+Space` opens a search box in the upper middle of the screen; press it again, `Esc`, or click elsewhere to close it. It searches:
+
+| Source | What | Prefix |
+|---|---|---|
+| Apps | Everything in the Start menu's All apps list, including Store apps | |
+| Windows | Open windows, by title or program name | `@` |
+| Commands | 202020 actions (pause, break now, capsule bar, config), Empty Recycle Bin, Settings, Task Manager, Control Panel, and your own commands | `>` |
+| Files | Files and folders under the folders listed in the config (Documents by default) | `/` |
+
+Matching is fuzzy: the letters you type must appear in order, and matches at word starts rank higher. Chinese names also match by 拼音, by 拼音首字母, or by a mix of both, with every reading of a 多音字 tried: `wx`, `weixin` and `wxin` all find 微信. Apps also match by their program name (`calc` finds 计算器). Things you open often rank higher. With nothing typed, the most-used entries are shown. Start with a prefix to search a single source.
+
+| Key | Action |
+|---|---|
+| `Enter` / click | Open the app or file, switch to the window, or run the command |
+| `↑` `↓` `Tab` / wheel | Move the selection |
+| Right-click / `Shift+F10` | The item's Explorer context menu (Run as administrator, Open file location, Properties …); a window's system menu |
+
+Each source can be turned off or weighted under `[launcher]` in the config, and the hotkey can be changed (applied by Reload config). If another program already uses the hotkey, the tray menu shows "Launcher (hotkey unavailable)". While the launcher is on, `Alt+Space` no longer opens a window's system menu.
+
+The launcher keeps nothing in memory until you first open it. Its index is rebuilt in the background each time it opens and freed after 10 minutes without use. Launch counts are kept in memory and written to `launcher_history.tsv` next to the exe only when 202020 quits or Windows shuts down.
+
 ## Running
 
 `202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. Keep `capsule_hook.dll` next to it: while the capsule bar runs, it is loaded into explorer to pass tray icons to the bar. To start at login, put a shortcut to it in `shell:startup`.
@@ -59,7 +82,7 @@ While the bar is running, a `--watchdog` child process restores the taskbar's au
 
 ## Config
 
-`config.toml` next to the exe is created on first run. Capsule bar settings live under `[capsule_bar]`. While the bar is running, changes apply on save; `enabled` is read at startup and set by the tray menu. See the comments in the file. If acrylic stops working (e.g. the capsule stays a solid color), set `backdrop` to `"accent"`.
+`config.toml` next to the exe is created on first run. Capsule bar settings live under `[capsule_bar]`, launcher settings under `[launcher]` (the launcher uses the capsule bar's `appearance`). While the bar is running, changes apply on save; `enabled` is read at startup and set by the tray menu. See the comments in the file. If acrylic stops working (e.g. the capsule stays a solid color), set `backdrop` to `"accent"`.
 
 To report a problem, set `level = "debug"` under `[logging]` and restart 202020. Logs go to `logs\log.txt` (and `logs\watchdog.txt` for the watchdog), including panics and crashes. `"trace"` also logs why each window was shown on or left off the capsule bar.
 

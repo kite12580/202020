@@ -4,6 +4,7 @@ mod gfx;
 mod icons;
 mod keyboard;
 mod keyhook;
+pub mod launcher;
 mod logger;
 mod menu;
 mod pinned;
@@ -24,7 +25,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub use app::Options;
-pub use config_store::{enabled, set_enabled};
+pub use config_store::{enabled, launcher as launcher_config, set_enabled, set_launcher_enabled};
 
 /// The capsule bar running on its own thread.
 pub struct Bar {

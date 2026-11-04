@@ -1,8 +1,10 @@
 pub mod clock;
 pub mod config;
 pub mod kbd;
+pub mod launcher;
 pub mod layout;
 pub mod pins;
+pub mod pinyin;
 pub mod taskband;
 pub mod tray_proto;
 pub mod winfilter;
