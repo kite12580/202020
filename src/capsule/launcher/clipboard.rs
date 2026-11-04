@@ -4,6 +4,8 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 
+use crate::capsule::util::wide;
+
 const CF_UNICODETEXT: u32 = 13;
 
 pub fn get(owner: HWND) -> Option<String> {
@@ -29,7 +31,7 @@ pub fn set(owner: HWND, s: &str) {
     if s.is_empty() {
         return;
     }
-    let w: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
+    let w = wide(s);
     unsafe {
         if OpenClipboard(Some(owner)).is_err() {
             return;

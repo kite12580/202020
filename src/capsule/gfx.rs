@@ -58,15 +58,8 @@ pub enum Font {
     SearchGlyph,
 }
 
-const TEXT_FONTS: &[(&str, u32)] = &[
-    ("SegUIVar.ttf", 0),
-    ("segoeui.ttf", 0),
-    ("msyh.ttc", 0),
-    ("YuGothM.ttc", 0),
-    ("malgun.ttf", 0),
-    ("seguisym.ttf", 0),
-];
-const GLYPH_FONTS: &[(&str, u32)] = &[("SegoeIcons.ttf", 0), ("segmdl2.ttf", 0)];
+const TEXT_FONTS: &[&str] = &["SegUIVar.ttf", "segoeui.ttf", "msyh.ttc", "YuGothM.ttc", "malgun.ttf", "seguisym.ttf"];
+const GLYPH_FONTS: &[&str] = &["SegoeIcons.ttf", "segmdl2.ttf"];
 
 struct View(MEMORY_MAPPED_VIEW_ADDRESS);
 
@@ -85,7 +78,7 @@ struct Face {
     _view: View,
 }
 
-fn map_face(file: &str, index: u32) -> Option<Face> {
+fn map_face(file: &str) -> Option<Face> {
     let dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let path = wide(&format!(r"{dir}\Fonts\{file}"));
     unsafe {
@@ -109,7 +102,7 @@ fn map_face(file: &str, index: u32) -> Option<Face> {
             return None;
         }
         let data = std::slice::from_raw_parts(view.0.Value as *const u8, size as usize);
-        let mut font = FontRef::try_from_slice_and_index(data, index).ok()?;
+        let mut font = FontRef::try_from_slice(data).ok()?;
         font.set_variation(b"wght", 400.0);
         font.set_variation(b"opsz", 10.5);
         Some(Face { font, _view: view })
@@ -118,18 +111,17 @@ fn map_face(file: &str, index: u32) -> Option<Face> {
 
 /// Fonts tried in order for each character, mapped on first use.
 struct Chain {
-    files: &'static [(&'static str, u32)],
+    files: &'static [&'static str],
     faces: Vec<OnceCell<Option<Rc<Face>>>>,
 }
 
 impl Chain {
-    fn new(files: &'static [(&'static str, u32)]) -> Self {
+    fn new(files: &'static [&'static str]) -> Self {
         Self { files, faces: files.iter().map(|_| OnceCell::new()).collect() }
     }
 
     fn face(&self, i: usize) -> Option<&Rc<Face>> {
-        let (file, index) = self.files[i];
-        self.faces[i].get_or_init(|| map_face(file, index).map(Rc::new)).as_ref()
+        self.faces[i].get_or_init(|| map_face(self.files[i]).map(Rc::new)).as_ref()
     }
 
     fn find(&self, c: char) -> Option<(&Rc<Face>, GlyphId)> {
@@ -243,14 +235,17 @@ impl Gfx {
 
     /// Lays out `s`, cut short with an ellipsis if wider than `max`.
     pub fn text_fit(&self, s: &str, font: Font, max: f32) -> Option<Text> {
-        let t = self.text(s, font)?;
+        let mut t = self.text(s, font)?;
         if t.width <= max {
             return Some(t);
         }
-        let ellipsis = self.text("…", font)?.width;
-        let keep = t.glyphs.iter().take_while(|g| g.x + ellipsis <= max).count().saturating_sub(1);
-        let cut: String = s.chars().take(keep).collect();
-        self.text(&format!("{cut}…"), font)
+        let ellipsis = self.text("…", font)?;
+        let keep = t.glyphs.iter().take_while(|g| g.x + ellipsis.width <= max).count().saturating_sub(1);
+        let x = t.x_at(keep);
+        t.glyphs.truncate(keep);
+        t.glyphs.extend(ellipsis.glyphs.into_iter().map(|g| Placed { x: x + g.x, ..g }));
+        t.width = x + ellipsis.width;
+        Some(t)
     }
 
     fn finish(&self, w: u32, h: u32, pixels: Vec<u8>, px: u32) -> Option<Image> {
@@ -468,6 +463,26 @@ impl Surface {
         self.data().fill(0);
     }
 
+    fn band(&self, top: f32, height: f32) -> (u32, u32) {
+        let s = self.scale();
+        let from = ((top * s).floor().max(0.0) as u32).min(self.height);
+        (from, (((top + height) * s).ceil().max(0.0) as u32).clamp(from, self.height))
+    }
+
+    pub fn begin_band(&mut self, top: f32, height: f32) {
+        unsafe {
+            let _ = GdiFlush();
+        }
+        let (from, to) = self.band(top, height);
+        let row = self.width as usize * 4;
+        self.data()[from as usize * row..to as usize * row].fill(0);
+    }
+
+    pub fn end_band(&mut self, top: f32, height: f32) {
+        let (from, to) = self.band(top, height);
+        self.present(from, to);
+    }
+
     pub fn fill(&mut self, r: Rect, c: Color, radius: f32) {
         let Some(rect) = tiny_skia::Rect::from_xywh(r.x, r.y, r.w, r.h) else { return };
         let t = Transform::from_scale(self.scale(), self.scale());
@@ -554,9 +569,14 @@ impl Surface {
     }
 
     pub fn end(&mut self) {
+        self.present(0, self.height);
+    }
+
+    fn present(&self, from: u32, to: u32) {
+        let (y, h) = (from as i32, (to - from) as i32);
         unsafe {
             let dc = GetDC(Some(self.hwnd));
-            let _ = BitBlt(dc, 0, 0, self.width as i32, self.height as i32, Some(self.dc), 0, 0, SRCCOPY);
+            let _ = BitBlt(dc, 0, y, self.width as i32, h, Some(self.dc), 0, y, SRCCOPY);
             ReleaseDC(Some(self.hwnd), dc);
         }
     }

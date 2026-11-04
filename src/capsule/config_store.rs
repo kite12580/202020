@@ -19,9 +19,13 @@ pub fn log_dir() -> PathBuf {
     app_dir().join("logs")
 }
 
+fn config_path() -> PathBuf {
+    app_dir().join("config.toml")
+}
+
 /// Path of `config.toml`, written with the defaults if missing.
 pub fn ensure_file() -> PathBuf {
-    let path = app_dir().join("config.toml");
+    let path = config_path();
     if !path.exists() {
         let _ = std::fs::write(&path, config::DEFAULT_TEXT);
     }
@@ -46,11 +50,15 @@ pub fn log_level() -> log::LevelFilter {
     read().2.logging.level.into()
 }
 
-pub fn set_enabled(enabled: bool) {
+fn edit_file(edit: impl FnOnce(&str) -> String) {
     let (path, text, _) = read();
-    if let Err(e) = std::fs::write(&path, config::set_enabled(&text, enabled)) {
+    if let Err(e) = std::fs::write(&path, edit(&text)) {
         log::error!("config write: {e}");
     }
+}
+
+pub fn set_enabled(enabled: bool) {
+    edit_file(|t| config::set_enabled(t, enabled));
 }
 
 pub fn launcher() -> (Launcher, Appearance) {
@@ -59,14 +67,11 @@ pub fn launcher() -> (Launcher, Appearance) {
 }
 
 pub fn set_launcher_enabled(enabled: bool) {
-    let (path, text, _) = read();
-    if let Err(e) = std::fs::write(&path, config::set_launcher_enabled(&text, enabled)) {
-        log::error!("config write: {e}");
-    }
+    edit_file(|t| config::set_launcher_enabled(t, enabled));
 }
 
 pub fn modified() -> Option<std::time::SystemTime> {
-    std::fs::metadata(app_dir().join("config.toml")).and_then(|m| m.modified()).ok()
+    std::fs::metadata(config_path()).and_then(|m| m.modified()).ok()
 }
 
 pub fn open_in_editor(path: &std::path::Path) {

@@ -4,15 +4,22 @@ use crate::config::FolderRoot;
 
 /// Case-insensitive match with `*` (any run) and `?` (any one character).
 pub fn glob(pattern: &str, name: &str) -> bool {
+    if pattern.is_ascii() && name.is_ascii() {
+        return wildcard(pattern.as_bytes(), name.as_bytes(), b'*', b'?', u8::eq_ignore_ascii_case);
+    }
     let p: Vec<char> = pattern.chars().flat_map(char::to_lowercase).collect();
     let n: Vec<char> = name.chars().flat_map(char::to_lowercase).collect();
+    wildcard(&p, &n, '*', '?', char::eq)
+}
+
+fn wildcard<T: Copy + PartialEq>(p: &[T], n: &[T], any: T, one: T, eq: impl Fn(&T, &T) -> bool) -> bool {
     let (mut pi, mut ni) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
     while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+        if pi < p.len() && (p[pi] == one || eq(&p[pi], &n[ni])) {
             pi += 1;
             ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
+        } else if pi < p.len() && p[pi] == any {
             star = Some((pi, ni));
             pi += 1;
         } else if let Some((sp, sn)) = star {
@@ -23,7 +30,7 @@ pub fn glob(pattern: &str, name: &str) -> bool {
             return false;
         }
     }
-    p[pi..].iter().all(|&c| c == '*')
+    p[pi..].iter().all(|&c| c == any)
 }
 
 pub fn excluded(root: &FolderRoot, name: &str) -> bool {

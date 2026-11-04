@@ -111,24 +111,20 @@ const ATTACH_TIMER: usize = 1;
 const ATTACH_TIMEOUT_MS: u32 = 5000;
 
 pub struct Relay {
-    hwnd: Arc<AtomicIsize>,
+    hwnd: isize,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Relay {
     pub fn start(shared: Arc<Shared>) -> Relay {
-        let slot = Arc::new(AtomicIsize::new(0));
-        let ready = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
-        let (slot2, ready2) = (slot.clone(), ready.clone());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::spawn(move || {
             SHARED.with(|s| s.set(shared)).ok();
             let h = create();
             if h.is_none() {
                 log::error!("tray relay window creation failed");
             }
-            slot2.store(h.map_or(0, |h| h.0 as isize), Ordering::Release);
-            *ready2.0.lock().unwrap() = true;
-            ready2.1.notify_all();
+            let _ = tx.send(h.map_or(0, |h| h.0 as isize));
             if h.is_some() {
                 let mut msg = MSG::default();
                 while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
@@ -136,16 +132,11 @@ impl Relay {
                 }
             }
         });
-        let mut done = ready.0.lock().unwrap();
-        while !*done {
-            done = ready.1.wait(done).unwrap();
-        }
-        drop(done);
-        Relay { hwnd: slot, thread: Some(thread) }
+        Relay { hwnd: rx.recv().unwrap_or(0), thread: Some(thread) }
     }
 
     fn hwnd(&self) -> HWND {
-        hwnd(self.hwnd.load(Ordering::Acquire))
+        hwnd(self.hwnd)
     }
 
     /// Hooks explorer's `Shell_TrayWnd`, then asks apps to re-add their icons.
@@ -340,6 +331,9 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         m if m == attach_msg() => {
+            unsafe {
+                let _ = KillTimer(Some(h), ATTACH_TIMER);
+            }
             if HOOK.with_borrow_mut(|hook| hook.injection.take()).is_some() {
                 log::info!("tray hook attached");
                 if let Some(shared) = shared() {

@@ -21,7 +21,6 @@ use crate::capsule::util::{OwnedHandle, hwnd, open_process, primary_monitor_rect
 const ABS_AUTOHIDE: u32 = 1;
 const ABS_ALWAYSONTOP: u32 = 2;
 
-/// Explorer's `Shell_TrayWnd`.
 pub static REAL_TRAY: AtomicIsize = AtomicIsize::new(0);
 
 /// Set while the taskbar is deliberately shown so explorer can handle a
@@ -85,7 +84,6 @@ pub struct Saved {
     pub work_area: RECT,
 }
 
-/// Puts the taskbar back.
 pub fn restore(saved: &Saved) {
     let Some(tray) = find_real_tray() else { return };
     set_ab_state(tray, saved.ab_state);

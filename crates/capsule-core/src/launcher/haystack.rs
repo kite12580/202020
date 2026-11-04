@@ -61,6 +61,9 @@ pub fn app_keyword(id: &str) -> &str {
 /// `微信 Beta` → `wei xin Beta`, one string per reading combination: first the
 /// most common reading everywhere, then each alternative reading on its own.
 fn pinyin_variants(name: &str) -> Vec<(String, Vec<u32>)> {
+    if name.is_ascii() {
+        return Vec::new();
+    }
     let chars: Vec<char> = name.chars().collect();
     let readings: Vec<Vec<&str>> = chars.iter().map(|&c| pinyin::readings(c).collect()).collect();
     if readings.iter().all(Vec::is_empty) {

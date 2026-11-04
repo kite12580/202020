@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 
 use capsule_core::config::{FolderRoot, Launcher as Config};
 use capsule_core::launcher::Source;
-use capsule_core::launcher::folders::{excluded, expand_env, wants_file};
+use capsule_core::launcher::folders::{excluded, wants_file};
 use capsule_core::launcher::haystack::{Keys, app_keyword};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Storage::FileSystem::{
@@ -52,8 +52,9 @@ pub struct Entry {
     pub action: Action,
 }
 
+pub const DIR_GLYPH: char = '\u{E8B7}';
+
 pub struct Batch {
-    pub generation: u64,
     pub source: Source,
     pub entries: Vec<Entry>,
     pub last: bool,
@@ -61,10 +62,10 @@ pub struct Batch {
 
 /// Scans enabled disk sources, sending one batch per source and posting
 /// `msg` to `notify` after each. Stops early once `cancel` is set.
-pub fn spawn_scan(cfg: Config, generation: u64, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) {
+pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let send = |source, entries, last| {
-            if cancel.load(Ordering::Relaxed) || tx.send(Batch { generation, source, entries, last }).is_err() {
+            if cancel.load(Ordering::Relaxed) || tx.send(Batch { source, entries, last }).is_err() {
                 return false;
             }
             unsafe {
@@ -119,7 +120,7 @@ fn enum_apps() -> windows::core::Result<Vec<Entry>> {
     Ok(out)
 }
 
-fn app_entry(name: String, id: &str) -> Entry {
+pub fn app_entry(name: String, id: &str) -> Entry {
     let target = apps_folder(id);
     let keyword = app_keyword(id);
     let hidden: &[&str] = if keyword.eq_ignore_ascii_case(&name) { &[] } else { &[keyword] };
@@ -144,7 +145,7 @@ pub fn file_entry(path: String, name: String, dir: bool) -> Entry {
         name,
         subtitle,
         icon: path.clone(),
-        glyph: Some(if dir { '\u{E8B7}' } else { '\u{E8A5}' }),
+        glyph: Some(if dir { DIR_GLYPH } else { '\u{E8A5}' }),
         action: Action::Open(path),
     }
 }
@@ -152,7 +153,7 @@ pub fn file_entry(path: String, name: String, dir: bool) -> Entry {
 fn scan_folders(roots: &[FolderRoot], cancel: &AtomicBool) -> Vec<Entry> {
     let mut out = Vec::new();
     for root in roots {
-        let base = expand_env(&root.path, |n| std::env::var(n).ok());
+        let base = super::launch::env(&root.path);
         let base = base.trim_end_matches(['\\', '/']).to_string();
         let start = out.len();
         let mut stack = vec![(base, 0)];
@@ -185,7 +186,6 @@ fn scan_folders(roots: &[FolderRoot], cancel: &AtomicBool) -> Vec<Entry> {
     out
 }
 
-/// Names and attributes of a folder's entries.
 fn list_dir(dir: &str) -> Vec<(String, u32)> {
     let pattern = wide(&format!(r"{dir}\*"));
     let mut data = WIN32_FIND_DATAW::default();

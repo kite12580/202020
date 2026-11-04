@@ -9,17 +9,16 @@ use windows::Win32::UI::Shell::{
     SEE_MASK_UNICODE, SHCreateItemFromParsingName, SHELLEXECUTEINFOW, SHEmptyRecycleBinW, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, CreatePopupMenu, DestroyMenu, PostMessageW, SW_SHOWNORMAL, TPM_RETURNCMD,
+    ASFW_ANY, AllowSetForegroundWindow, CreatePopupMenu, DestroyMenu, PostMessageW, SW_SHOWNORMAL, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR, WM_NULL,
 };
 use windows::core::{Interface, PCSTR, PCWSTR};
 
-use crate::capsule::util::wide;
+use crate::capsule::util::{hwnd, wide};
 
-const ASFW_ANY: u32 = u32::MAX;
 const FIRST_ID: u32 = 1;
 
-fn env(s: &str) -> String {
+pub fn env(s: &str) -> String {
     expand_env(s, |n| std::env::var(n).ok())
 }
 
@@ -64,7 +63,7 @@ pub fn empty_recycle_bin(owner: HWND) {
 
 pub fn post(owner: isize, msg: u32, id: u32) {
     unsafe {
-        let _ = PostMessageW(Some(HWND(owner as *mut _)), msg, WPARAM(id as usize), LPARAM(0));
+        let _ = PostMessageW(Some(hwnd(owner)), msg, WPARAM(id as usize), LPARAM(0));
     }
 }
 

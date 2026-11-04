@@ -54,10 +54,6 @@ pub fn readings(c: char) -> impl Iterator<Item = &'static str> {
     ids.map(move |i| syllable(&l, u16_at(l.lists + i * 2)))
 }
 
-pub fn has_reading(c: char) -> bool {
-    readings(c).next().is_some()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,7 +76,7 @@ mod tests {
     fn non_han_has_none() {
         assert!(all('a').is_empty());
         assert!(all('あ').is_empty());
-        assert!(!has_reading('〇'));
-        assert!(has_reading('龙'));
+        assert!(all('〇').is_empty());
+        assert!(!all('龙').is_empty());
     }
 }

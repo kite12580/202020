@@ -108,15 +108,20 @@ unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> BOOL {
     BOOL(1)
 }
 
+pub fn top_level() -> Vec<HWND> {
+    let mut all: Vec<HWND> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut _ as isize));
+    }
+    all
+}
+
 impl WindowList {
     /// Fills the list with existing windows. Their true open order is
     /// unknown, so they are ordered by process start time, then bottom-up
     /// z-order.
     pub fn enumerate(&mut self) {
-        let mut all: Vec<HWND> = Vec::new();
-        unsafe {
-            let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut _ as isize));
-        }
+        let all = top_level();
         let mut created: HashMap<u32, u64> = HashMap::new();
         let mut found: Vec<(u64, usize, HWND)> = all
             .iter()

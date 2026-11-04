@@ -133,6 +133,18 @@ mod tests {
     }
 
     #[test]
+    fn longer_queries_only_narrow() {
+        let names = ["微信", "QQ音乐", "Visual Studio Code", "Unicode Viewer", "计算器", "a b", "Terminal"];
+        for full in ["vs code", "wxin", "qqyy", "term", "a b", "jsq"] {
+            for end in 2..=full.len() {
+                let (prev, q) = (full[..end - 1].trim(), full[..end].trim());
+                let before = search(prev, &names);
+                assert!(search(q, &names).iter().all(|n| before.contains(n)), "{prev:?} -> {q:?}");
+            }
+        }
+    }
+
+    #[test]
     fn weight_and_boost_order() {
         assert!(rank(100, 1.0, 1.5) > rank(100, 1.0, 1.0));
         assert!(rank(100, 0.7, 1.0) < rank(100, 1.0, 1.0));

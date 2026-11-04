@@ -94,6 +94,10 @@ impl History {
         }
     }
 
+    pub fn contains(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
+
     /// Ranking multiplier, 1.0 for keys never launched.
     pub fn boost(&self, key: &str, now: u64) -> f64 {
         self.entries.get(key).map_or(1.0, |e| 1.0 + 0.25 * frecency(e, now))

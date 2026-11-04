@@ -31,6 +31,7 @@ static RECEIVER_PID: AtomicU32 = AtomicU32::new(0);
 /// Our own reference to this DLL, which keeps it loaded after the bar
 /// removes the hook, else 0.
 static PIN: AtomicIsize = AtomicIsize::new(0);
+/// Only touched on the tray thread, so plain loads and stores suffice.
 static DEPTH: AtomicU32 = AtomicU32::new(0);
 /// Set by `detach`. Unloading while a `subclass` frame is still on the stack
 /// would return into unmapped code, so the last frame to return unloads.
@@ -117,7 +118,8 @@ fn original(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 }
 
 unsafe extern "system" fn subclass(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    DEPTH.fetch_add(1, Relaxed);
+    let depth = DEPTH.load(Relaxed);
+    DEPTH.store(depth + 1, Relaxed);
     let r = match msg {
         WM_COPYDATA => relay(h, wparam, lparam),
         WM_NCDESTROY => {
@@ -132,7 +134,8 @@ unsafe extern "system" fn subclass(h: HWND, msg: u32, wparam: WPARAM, lparam: LP
         }
         _ => original(h, msg, wparam, lparam),
     };
-    if DEPTH.fetch_sub(1, Relaxed) == 1 && UNLOAD.load(Relaxed) {
+    DEPTH.store(depth, Relaxed);
+    if depth == 0 && UNLOAD.load(Relaxed) {
         unload(h);
     }
     r

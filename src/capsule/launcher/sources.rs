@@ -2,27 +2,16 @@ use capsule_core::config::CustomCommand;
 use capsule_core::launcher::Source;
 use capsule_core::launcher::haystack::Keys;
 use capsule_core::launcher::history::key;
-use windows::Win32::Foundation::{HWND, LPARAM};
-use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
-use windows::core::BOOL;
 
 use super::AppCommand;
 use super::index::{Action, Entry};
-use crate::capsule::util::{apps_folder, own_window, process_path, window_ids};
+use crate::capsule::util::{apps_folder, process_path, window_ids};
 use crate::capsule::windows_list::{self as winlist, qualifies};
 
-unsafe extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
-    unsafe { (*(out.0 as *mut Vec<HWND>)).push(h) };
-    BOOL(1)
-}
-
 pub fn windows() -> Vec<Entry> {
-    let mut all: Vec<HWND> = Vec::new();
-    unsafe {
-        let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut _ as isize));
-    }
-    all.into_iter()
-        .filter(|&h| qualifies(h) && !own_window(h))
+    winlist::top_level()
+        .into_iter()
+        .filter(|&h| qualifies(h))
         .filter_map(|h| {
             let title = winlist::title(h);
             if title.is_empty() {

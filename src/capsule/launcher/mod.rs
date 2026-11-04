@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use capsule_core::config::{Appearance, Launcher as Config};
 use capsule_core::launcher::history::{History, split_key};
@@ -24,7 +24,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, DeleteObject, HBITMAP, HGDIOBJ, InvalidateRect, ValidateRect};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+use windows::Win32::System::Threading::{GetCurrentProcess, INFINITE, SetProcessWorkingSetSize};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::Ime::{
@@ -45,12 +45,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, w};
 
 use crate::capsule::config_store;
-use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface};
+use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
 use crate::capsule::icons::IconWorker;
-use crate::capsule::theme::{self, Theme};
-use crate::capsule::util::{apps_folder, lparam_point, primary_monitor, scale};
+use crate::capsule::theme::{self, Palette, Theme};
+use crate::capsule::util::{hwnd, lparam_point, primary_monitor, scale};
 use crate::capsule::windows_list as winlist;
-use index::{Action, Batch, Entry};
+use index::{Action, Batch, DIR_GLYPH, Entry};
 
 /// A 202020 action offered as a command; `id` is posted as the wparam of
 /// `Options::command_msg`.
@@ -81,18 +81,15 @@ const ROW_H: f32 = 44.0;
 const ICON: f32 = 24.0;
 const NAME_X: f32 = PAD + 48.0;
 const TAG_W: f32 = 72.0;
-const DIR_GLYPH: char = '\u{E8B7}';
+const LIST_TOP: f32 = SEARCH_H + 1.0 + PAD / 2.0;
+const RESCAN_AFTER: Duration = Duration::from_secs(60);
 
+const SOURCES: [Source; 4] = [Source::App, Source::Window, Source::Command, Source::Folder];
 /// Index into `Launcher::lists`.
-const RECENT: usize = 4;
+const RECENT: usize = SOURCES.len();
 
 fn list_of(source: Source) -> usize {
-    match source {
-        Source::App => 0,
-        Source::Window => 1,
-        Source::Command => 2,
-        Source::Folder => 3,
-    }
+    SOURCES.iter().position(|&s| s == source).unwrap_or(RECENT)
 }
 
 thread_local! {
@@ -150,7 +147,6 @@ pub fn unload() {
     }
 }
 
-/// Writes the launch history if it changed.
 pub fn flush_history() {
     HISTORY.with(|h| {
         let Ok(mut h) = h.try_borrow_mut() else { return };
@@ -167,6 +163,11 @@ struct Row {
     list: usize,
     index: usize,
     marks: Vec<u32>,
+    icon: String,
+    name: Option<Text>,
+    sub: Option<Text>,
+    tag: Option<Text>,
+    glyph: Option<Text>,
 }
 
 enum Deferred {
@@ -185,15 +186,23 @@ struct Launcher {
     appearance: Appearance,
     cfg_stamp: Option<SystemTime>,
     visible: bool,
+    bounds: (i32, i32, i32, i32),
     input: TextInput,
+    search: Option<Text>,
+    placeholder: Option<Text>,
+    lens: Option<Text>,
     high_surrogate: Option<u16>,
     searcher: Searcher,
     /// Apps, windows, commands, folders, and history entries not in the others.
-    lists: [Vec<Entry>; 5],
+    lists: [Vec<Entry>; RECENT + 1],
+    /// Positions of the entries that have history.
     by_key: HashMap<String, (usize, usize)>,
-    scanned: [bool; 4],
-    generation: u64,
+    scanned: [bool; RECENT],
     scan: Option<(Receiver<Batch>, Arc<AtomicBool>)>,
+    scan_started: Option<Instant>,
+    /// Matches for `found_query`, which a longer query only narrows.
+    found: Vec<(usize, usize, Match)>,
+    found_query: Option<(Option<Source>, String)>,
     rows: Vec<Row>,
     selected: usize,
     hover: Option<usize>,
@@ -221,6 +230,10 @@ fn register_class() {
     }
 }
 
+fn row_rect(i: usize) -> Rect {
+    Rect { x: PAD, y: LIST_TOP + i as f32 * ROW_H, w: WIDTH - 2.0 * PAD, h: ROW_H }
+}
+
 fn icon_key(e: &Entry) -> String {
     if e.source != Source::Folder {
         return e.icon.clone();
@@ -240,19 +253,7 @@ fn icon_key(e: &Entry) -> String {
 fn remembered(key: &str, name: &str) -> Option<Entry> {
     let (source, id) = split_key(key)?;
     match source {
-        Source::App => {
-            let target = apps_folder(id);
-            Some(Entry {
-                source,
-                key: key.to_string(),
-                keys: capsule_core::launcher::haystack::Keys::new(name, &[]),
-                name: name.to_string(),
-                subtitle: String::new(),
-                icon: target.clone(),
-                glyph: None,
-                action: Action::Open(target),
-            })
-        }
+        Source::App => Some(index::app_entry(name.to_string(), id)),
         Source::Folder => Some(index::file_entry(id.to_string(), name.to_string(), false)),
         Source::Window | Source::Command => None,
     }
@@ -286,25 +287,32 @@ impl Launcher {
             return None;
         };
         let (cfg, appearance) = config_store::launcher();
+        let gfx = Gfx::new();
         Some(Launcher {
             opts,
             hwnd,
             dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
-            gfx: Gfx::new(),
+            placeholder: gfx.text("Search apps, files, windows and commands", Font::Search),
+            lens: gfx.text("\u{E721}", Font::SearchGlyph),
+            gfx,
             surface: None,
             theme: None,
             cfg,
             appearance,
             cfg_stamp: config_store::modified(),
             visible: false,
+            bounds: (0, 0, 0, 0),
             input: TextInput::default(),
+            search: None,
             high_surrogate: None,
             searcher: Searcher::default(),
             lists: Default::default(),
             by_key: HashMap::new(),
-            scanned: [false; 4],
-            generation: 0,
+            scanned: [false; RECENT],
             scan: None,
+            scan_started: None,
+            found: Vec::new(),
+            found_query: None,
             rows: Vec::new(),
             selected: 0,
             hover: None,
@@ -371,8 +379,10 @@ impl Launcher {
         } else {
             Vec::new()
         };
-        self.rebuild_keys();
-        self.start_scan();
+        self.lists_changed();
+        if self.scan_started.is_none_or(|t| t.elapsed() > RESCAN_AFTER) {
+            self.start_scan();
+        }
         self.input.select_all();
         self.selected = 0;
         self.hover = None;
@@ -381,7 +391,10 @@ impl Launcher {
         self.caret_on = true;
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_IDLE);
-            SetTimer(Some(self.hwnd), TIMER_CARET, GetCaretBlinkTime().clamp(200, 2000), None);
+            let blink = GetCaretBlinkTime();
+            if blink != INFINITE {
+                SetTimer(Some(self.hwnd), TIMER_CARET, blink.clamp(200, 2000), None);
+            }
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
         }
@@ -395,7 +408,8 @@ impl Launcher {
         self.visible = false;
         self.rows.clear();
         self.lists[list_of(Source::Window)].clear();
-        self.rebuild_keys();
+        self.found = Vec::new();
+        self.found_query = None;
         self.hover = None;
         self.pressed = None;
         self.surface = None;
@@ -411,20 +425,17 @@ impl Launcher {
         if self.scan.is_some() {
             return;
         }
-        self.generation += 1;
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        index::spawn_scan(self.cfg.clone(), self.generation, tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
+        index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
         self.scan = Some((rx, cancel));
+        self.scan_started = Some(Instant::now());
     }
 
     fn on_scan(&mut self) {
         let Some((rx, _)) = &self.scan else { return };
         let batches: Vec<Batch> = rx.try_iter().collect();
         for b in batches {
-            if b.generation != self.generation {
-                continue;
-            }
             let list = list_of(b.source);
             self.lists[list] = b.entries;
             self.scanned[list] = true;
@@ -432,7 +443,7 @@ impl Launcher {
                 self.scan = None;
             }
         }
-        self.rebuild_keys();
+        self.lists_changed();
         if self.visible {
             let keep = self.rows.get(self.selected).map(|r| self.entry(r).key.clone());
             self.refresh();
@@ -444,20 +455,40 @@ impl Launcher {
         }
     }
 
-    fn rebuild_keys(&mut self) {
+    fn lists_changed(&mut self) {
+        self.found_query = None;
         self.by_key.clear();
-        for (l, list) in self.lists[..RECENT].iter().enumerate() {
-            for (i, e) in list.iter().enumerate() {
-                if !e.key.is_empty() {
-                    self.by_key.insert(e.key.clone(), (l, i));
+        let (lists, by_key) = (&self.lists, &mut self.by_key);
+        with_history(|h| {
+            for (l, list) in lists[..RECENT].iter().enumerate() {
+                for (i, e) in list.iter().enumerate() {
+                    if h.contains(&e.key) {
+                        by_key.insert(e.key.clone(), (l, i));
+                    }
                 }
             }
+        });
+    }
+
+    fn row(&self, list: usize, index: usize, marks: Vec<u32>) -> Row {
+        let e = &self.lists[list][index];
+        let room = WIDTH - NAME_X - TAG_W - PAD * 2.0;
+        Row {
+            list,
+            index,
+            marks,
+            icon: icon_key(e),
+            name: self.gfx.text_fit(&e.name, Font::Title, room),
+            sub: if e.subtitle.is_empty() { None } else { self.gfx.text_fit(&e.subtitle, Font::Small, room) },
+            tag: self.gfx.text(e.source.label(), Font::Small),
+            glyph: e.glyph.and_then(|g| self.gfx.text(g.encode_utf8(&mut [0; 4]), Font::Glyph)),
         }
     }
 
     /// Re-runs the query and resizes the window to fit the results.
     fn refresh(&mut self) {
         let text = self.input.text();
+        self.search = self.gfx.text(&text, Font::Search);
         let (only, q) = query::split(&text, &self.cfg.prefixes);
         self.searcher.set_query(q);
         let wanted = |s: Source| only.is_none_or(|o| o == s);
@@ -466,6 +497,8 @@ impl Launcher {
         self.rows.clear();
         self.lists[RECENT].clear();
         if self.searcher.is_empty() {
+            self.found.clear();
+            self.found_query = None;
             let recent: Vec<(String, String)> =
                 with_history(|h| h.top(now).into_iter().map(|(key, e)| (key.to_string(), e.name.clone())).collect());
             for (key, name) in recent {
@@ -477,12 +510,14 @@ impl Launcher {
                     continue;
                 }
                 if let Some(&(list, index)) = self.by_key.get(&key) {
-                    self.rows.push(Row { list, index, marks: Vec::new() });
+                    let row = self.row(list, index, Vec::new());
+                    self.rows.push(row);
                 } else if !self.scanned[list_of(source)]
                     && let Some(e) = remembered(&key, &name)
                 {
                     self.lists[RECENT].push(e);
-                    self.rows.push(Row { list: RECENT, index: self.lists[RECENT].len() - 1, marks: Vec::new() });
+                    let row = self.row(RECENT, self.lists[RECENT].len() - 1, Vec::new());
+                    self.rows.push(row);
                 }
             }
             if let Some(source) = only {
@@ -492,29 +527,38 @@ impl Launcher {
                         break;
                     }
                     if !self.rows.iter().any(|r| r.list == list && r.index == index) {
-                        self.rows.push(Row { list, index, marks: Vec::new() });
+                        let row = self.row(list, index, Vec::new());
+                        self.rows.push(row);
                     }
                 }
             }
         } else {
-            let mut found: Vec<(usize, usize, Match)> = Vec::new();
+            let narrow = self
+                .found_query
+                .as_ref()
+                .is_some_and(|(o, prev)| *o == only && q.starts_with(prev.as_str()) && !prev.ends_with('\\'));
+            let prev = std::mem::take(&mut self.found);
+            let mut found = Vec::new();
             let mut ranked: Vec<(f64, usize, usize)> = Vec::new();
-            let sources: Vec<Option<f32>> = self.lists[..RECENT]
-                .iter()
-                .map(|list| {
-                    let source = list.first()?.source;
-                    (wanted(source) && self.enabled(source)).then(|| self.weight(source))
-                })
-                .collect();
+            let weights: Vec<Option<f32>> =
+                SOURCES.iter().map(|&s| (wanted(s) && self.enabled(s)).then(|| self.weight(s))).collect();
             let (lists, searcher) = (&self.lists, &mut self.searcher);
             with_history(|h| {
-                for (l, list) in lists[..RECENT].iter().enumerate() {
-                    let Some(weight) = sources[l] else { continue };
-                    for (i, e) in list.iter().enumerate() {
-                        if let Some(m) = searcher.score(&e.keys) {
-                            let boost = if e.key.is_empty() { 1.0 } else { h.boost(&e.key, now) };
-                            ranked.push((rank(m.score, weight, boost), e.name.len(), found.len()));
-                            found.push((l, i, m));
+                let mut consider = |l: usize, i: usize| {
+                    let Some(weight) = weights[l] else { return };
+                    let e = &lists[l][i];
+                    if let Some(m) = searcher.score(&e.keys) {
+                        let boost = if e.key.is_empty() { 1.0 } else { h.boost(&e.key, now) };
+                        ranked.push((rank(m.score, weight, boost), e.name.len(), found.len()));
+                        found.push((l, i, m));
+                    }
+                };
+                if narrow {
+                    prev.iter().for_each(|&(l, i, _)| consider(l, i));
+                } else {
+                    for (l, list) in lists[..RECENT].iter().enumerate() {
+                        if weights[l].is_some() {
+                            (0..list.len()).for_each(|i| consider(l, i));
                         }
                     }
                 }
@@ -522,16 +566,20 @@ impl Launcher {
             for f in top(&mut ranked, k) {
                 let (list, index, m) = found[f];
                 let marks = self.searcher.highlight(&self.lists[list][index].keys, m);
-                self.rows.push(Row { list, index, marks });
+                let row = self.row(list, index, marks);
+                self.rows.push(row);
             }
+            self.found = found;
+            self.found_query = Some((only, q.to_string()));
         }
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        self.request_icons();
         self.place();
         self.invalidate();
     }
 
     fn height(&self) -> f32 {
-        if self.rows.is_empty() { SEARCH_H } else { SEARCH_H + 1.0 + PAD / 2.0 + self.rows.len() as f32 * ROW_H + PAD }
+        if self.rows.is_empty() { SEARCH_H } else { LIST_TOP + self.rows.len() as f32 * ROW_H + PAD }
     }
 
     fn place(&mut self) {
@@ -539,6 +587,10 @@ impl Launcher {
         let (w, h) = (self.px(WIDTH), self.px(self.height()));
         let x = (mon.left + mon.right - w) / 2;
         let y = mon.top + (mon.bottom - mon.top) * 22 / 100;
+        if self.bounds == (x, y, w, h) {
+            return;
+        }
+        self.bounds = (x, y, w, h);
         unsafe {
             let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
         }
@@ -560,20 +612,18 @@ impl Launcher {
         self.place_ime();
     }
 
+    fn caret_offset(&self) -> f32 {
+        self.search.as_ref().map_or(0.0, |t| t.x_at(self.input.caret))
+    }
+
     /// Left edge of the search text, shifted so the caret stays in view.
     fn text_origin(&self) -> f32 {
         let room = WIDTH - TEXT_X - PAD * 2.0;
-        let caret = self.gfx.text(&self.input.text(), Font::Search).map_or(0.0, |t| t.x_at(self.input.caret));
-        TEXT_X - (caret - room).max(0.0)
-    }
-
-    fn caret_x(&self) -> f32 {
-        let t = self.gfx.text(&self.input.text(), Font::Search);
-        self.text_origin() + t.map_or(0.0, |t| t.x_at(self.input.caret))
+        TEXT_X - (self.caret_offset() - room).max(0.0)
     }
 
     fn place_ime(&self) {
-        let pt = POINT { x: self.px(self.caret_x()), y: self.px(SEARCH_H / 2.0 - 12.0) };
+        let pt = POINT { x: self.px(self.text_origin() + self.caret_offset()), y: self.px(SEARCH_H / 2.0 - 12.0) };
         unsafe {
             let imc = ImmGetContext(self.hwnd);
             if imc.is_invalid() {
@@ -589,31 +639,26 @@ impl Launcher {
         }
     }
 
-    fn row_rect(&self, i: usize) -> Rect {
-        Rect { x: PAD, y: SEARCH_H + 1.0 + PAD / 2.0 + i as f32 * ROW_H, w: WIDTH - 2.0 * PAD, h: ROW_H }
-    }
-
     fn row_at(&self, y: f32) -> Option<usize> {
         (0..self.rows.len()).find(|&i| {
-            let r = self.row_rect(i);
+            let r = row_rect(i);
             y >= r.y && y < r.y + r.h
         })
     }
 
-    fn request_icon(&mut self, e_list: usize, e_index: usize) {
-        let e = &self.lists[e_list][e_index];
-        if e.icon.is_empty() {
-            return;
+    fn request_icons(&mut self) {
+        let px = self.px(ICON) as u32;
+        for row in &self.rows {
+            let e = &self.lists[row.list][row.index];
+            if e.icon.is_empty() || self.images.contains_key(&row.icon) {
+                continue;
+            }
+            let id = self.next_icon;
+            self.next_icon += 1;
+            self.images.insert(row.icon.clone(), None);
+            self.pending.insert(id, row.icon.clone());
+            self.icons.request(id, e.icon.clone(), px);
         }
-        let key = icon_key(e);
-        if self.images.contains_key(&key) {
-            return;
-        }
-        let (name, id, px) = (e.icon.clone(), self.next_icon, self.px(ICON) as u32);
-        self.next_icon += 1;
-        self.images.insert(key.clone(), None);
-        self.pending.insert(id, key);
-        self.icons.request(id, name, px);
     }
 
     fn on_icon(&mut self, id: u64, bitmap: HBITMAP) {
@@ -629,6 +674,49 @@ impl Launcher {
         }
     }
 
+    fn paint_search(&self, s: &mut Surface, pal: &Palette) {
+        let origin = self.text_origin();
+        let (selection, caret) = (self.input.selection(), self.input.caret);
+        s.fill(Rect { x: 0.0, y: 0.0, w: WIDTH, h: SEARCH_H }, pal.tint, 0.0);
+        let cy = SEARCH_H / 2.0;
+        if let Some(t) = &self.lens {
+            s.text(t, 20.0, cy - t.height / 2.0, pal.text.alpha(0.6));
+        }
+        match &self.search {
+            Some(t) if self.input.end() > 0 => {
+                let ty = cy - t.height / 2.0;
+                if selection.0 != selection.1 {
+                    let (a, b) = (origin + t.x_at(selection.0), origin + t.x_at(selection.1));
+                    s.fill(Rect { x: a, y: cy - 13.0, w: b - a, h: 26.0 }, pal.accent.alpha(0.35), 2.0);
+                }
+                s.text_colored(t, origin, ty, |i| {
+                    if origin + t.x_at(i) < TEXT_X - 2.0 { Color(0.0, 0.0, 0.0, 0.0) } else { pal.text }
+                });
+                if self.caret_on {
+                    s.fill(Rect { x: origin + t.x_at(caret), y: cy - 12.0, w: 1.5, h: 24.0 }, pal.text, 0.0);
+                }
+            }
+            _ => {
+                if let Some(p) = &self.placeholder {
+                    s.text(p, TEXT_X, cy - p.height / 2.0, pal.text.alpha(0.4));
+                }
+                if self.caret_on {
+                    s.fill(Rect { x: TEXT_X, y: cy - 12.0, w: 1.5, h: 24.0 }, pal.text, 0.0);
+                }
+            }
+        }
+    }
+
+    fn blink(&mut self) {
+        self.caret_on = !self.caret_on;
+        let Some(theme) = self.theme else { return };
+        let Some(mut s) = self.surface.take() else { return };
+        s.begin_band(0.0, SEARCH_H);
+        self.paint_search(&mut s, &theme.palette(self.appearance.opacity));
+        s.end_band(0.0, SEARCH_H);
+        self.surface = Some(s);
+    }
+
     fn paint(&mut self) {
         unsafe {
             let _ = ValidateRect(Some(self.hwnd), None);
@@ -640,107 +728,53 @@ impl Launcher {
         if self.surface.is_none() {
             self.surface = Surface::new(self.hwnd, w, h, self.dpi);
         }
-        let wanted: Vec<(usize, usize)> = self.rows.iter().map(|r| (r.list, r.index)).collect();
-        for (l, i) in wanted {
-            self.request_icon(l, i);
-        }
         let Some(theme) = self.theme else { return };
         let pal = theme.palette(self.appearance.opacity);
         let dim = pal.text.alpha(0.6);
-        let text = self.input.text();
-        let origin = self.text_origin();
-        let search = self.gfx.text(&text, Font::Search);
-        let placeholder = self.gfx.text("Search apps, files, windows and commands", Font::Search);
-        let lens = self.gfx.text("\u{E721}", Font::SearchGlyph);
-        let selection = self.input.selection();
-        let caret = self.input.caret;
-        let caret_on = self.caret_on;
-        let ixs = self.rows.len();
-        let mut rows = Vec::with_capacity(ixs);
-        for (i, row) in self.rows.iter().enumerate() {
-            let e = self.entry(row);
-            let has_sub = !e.subtitle.is_empty();
-            let name = self.gfx.text_fit(&e.name, Font::Title, WIDTH - NAME_X - TAG_W - PAD * 2.0);
-            let sub = has_sub.then(|| self.gfx.text_fit(&e.subtitle, Font::Small, WIDTH - NAME_X - TAG_W - PAD * 2.0));
-            let tag = self.gfx.text(e.source.label(), Font::Small);
-            let image = self.images.get(&icon_key(e)).cloned().flatten();
-            let glyph = match (&image, e.glyph) {
-                (None, Some(g)) => self.gfx.text(&g.to_string(), Font::Glyph),
-                _ => None,
-            };
-            rows.push((self.row_rect(i), name, sub.flatten(), tag, image, glyph, &row.marks));
-        }
-        let selected = self.selected;
-        let hover = self.hover;
-        let Some(s) = self.surface.as_mut() else { return };
+        let accent = if theme.high_contrast { pal.text } else { pal.accent };
+        let height = self.to_dip(h as i32);
+        let Some(mut s) = self.surface.take() else { return };
         s.resize(w, h);
         s.begin();
-        let height = h as f32 * 96.0 / self.dpi as f32;
-        s.fill(Rect { x: 0.0, y: 0.0, w: WIDTH, h: height }, pal.tint, 0.0);
-        let cy = SEARCH_H / 2.0;
-        if let Some(t) = &lens {
-            s.text(t, 20.0, cy - t.height / 2.0, dim);
-        }
-        match &search {
-            Some(t) if !text.is_empty() => {
-                let ty = cy - t.height / 2.0;
-                if selection.0 != selection.1 {
-                    let (a, b) = (origin + t.x_at(selection.0), origin + t.x_at(selection.1));
-                    s.fill(Rect { x: a, y: cy - 13.0, w: b - a, h: 26.0 }, pal.accent.alpha(0.35), 2.0);
-                }
-                s.text_colored(t, origin, ty, |i| {
-                    if origin + t.x_at(i) < TEXT_X - 2.0 { Color(0.0, 0.0, 0.0, 0.0) } else { pal.text }
-                });
-                if caret_on {
-                    s.fill(Rect { x: origin + t.x_at(caret), y: cy - 12.0, w: 1.5, h: 24.0 }, pal.text, 0.0);
-                }
-            }
-            _ => {
-                if let Some(p) = &placeholder {
-                    s.text(p, TEXT_X, cy - p.height / 2.0, pal.text.alpha(0.4));
-                }
-                if caret_on {
-                    s.fill(Rect { x: TEXT_X, y: cy - 12.0, w: 1.5, h: 24.0 }, pal.text, 0.0);
-                }
-            }
-        }
-        if !rows.is_empty() {
+        s.fill(Rect { x: 0.0, y: SEARCH_H, w: WIDTH, h: height - SEARCH_H }, pal.tint, 0.0);
+        if !self.rows.is_empty() {
             s.fill(Rect { x: 0.0, y: SEARCH_H, w: WIDTH, h: 1.0 }, pal.text.alpha(0.08), 0.0);
         }
-        for (i, (r, name, sub, tag, image, glyph, marks)) in rows.iter().enumerate() {
-            if i == selected {
-                s.fill(*r, pal.active, 6.0);
-            } else if hover == Some(i) {
-                s.fill(*r, pal.hover, 6.0);
+        for (i, row) in self.rows.iter().enumerate() {
+            let r = row_rect(i);
+            if i == self.selected {
+                s.fill(r, pal.active, 6.0);
+            } else if self.hover == Some(i) {
+                s.fill(r, pal.hover, 6.0);
             }
             let rcy = r.y + r.h / 2.0;
             let icx = r.x + 12.0 + ICON / 2.0;
-            if let Some(img) = image {
+            if let Some(Some(img)) = self.images.get(&row.icon) {
                 s.image(img, icx, rcy);
-            } else if let Some(g) = glyph {
+            } else if let Some(g) = &row.glyph {
                 s.text(g, icx - g.width / 2.0, rcy - g.height / 2.0, dim);
             }
-            let accent = if theme.high_contrast { pal.text } else { pal.accent };
-            let paint_name =
-                |s: &mut Surface, t: &crate::capsule::gfx::Text, y: f32| {
-                    s.text_colored(t, NAME_X, y, |c| {
-                        if marks.binary_search(&(c as u32)).is_ok() { accent } else { pal.text }
-                    });
-                };
-            match (name, sub) {
+            let paint_name = |s: &mut Surface, t: &Text, y: f32| {
+                s.text_colored(t, NAME_X, y, |c| {
+                    if row.marks.binary_search(&(c as u32)).is_ok() { accent } else { pal.text }
+                });
+            };
+            match (&row.name, &row.sub) {
                 (Some(n), Some(st)) => {
                     let top = rcy - (n.height + st.height) / 2.0;
-                    paint_name(s, n, top);
+                    paint_name(&mut s, n, top);
                     s.text(st, NAME_X, top + n.height, dim);
                 }
-                (Some(n), None) => paint_name(s, n, rcy - n.height / 2.0),
+                (Some(n), None) => paint_name(&mut s, n, rcy - n.height / 2.0),
                 _ => {}
             }
-            if let Some(t) = tag {
+            if let Some(t) = &row.tag {
                 s.text(t, r.x + r.w - 12.0 - t.width, rcy - t.height / 2.0, pal.text.alpha(0.45));
             }
         }
+        self.paint_search(&mut s, &pal);
         s.end();
+        self.surface = Some(s);
     }
 
     fn select(&mut self, i: usize) {
@@ -819,7 +853,7 @@ impl Launcher {
 
     fn caret_from_x(&mut self, x: f32, extend: bool) {
         let origin = self.text_origin();
-        let Some(t) = self.gfx.text(&self.input.text(), Font::Search) else { return };
+        let Some(t) = &self.search else { return };
         let i = (0..=t.len())
             .min_by(|&a, &b| (origin + t.x_at(a) - x).abs().total_cmp(&(origin + t.x_at(b) - x).abs()))
             .unwrap_or(0);
@@ -830,7 +864,7 @@ impl Launcher {
     }
 
     fn menu_point(&self, i: usize) -> (i32, i32) {
-        let r = self.row_rect(i);
+        let r = row_rect(i);
         let mut pt = POINT { x: self.px(NAME_X), y: self.px(r.y + r.h) };
         unsafe {
             let _ = ClientToScreen(self.hwnd, &mut pt);
@@ -853,10 +887,7 @@ impl Launcher {
                 self.place_ime();
                 return None;
             }
-            WM_TIMER if wparam.0 == TIMER_CARET => {
-                self.caret_on = !self.caret_on;
-                self.invalidate();
-            }
+            WM_TIMER if wparam.0 == TIMER_CARET => self.blink(),
             WM_SCAN => self.on_scan(),
             WM_ICON => self.on_icon(wparam.0 as u64, HBITMAP(lparam.0 as *mut _)),
             WM_DPICHANGED => {
@@ -866,6 +897,7 @@ impl Launcher {
                 }
                 self.images.clear();
                 self.pending.clear();
+                self.request_icons();
                 self.place();
                 self.invalidate();
             }
@@ -981,7 +1013,7 @@ fn run_deferred() {
     let Some(p) = with_launcher(Launcher::take_pick).flatten() else { return };
     let done = match (p.menu, &p.action) {
         (Some((x, y)), Action::Window(h)) => {
-            winlist::system_menu(HWND(*h as *mut _), x, y);
+            winlist::system_menu(hwnd(*h), x, y);
             true
         }
         (Some((x, y)), Action::Open(target)) => launch::context_menu(p.hwnd, target, x, y),
@@ -989,7 +1021,7 @@ fn run_deferred() {
         (None, Action::Open(target)) => launch::open(p.hwnd, target, ""),
         (None, Action::Run { command, args }) => launch::open(p.hwnd, command, args),
         (None, Action::Window(h)) => {
-            winlist::activate_or_minimize(HWND(*h as *mut _), HWND::default());
+            winlist::activate_or_minimize(hwnd(*h), HWND::default());
             true
         }
         (None, Action::App(id)) => {
