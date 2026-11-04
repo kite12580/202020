@@ -1,4 +1,4 @@
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -139,6 +139,27 @@ struct Placed {
     x: f32,
 }
 
+/// A rasterized glyph, positioned relative to its text's pixel origin.
+struct Coverage {
+    x: i32,
+    y: i32,
+    width: usize,
+    alpha: Vec<u8>,
+}
+
+impl Coverage {
+    fn of(g: &Placed, size: f32, scale: f32) -> Option<Coverage> {
+        let font = &g.face.font;
+        let px = PxScale::from(size * scale * font.height_unscaled() / font.units_per_em().unwrap_or(1000.0));
+        let outlined = font.outline_glyph(g.id.with_scale_and_position(px, point(g.x * scale, 0.0)))?;
+        let b = outlined.px_bounds();
+        let width = b.width() as usize;
+        let mut alpha = vec![0; width * b.height() as usize];
+        outlined.draw(|x, y, c| alpha[y as usize * width + x as usize] = (c.min(1.0) * 255.0).round() as u8);
+        Some(Coverage { x: b.min.x as i32, y: b.min.y as i32, width, alpha })
+    }
+}
+
 /// A laid-out line of text, in DIPs.
 pub struct Text {
     glyphs: Vec<Placed>,
@@ -146,6 +167,7 @@ pub struct Text {
     ascent: f32,
     pub width: f32,
     pub height: f32,
+    raster: RefCell<Option<(f32, Vec<Option<Coverage>>)>>,
 }
 
 impl Text {
@@ -230,6 +252,7 @@ impl Gfx {
             ascent: f.ascent_unscaled() * k,
             width: pen,
             height: (f.height_unscaled() + f.line_gap_unscaled()) * k,
+            raster: RefCell::default(),
         })
     }
 
@@ -536,27 +559,28 @@ impl Surface {
     /// Draws character `i` of `t` in `color(i)`.
     pub fn text_colored(&mut self, t: &Text, x: f32, y: f32, color: impl Fn(usize) -> Color) {
         let s = self.scale();
-        let (ox, baseline) = ((x * s).round(), ((y + t.ascent) * s).round());
+        let (ox, oy) = ((x * s).round() as i32, ((y + t.ascent) * s).round() as i32);
         let (w, h) = (self.width as i32, self.height as i32);
+        let mut raster = t.raster.borrow_mut();
+        if raster.as_ref().is_none_or(|(rs, _)| *rs != s) {
+            *raster = Some((s, t.glyphs.iter().map(|g| Coverage::of(g, t.size, s)).collect()));
+        }
+        let Some((_, glyphs)) = raster.as_ref() else { return };
         let data = self.data();
-        for (i, g) in t.glyphs.iter().enumerate() {
+        for (i, g) in glyphs.iter().enumerate() {
+            let Some(g) = g else { continue };
             let c = color(i);
-            let font = &g.face.font;
-            let scale = PxScale::from(t.size * s * font.height_unscaled() / font.units_per_em().unwrap_or(1000.0));
-            let glyph = g.id.with_scale_and_position(scale, point(ox + g.x * s, baseline));
-            let Some(outlined) = font.outline_glyph(glyph) else { continue };
-            let b = outlined.px_bounds();
-            outlined.draw(|gx, gy, coverage| {
-                let (px, py) = (b.min.x as i32 + gx as i32, b.min.y as i32 + gy as i32);
-                if px < 0 || py < 0 || px >= w || py >= h {
-                    return;
+            for (j, &coverage) in g.alpha.iter().enumerate() {
+                let (px, py) = (ox + g.x + (j % g.width) as i32, oy + g.y + (j / g.width) as i32);
+                if coverage == 0 || px < 0 || py < 0 || px >= w || py >= h {
+                    continue;
                 }
-                let a = c.3 * coverage.min(1.0);
+                let a = c.3 * f32::from(coverage) / 255.0;
                 let i = (py * w + px) as usize * 4;
                 for (d, v) in data[i..i + 4].iter_mut().zip([c.2, c.1, c.0, 1.0]) {
                     *d = (v * a * 255.0 + f32::from(*d) * (1.0 - a)).round() as u8;
                 }
-            });
+            }
         }
     }
 

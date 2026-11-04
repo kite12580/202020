@@ -3,14 +3,14 @@
 //! explorer's tray thread waits for each relayed message.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use capsule_core::tray_proto::{
-    self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG, NIF_ICON, NotifyIconMessage,
-    handle,
+    self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG, NIF_ICON, NIM_DELETE,
+    NotifyIconMessage, handle,
 };
 use windows::Win32::Foundation::{FreeLibrary, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
@@ -20,14 +20,14 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CopyIcon, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, FindWindowExW, GetIconInfo, GetMessageW, HHOOK, HICON, HOOKPROC, HWND_MESSAGE, ICONINFO,
-    KillTimer, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
-    RegisterWindowMessageW, SendNotifyMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_GETMESSAGE,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COPYDATA, WM_DESTROY, WM_TIMER, WNDCLASSEXW,
+    KillTimer, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterWindowMessageW,
+    SendNotifyMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_GETMESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_COPYDATA, WM_DESTROY, WM_TIMER, WNDCLASSEXW,
 };
 use windows::core::{PCWSTR, s, w};
 
 use super::TrayKey;
-use crate::capsule::util::{hwnd, make_long, own_window, wide, window_ids};
+use crate::capsule::util::{hwnd, make_long, own_window, register_class, wide, window_ids};
 
 const HOOK_DLL: &str = "capsule_hook.dll";
 
@@ -35,6 +35,8 @@ pub struct TrayEvent {
     pub msg: NotifyIconMessage,
     /// Our own copy of the icon, or 0.
     pub icon: isize,
+    /// The icon handle is the one the app last sent, so it wasn't copied.
+    pub same_icon: bool,
 }
 
 pub struct Shared {
@@ -79,7 +81,10 @@ struct Hook {
 thread_local! {
     static SHARED: OnceCell<Arc<Shared>> = const { OnceCell::new() };
     static HOOK: RefCell<Hook> = RefCell::default();
+    static SENT_ICONS: RefCell<HashMap<TrayKey, u32>> = RefCell::default();
 }
+
+const MAX_SENT_ICONS: usize = 512;
 
 fn shared() -> Option<Arc<Shared>> {
     SHARED.with(|s| s.get().cloned())
@@ -161,14 +166,11 @@ impl Drop for Relay {
 fn create() -> Option<HWND> {
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
-        let class = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
+        register_class(WNDCLASSEXW {
             lpfnWndProc: Some(wndproc),
-            hInstance: instance.into(),
             lpszClassName: w!("202020 tray relay"),
             ..Default::default()
-        };
-        RegisterClassExW(&class);
+        });
         let h = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("202020 tray relay"),
@@ -251,7 +253,7 @@ fn icon_rect(q: &tray_proto::IconRectQuery) -> LRESULT {
 
 /// `CopyIcon` can fail for icons of other processes when it tries to reload
 /// them from their module, so fall back to copying the bitmaps.
-fn copy_icon(h: isize) -> isize {
+pub fn copy_icon(h: isize) -> isize {
     let h = HICON(h as *mut _);
     if let Ok(c) = unsafe { CopyIcon(h) } {
         return c.0 as isize;
@@ -269,13 +271,35 @@ fn copy_icon(h: isize) -> isize {
     copy
 }
 
+/// Our copy of the icon `m` sets, or `None` when the app sent the same handle
+/// as last time.
+fn copy_sent_icon(m: &NotifyIconMessage) -> Option<isize> {
+    let key = TrayKey { hwnd: m.data.hwnd, uid: m.data.uid, guid: m.data.guid };
+    SENT_ICONS.with_borrow_mut(|sent| {
+        if m.message == NIM_DELETE || m.data.flags & NIF_ICON != 0 && m.data.icon == 0 {
+            sent.remove(&key);
+            return Some(0);
+        }
+        if m.data.flags & NIF_ICON == 0 {
+            return Some(0);
+        }
+        if sent.len() >= MAX_SENT_ICONS {
+            sent.clear();
+        }
+        if sent.insert(key, m.data.icon) == Some(m.data.icon) {
+            return None;
+        }
+        Some(copy_icon(handle(m.data.icon)))
+    })
+}
+
 fn record(m: NotifyIconMessage) {
     let Some(shared) = shared() else { return };
-    let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 { copy_icon(handle(m.data.icon)) } else { 0 };
+    let copy = copy_sent_icon(&m);
     let was_empty = {
         let mut q = shared.queue.lock().unwrap();
         let was_empty = q.is_empty();
-        q.push_back(TrayEvent { msg: m, icon });
+        q.push_back(TrayEvent { msg: m, icon: copy.unwrap_or(0), same_icon: copy.is_none() });
         was_empty
     };
     if was_empty {

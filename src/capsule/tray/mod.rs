@@ -18,7 +18,7 @@ pub const NIN_SELECT: u32 = WM_USER;
 pub const NIN_POPUPOPEN: u32 = WM_USER + 6;
 pub const NIN_POPUPCLOSE: u32 = WM_USER + 7;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TrayKey {
     pub hwnd: u32,
     pub uid: u32,
@@ -161,9 +161,10 @@ impl Tray {
                 if d.flags & NIF_MESSAGE != 0 {
                     icon.callback = d.callback_message;
                 }
-                if d.flags & NIF_ICON != 0 {
+                let new_icon = d.flags & NIF_ICON != 0 && !(ev.same_icon && icon.hicon != 0);
+                if new_icon {
                     destroy_icon(icon.hicon);
-                    icon.hicon = ev.icon;
+                    icon.hicon = if ev.same_icon { relay::copy_icon(handle(d.icon)) } else { ev.icon };
                     icon.image = None;
                 }
                 if d.flags & NIF_TIP != 0 {
@@ -180,7 +181,7 @@ impl Tray {
                 }
                 if pos.is_none() || icon.hidden != was_hidden {
                     Change::Relayout
-                } else if d.flags & NIF_ICON != 0 {
+                } else if new_icon {
                     Change::Redraw(idx)
                 } else {
                     Change::None

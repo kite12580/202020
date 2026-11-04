@@ -26,6 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub use app::Options;
 pub use config_store::{enabled, launcher as launcher_config, set_enabled, set_launcher_enabled};
+pub use util::register_class;
 
 /// The capsule bar running on its own thread.
 pub struct Bar {

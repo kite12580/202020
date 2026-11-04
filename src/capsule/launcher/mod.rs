@@ -6,6 +6,8 @@ mod index;
 mod launch;
 mod sources;
 
+pub(crate) use launch::open;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,11 +38,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VK_V, VK_X,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, GetCursorPos, IDC_ARROW, KillTimer, LoadCursorW,
-    RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, GetCursorPos, KillTimer, SW_HIDE, SW_SHOW,
+    SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, WA_INACTIVE, WM_ACTIVATE,
+    WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DPICHANGED, WM_ERASEBKGND, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -48,9 +50,9 @@ use crate::capsule::config_store;
 use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
 use crate::capsule::icons::IconWorker;
 use crate::capsule::theme::{self, Palette, Theme};
-use crate::capsule::util::{hwnd, lparam_point, primary_monitor, scale};
+use crate::capsule::util::{hwnd, lparam_point, primary_monitor, register_class, scale};
 use crate::capsule::windows_list as winlist;
-use index::{Action, Batch, DIR_GLYPH, Entry};
+use index::{Action, Batch, Entry};
 
 /// A 202020 action offered as a command; `id` is posted as the wparam of
 /// `Options::command_msg`.
@@ -163,7 +165,7 @@ struct Row {
     list: usize,
     index: usize,
     marks: Vec<u32>,
-    icon: String,
+    icon: Option<String>,
     name: Option<Text>,
     sub: Option<Text>,
     tag: Option<Text>,
@@ -215,38 +217,8 @@ struct Launcher {
     deferred: Option<Deferred>,
 }
 
-fn register_class() {
-    unsafe {
-        let Ok(instance) = GetModuleHandleW(None) else { return };
-        let class = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(launcher_proc),
-            hInstance: instance.into(),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            lpszClassName: CLASS,
-            ..Default::default()
-        };
-        RegisterClassExW(&class);
-    }
-}
-
 fn row_rect(i: usize) -> Rect {
     Rect { x: PAD, y: LIST_TOP + i as f32 * ROW_H, w: WIDTH - 2.0 * PAD, h: ROW_H }
-}
-
-fn icon_key(e: &Entry) -> String {
-    if e.source != Source::Folder {
-        return e.icon.clone();
-    }
-    if e.glyph == Some(DIR_GLYPH) {
-        return "<folder>".into();
-    }
-    match e.name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()) {
-        Some(ext) if !matches!(ext.as_str(), "exe" | "lnk" | "ico" | "url" | "appref-ms" | "msc" | "cpl") => {
-            format!(".{ext}")
-        }
-        _ => e.icon.clone(),
-    }
 }
 
 /// An entry for a history key whose source hasn't been scanned yet.
@@ -254,14 +226,17 @@ fn remembered(key: &str, name: &str) -> Option<Entry> {
     let (source, id) = split_key(key)?;
     match source {
         Source::App => Some(index::app_entry(name.to_string(), id)),
-        Source::Folder => Some(index::file_entry(id.to_string(), name.to_string(), false)),
+        Source::Folder => {
+            let path = id.trim_end_matches('\\');
+            Some(index::file_entry(path, name.to_string(), path.len() != id.len()))
+        }
         Source::Window | Source::Command => None,
     }
 }
 
 impl Launcher {
     fn create(opts: Options) -> Option<Launcher> {
-        register_class();
+        register_class(WNDCLASSEXW { lpfnWndProc: Some(launcher_proc), lpszClassName: CLASS, ..Default::default() });
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         }
@@ -477,9 +452,9 @@ impl Launcher {
             list,
             index,
             marks,
-            icon: icon_key(e),
+            icon: e.icon_key(),
             name: self.gfx.text_fit(&e.name, Font::Title, room),
-            sub: if e.subtitle.is_empty() { None } else { self.gfx.text_fit(&e.subtitle, Font::Small, room) },
+            sub: Some(e.subtitle()).filter(|s| !s.is_empty()).and_then(|s| self.gfx.text_fit(&s, Font::Small, room)),
             tag: self.gfx.text(e.source.label(), Font::Small),
             glyph: e.glyph.and_then(|g| self.gfx.text(g.encode_utf8(&mut [0; 4]), Font::Glyph)),
         }
@@ -649,15 +624,13 @@ impl Launcher {
     fn request_icons(&mut self) {
         let px = self.px(ICON) as u32;
         for row in &self.rows {
-            let e = &self.lists[row.list][row.index];
-            if e.icon.is_empty() || self.images.contains_key(&row.icon) {
-                continue;
-            }
+            let Some(key) = row.icon.as_ref().filter(|k| !self.images.contains_key(*k)) else { continue };
+            let Some(name) = self.lists[row.list][row.index].icon() else { continue };
             let id = self.next_icon;
             self.next_icon += 1;
-            self.images.insert(row.icon.clone(), None);
-            self.pending.insert(id, row.icon.clone());
-            self.icons.request(id, e.icon.clone(), px);
+            self.images.insert(key.clone(), None);
+            self.pending.insert(id, key.clone());
+            self.icons.request(id, name, px);
         }
     }
 
@@ -749,7 +722,7 @@ impl Launcher {
             }
             let rcy = r.y + r.h / 2.0;
             let icx = r.x + 12.0 + ICON / 2.0;
-            if let Some(Some(img)) = self.images.get(&row.icon) {
+            if let Some(Some(img)) = row.icon.as_ref().and_then(|k| self.images.get(k)) {
                 s.image(img, icx, rcy);
             } else if let Some(g) = &row.glyph {
                 s.text(g, icx - g.width / 2.0, rcy - g.height / 2.0, dim);
@@ -980,6 +953,7 @@ impl Launcher {
             owner: self.opts.owner,
             command_msg: self.opts.command_msg,
             action: e.action.clone(),
+            target: e.target(),
             key: e.key.clone(),
             name: e.name.clone(),
             menu,
@@ -1004,6 +978,7 @@ struct Pick {
     owner: isize,
     command_msg: u32,
     action: Action,
+    target: Option<String>,
     key: String,
     name: String,
     menu: Option<(i32, i32)>,
@@ -1011,28 +986,29 @@ struct Pick {
 
 fn run_deferred() {
     let Some(p) = with_launcher(Launcher::take_pick).flatten() else { return };
-    let done = match (p.menu, &p.action) {
-        (Some((x, y)), Action::Window(h)) => {
+    let done = match (p.menu, &p.action, &p.target) {
+        (Some((x, y)), Action::Window { hwnd: h, .. }, _) => {
             winlist::system_menu(hwnd(*h), x, y);
             true
         }
-        (Some((x, y)), Action::Open(target)) => launch::context_menu(p.hwnd, target, x, y),
-        (Some(_), _) => false,
-        (None, Action::Open(target)) => launch::open(p.hwnd, target, ""),
-        (None, Action::Run { command, args }) => launch::open(p.hwnd, command, args),
-        (None, Action::Window(h)) => {
+        (Some((x, y)), _, Some(target)) => launch::context_menu(p.hwnd, target, x, y),
+        (Some(_), _, None) => false,
+        (None, _, Some(target)) => launch::open(p.hwnd, target, ""),
+        (None, Action::Run { command, args }, None) => launch::open(p.hwnd, command, args),
+        (None, Action::Window { hwnd: h, .. }, None) => {
             winlist::activate_or_minimize(hwnd(*h), HWND::default());
             true
         }
-        (None, Action::App(id)) => {
+        (None, Action::App(id), None) => {
             launch::post(p.owner, p.command_msg, *id);
             true
         }
-        (None, Action::EmptyRecycleBin) => {
+        (None, Action::EmptyRecycleBin, None) => {
             hide();
             launch::empty_recycle_bin(p.hwnd);
             true
         }
+        (None, Action::Item | Action::Open(_), None) => false,
     };
     if done {
         if p.menu.is_none() && !p.key.is_empty() {

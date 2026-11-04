@@ -2,11 +2,14 @@ use capsule_core::layout::PxRect;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, PROPERTYKEY, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WNDCLASSEXW,
+};
 use windows::core::PWSTR;
 
 pub const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
@@ -107,4 +110,16 @@ pub fn primary_monitor() -> PxRect {
 
 pub fn scale(dip: f32, dpi: u32) -> i32 {
     (dip * dpi as f32 / 96.0).round() as i32
+}
+
+/// Registers `class` for this module, with an arrow cursor.
+pub fn register_class(class: WNDCLASSEXW) {
+    unsafe {
+        RegisterClassExW(&WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            hInstance: GetModuleHandleW(None).unwrap_or_default().into(),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            ..class
+        });
+    }
 }

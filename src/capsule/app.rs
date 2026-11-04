@@ -35,17 +35,17 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, ChangeWindowMessageFilterEx, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
     DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EndMenu, GA_ROOTOWNER, GWL_STYLE, GetAncestor,
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_TOPMOST, IDC_ARROW,
-    IsZoomed, KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE,
-    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW,
-    RegisterShellHookWindow, RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA,
-    SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
-    SetCoalescableTimer, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WA_INACTIVE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT,
-    WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER,
-    WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, HICON, HWND_TOPMOST, IsZoomed,
+    KillTimer, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+    PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterShellHookWindow, RegisterWindowMessageW,
+    SM_CXDRAG, SM_CYDRAG, SPI_SETHIGHCONTRAST, SPI_SETWORKAREA, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCoalescableTimer, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_CAPTION, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{GUID, PCWSTR, w};
 
@@ -54,6 +54,7 @@ use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
 use crate::capsule::icons::IconWorker;
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
+use crate::capsule::launcher;
 use crate::capsule::menu::{self, Item};
 use crate::capsule::pinned::{self, PinnedApp};
 use crate::capsule::popup::Popup;
@@ -63,7 +64,7 @@ use crate::capsule::tooltip::Tooltip;
 use crate::capsule::tray::relay::{Rects, Relay, Shared};
 use crate::capsule::tray::{self, Change, NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
 use crate::capsule::util::{
-    apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, scale,
+    apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, register_class, scale,
 };
 use crate::capsule::volume::Volume;
 use crate::capsule::windows_list::{self as winlist, IconRank, WindowList};
@@ -289,21 +290,16 @@ pub fn run(opts: Options, ready: impl FnOnce(Option<HWND>)) {
 fn create_windows() -> Option<(HWND, HWND)> {
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
-        let cursor = LoadCursorW(None, IDC_ARROW).ok()?;
         for (name, proc_) in [
             (w!("CapsuleBar"), bar_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT),
             (w!("CapsuleBarPopup"), popup_proc),
         ] {
-            let class = WNDCLASSEXW {
-                cbSize: size_of::<WNDCLASSEXW>() as u32,
+            register_class(WNDCLASSEXW {
                 style: CS_DBLCLKS,
                 lpfnWndProc: Some(proc_),
-                hInstance: instance.into(),
-                hCursor: cursor,
                 lpszClassName: name,
                 ..Default::default()
-            };
-            RegisterClassExW(&class);
+            });
         }
         let bar = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
@@ -1658,7 +1654,9 @@ impl App {
             Hit::Start => keyhook::press_start(),
             Hit::Task(i) => match self.tasks[i] {
                 Task::Window(w) => winlist::activate_or_minimize(self.windows.items[w].hwnd, self.foreground_root()),
-                Task::Pin(p) => pinned::launch(&self.pins[p].parsing_name),
+                Task::Pin(p) => {
+                    launcher::open(self.hwnd, &self.pins[p].parsing_name, "");
+                }
             },
             Hit::Chevron => self.toggle_popup(),
             Hit::Keyboard => self.next_keyboard_layout(),

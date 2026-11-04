@@ -646,20 +646,6 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
     }
 }
 
-fn register_class(instance: HINSTANCE, name: PCWSTR, proc: WNDPROC, background: HBRUSH) {
-    unsafe {
-        let class = WNDCLASSW {
-            lpfnWndProc: proc,
-            hInstance: instance,
-            lpszClassName: name,
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hbrBackground: background,
-            ..Default::default()
-        };
-        RegisterClassW(&class);
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
@@ -682,8 +668,17 @@ fn main() {
         }
         let Ok(instance) = GetModuleHandleW(None) else { return };
         let instance = HINSTANCE::from(instance);
-        register_class(instance, MAIN_CLASS, Some(main_proc), HBRUSH::default());
-        register_class(instance, OVERLAY_CLASS, Some(overlay_proc), HBRUSH(GetStockObject(BLACK_BRUSH).0));
+        capsule::register_class(WNDCLASSEXW {
+            lpfnWndProc: Some(main_proc),
+            lpszClassName: MAIN_CLASS,
+            ..Default::default()
+        });
+        capsule::register_class(WNDCLASSEXW {
+            lpfnWndProc: Some(overlay_proc),
+            hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
+            lpszClassName: OVERLAY_CLASS,
+            ..Default::default()
+        });
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             MAIN_CLASS,

@@ -8,14 +8,12 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::CreateEventW;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IEnumFullIDList, IShellItem2, SEE_MASK_INVOKEIDLIST, SHCreateItemFromIDList, SHELLEXECUTEINFOW, SHParseDisplayName,
-    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, ShellExecuteExW,
+    IEnumFullIDList, IShellItem2, SHCreateItemFromIDList, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
 };
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, interface, w};
+use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, interface, w};
 
 use crate::capsule::gfx::Image;
-use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, apps_folder, take_string, wide};
+use crate::capsule::util::{OwnedHandle, PKEY_APP_USER_MODEL_ID, apps_folder, take_string};
 
 const CLSID_TASKBAND_PIN: GUID = GUID::from_u128(0x90aa3a4e_1cba_4233_b8bb_535773d48449);
 const PKEY_LINK_TARGET_PARSING_PATH: PROPERTYKEY =
@@ -76,25 +74,6 @@ pub fn read() -> Vec<PinnedApp> {
     }
     log::debug!("taskbar pins {:?}", pins.iter().map(|p| (&p.pin, &p.parsing_name)).collect::<Vec<_>>());
     pins
-}
-
-pub fn launch(parsing_name: &str) {
-    let mut pidl = std::ptr::null_mut();
-    if let Err(e) = unsafe { SHParseDisplayName(PCWSTR(wide(parsing_name).as_ptr()), None, &mut pidl, 0, None) } {
-        log::warn!("launch {parsing_name}: {e}");
-        return;
-    }
-    let mut info = SHELLEXECUTEINFOW {
-        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_INVOKEIDLIST,
-        lpIDList: pidl as *mut _,
-        nShow: SW_SHOWNORMAL.0,
-        ..Default::default()
-    };
-    if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
-        log::warn!("launch {parsing_name}: {e}");
-    }
-    unsafe { CoTaskMemFree(Some(pidl as *const _)) };
 }
 
 /// Signals when explorer rewrites the pin list.
