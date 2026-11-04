@@ -63,7 +63,6 @@ pub struct WindowList {
     next_seq: u64,
     replaced_seq: Option<u64>,
     pins: Vec<Pin>,
-    diag: bool,
 }
 
 pub fn cloaked(h: HWND) -> bool {
@@ -71,7 +70,7 @@ pub fn cloaked(h: HWND) -> bool {
     unsafe { DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut v as *mut u32 as *mut c_void, 4) }.is_ok() && v != 0
 }
 
-pub fn qualifies(h: HWND, diag: bool) -> bool {
+pub fn qualifies(h: HWND) -> bool {
     let ex = unsafe { GetWindowLongW(h, GWL_EXSTYLE) } as u32;
     let class = class_name(h);
     let facts = WindowFacts {
@@ -85,8 +84,8 @@ pub fn qualifies(h: HWND, diag: bool) -> bool {
         class: &class,
     };
     let r = taskbar_window(&facts);
-    if diag && facts.visible {
-        log::debug!("filter {:?} {class} -> {r:?}", h.0);
+    if facts.visible {
+        log::trace!("filter {:?} {class} -> {r:?}", h.0);
     }
     r.is_ok()
 }
@@ -110,10 +109,6 @@ unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> BOOL {
 }
 
 impl WindowList {
-    pub fn new(diag: bool) -> Self {
-        Self { diag, ..Default::default() }
-    }
-
     /// Fills the list with existing windows. Their true open order is
     /// unknown, so they are ordered by process start time, then bottom-up
     /// z-order.
@@ -126,7 +121,7 @@ impl WindowList {
         let mut found: Vec<(u64, usize, HWND)> = all
             .iter()
             .enumerate()
-            .filter(|(_, h)| qualifies(**h, self.diag))
+            .filter(|(_, h)| qualifies(**h))
             .map(|(z, &h)| {
                 let pid = window_ids(h).1;
                 let t = *created.entry(pid).or_insert_with(|| process_created(pid));
@@ -176,7 +171,7 @@ impl WindowList {
     }
 
     pub fn add(&mut self, h: HWND) -> bool {
-        if self.index(h).is_some() || !qualifies(h, self.diag) {
+        if self.index(h).is_some() || !qualifies(h) {
             return false;
         }
         self.insert(h);
@@ -203,8 +198,7 @@ impl WindowList {
     /// Drops windows whose state changed without an event reaching us.
     pub fn prune(&mut self) -> bool {
         let before = self.items.len();
-        let diag = self.diag;
-        self.items.retain(|w| qualifies(w.hwnd, diag));
+        self.items.retain(|w| qualifies(w.hwnd));
         self.seen.retain(|&h, _| unsafe { IsWindow(Some(hwnd(h))) }.as_bool());
         before != self.items.len()
     }

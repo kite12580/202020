@@ -55,13 +55,13 @@ While the bar is running, a `--watchdog` child process restores the taskbar's au
 | Flag | Effect |
 |---|---|
 | `--safe` | Don't hide the native taskbar (useful for a first test of the capsule bar) |
-| `--verbose` | Write debug logs to `logs\log.txt` |
-| `--diag` | Like `--verbose`, plus why each window was shown or filtered |
 | `--restore` | Restore the native taskbar (after both 202020 and its watchdog were killed) |
 
 ## Config
 
 `config.toml` next to the exe is created on first run. Capsule bar settings live under `[capsule_bar]`. While the bar is running, changes apply on save; `enabled` is read at startup and set by the tray menu. See the comments in the file. If acrylic stops working (e.g. the capsule stays a solid color), set `backdrop` to `"accent"`.
+
+To report a problem, set `level = "debug"` under `[logging]` and restart 202020. Logs go to `logs\log.txt` (and `logs\watchdog.txt` for the watchdog), including panics and crashes. `"trace"` also logs why each window was shown on or left off the capsule bar.
 
 ## Build
 

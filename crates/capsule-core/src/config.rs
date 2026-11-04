@@ -6,6 +6,38 @@ use toml_edit::{Array, DocumentMut, value};
 #[serde(default)]
 pub struct Config {
     pub capsule_bar: CapsuleBar,
+    pub logging: Logging,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    #[default]
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<LogLevel> for log::LevelFilter {
+    fn from(l: LogLevel) -> Self {
+        match l {
+            LogLevel::Off => Self::Off,
+            LogLevel::Error => Self::Error,
+            LogLevel::Warn => Self::Warn,
+            LogLevel::Info => Self::Info,
+            LogLevel::Debug => Self::Debug,
+            LogLevel::Trace => Self::Trace,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[serde(default)]
+pub struct Logging {
+    pub level: LogLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -112,6 +144,11 @@ step = 2
 [capsule_bar.tray]
 # Tray icons shown on the capsule. Right-click an icon in the ^ popup to pin or unpin it.
 pinned = []
+
+[logging]
+# Write logs to the logs folder next to the exe: "off", "error", "warn", "info", "debug" or "trace". Use "debug" when
+# reporting a problem; "trace" also logs why each window was shown on or left off the capsule bar. Read at startup.
+level = "off"
 "#;
 
 pub fn parse(text: &str) -> Result<Config, String> {
@@ -175,6 +212,7 @@ mod tests {
         assert_eq!(c.appearance.opacity, 1.0);
         assert_eq!(c.keyboard.labels["en"], "英");
         assert!(parse("[capsule_bar.appearance]\nbackdrop = \"bogus\"").is_err());
+        assert_eq!(parse("[logging]\nlevel = \"debug\"").unwrap().logging.level, LogLevel::Debug);
     }
 
     #[test]

@@ -594,12 +594,9 @@ fn register_class(instance: HINSTANCE, name: PCWSTR, proc: WNDPROC, background: 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
-    let verbose = flag("--verbose");
     match args.first().map(String::as_str) {
         Some("--watchdog") => {
-            if verbose {
-                capsule::init_logging("watchdog.txt", log::LevelFilter::Debug);
-            }
+            capsule::init_logging("watchdog.txt");
             std::process::exit(capsule::run_watchdog(&args[1..]));
         }
         Some("--restore") => {
@@ -608,14 +605,7 @@ fn main() {
         }
         _ => {}
     }
-    let diag = flag("--diag");
-    if verbose || diag {
-        capsule::init_logging("log.txt", log::LevelFilter::Debug);
-        std::panic::set_hook(Box::new(|info| {
-            log::error!("panic: {info}");
-            log::logger().flush();
-        }));
-    }
+    capsule::init_logging("log.txt");
     unsafe {
         let _ = CreateMutexW(None, false, w!("Local\\202020"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
@@ -657,7 +647,6 @@ fn main() {
             brk: None,
             bar_opts: capsule::Options {
                 safe: flag("--safe"),
-                diag,
                 owner: hwnd.0 as isize,
                 exited_msg: WM_BAR_EXITED,
                 disable_msg: WM_BAR_DISABLE,

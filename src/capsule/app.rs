@@ -71,7 +71,6 @@ use crate::capsule::windows_list::{self as winlist, IconRank, WindowList};
 #[derive(Clone, Copy)]
 pub struct Options {
     pub safe: bool,
-    pub diag: bool,
     /// Window that receives the `*_msg` messages.
     pub owner: isize,
     pub exited_msg: u32,
@@ -514,7 +513,7 @@ impl App {
             layout: Layout::default(),
             bounds: RECT::default(),
             bar_tray: Vec::new(),
-            windows: WindowList::new(opts.diag),
+            windows: WindowList::default(),
             pins: Vec::new(),
             tasks: Vec::new(),
             tray: Tray::default(),

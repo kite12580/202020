@@ -123,6 +123,9 @@ impl Relay {
         let thread = std::thread::spawn(move || {
             SHARED.with(|s| s.set(shared)).ok();
             let h = create();
+            if h.is_none() {
+                log::error!("tray relay window creation failed");
+            }
             slot2.store(h.map_or(0, |h| h.0 as isize), Ordering::Release);
             *ready2.0.lock().unwrap() = true;
             ready2.1.notify_all();
@@ -203,7 +206,10 @@ fn inject(relay: HWND, tray: HWND) -> Option<Injection> {
         .inspect_err(|e| log::error!("tray hook: load {}: {e}", path.display()))
         .ok()?;
     let mut injection = Injection { hook: HHOOK::default(), module };
-    let proc = unsafe { GetProcAddress(module, s!("GetMsgProc")) }?;
+    let Some(proc) = (unsafe { GetProcAddress(module, s!("GetMsgProc")) }) else {
+        log::error!("tray hook: {} has no GetMsgProc", path.display());
+        return None;
+    };
     let proc: HOOKPROC = Some(unsafe {
         std::mem::transmute::<
             unsafe extern "system" fn() -> isize,
@@ -212,6 +218,7 @@ fn inject(relay: HWND, tray: HWND) -> Option<Injection> {
     });
     let tid = window_ids(tray).0;
     if tid == 0 {
+        log::error!("tray hook: Shell_TrayWnd {tray:?} is gone");
         return None;
     }
     injection.hook = unsafe { SetWindowsHookExW(WH_GETMESSAGE, proc, Some(module.into()), tid) }
@@ -226,6 +233,7 @@ fn inject(relay: HWND, tray: HWND) -> Option<Injection> {
 /// Includes message-only windows, which some apps use as their notify-icon
 /// owner.
 fn announce_taskbar(msg: u32) {
+    let mut count = 0;
     for parent in [None, Some(HWND_MESSAGE)] {
         let mut prev = None;
         while let Ok(h) = unsafe { FindWindowExW(parent, prev, PCWSTR::null(), PCWSTR::null()) } {
@@ -233,10 +241,12 @@ fn announce_taskbar(msg: u32) {
                 unsafe {
                     let _ = SendNotifyMessageW(h, msg, WPARAM(0), LPARAM(0));
                 }
+                count += 1;
             }
             prev = Some(h);
         }
     }
+    log::debug!("TaskbarCreated sent to {count} windows");
 }
 
 fn icon_rect(q: &tray_proto::IconRectQuery) -> LRESULT {
@@ -300,8 +310,9 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             };
             match cds.dwData {
                 COPYDATA_NOTIFYICON => {
-                    if let Some(m) = tray_proto::parse_notify_icon(bytes) {
-                        record(m);
+                    match tray_proto::parse_notify_icon(bytes) {
+                        Some(m) => record(m),
+                        None => log::debug!("tray msg unparsed ({} bytes)", bytes.len()),
                     }
                     LRESULT(1)
                 }
@@ -314,6 +325,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         RELAY_ATTACH => {
             let tray = hwnd(wparam.0 as isize);
+            log::debug!("tray hook: attaching to {tray:?}");
             HOOK.with_borrow_mut(|hook| {
                 if let Some(old) = hook.tray.replace(tray)
                     && old != tray

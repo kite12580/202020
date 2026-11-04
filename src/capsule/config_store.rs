@@ -42,6 +42,10 @@ pub fn enabled() -> bool {
     read().2.capsule_bar.enabled
 }
 
+pub fn log_level() -> log::LevelFilter {
+    read().2.logging.level.into()
+}
+
 pub fn set_enabled(enabled: bool) {
     let (path, text, _) = read();
     if let Err(e) = std::fs::write(&path, config::set_enabled(&text, enabled)) {

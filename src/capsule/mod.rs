@@ -90,8 +90,11 @@ pub fn edit_config() {
     config_store::open_in_editor(&config_store::ensure_file());
 }
 
-pub fn init_logging(name: &str, level: log::LevelFilter) {
-    logger::init(&config_store::log_dir(), name, level);
+pub fn init_logging(name: &str) {
+    let level = config_store::log_level();
+    if level != log::LevelFilter::Off {
+        logger::init(&config_store::log_dir(), name, level);
+    }
 }
 
 pub fn run_watchdog(args: &[String]) -> i32 {

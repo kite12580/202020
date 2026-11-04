@@ -153,7 +153,6 @@ impl Takeover {
             .arg("--watchdog")
             .args([pid, seq, saved.ab_state].map(|v| v.to_string()))
             .args([r.left, r.top, r.right, r.bottom].map(|v| v.to_string()))
-            .args((log::max_level() != log::LevelFilter::Off).then_some("--verbose"))
             .spawn();
         if let Err(e) = spawned {
             log::error!("watchdog: {e}");
