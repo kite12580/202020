@@ -1,4 +1,4 @@
-//! Searchable entries. Apps and folders are scanned on a worker thread, since
+//! Searchable entries. Apps and folders are scanned on worker threads, since
 //! both touch the disk; windows and commands are listed on the UI thread.
 
 use std::borrow::Cow;
@@ -131,29 +131,55 @@ impl Entry {
 
 pub struct Batch {
     pub source: Source,
+    /// Index into the folder roots; 0 for other sources.
+    pub root: usize,
     pub entries: Vec<Entry>,
+    /// Whether this is the source's final batch.
     pub last: bool,
 }
 
-/// Scans enabled disk sources, sending one batch per source and posting
-/// `msg` to `notify` after each. Stops early once `cancel` is set.
-pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        let send = |source, entries, last| {
-            if cancel.load(Ordering::Relaxed) || tx.send(Batch { source, entries, last }).is_err() {
-                return false;
-            }
-            unsafe {
-                let _ = PostMessageW(Some(hwnd(notify)), msg, WPARAM(0), LPARAM(0));
-            }
-            true
-        };
-        let apps = if cfg.apps.enabled { scan_apps() } else { Vec::new() };
-        if !send(Source::App, apps, false) {
-            return;
+#[derive(Clone)]
+struct Outbox {
+    tx: Sender<Batch>,
+    notify: isize,
+    msg: u32,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Outbox {
+    fn send(&self, batch: Batch) -> bool {
+        if self.cancel.load(Ordering::Relaxed) || self.tx.send(batch).is_err() {
+            return false;
         }
-        let folders = if cfg.folders.enabled { scan_folders(&cfg.folders.roots, &cancel) } else { Vec::new() };
-        send(Source::Folder, folders, true);
+        unsafe {
+            let _ = PostMessageW(Some(hwnd(self.notify)), self.msg, WPARAM(0), LPARAM(0));
+        }
+        true
+    }
+}
+
+/// Scans apps and folders on separate threads, sending apps as one batch and
+/// folders as one batch per root, and posting `msg` to `notify` after each.
+/// Stops early once `cancel` is set.
+pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) {
+    let out = Outbox { tx, notify, msg, cancel };
+    let apps = out.clone();
+    let apps_enabled = cfg.apps.enabled;
+    std::thread::spawn(move || {
+        let entries = if apps_enabled { scan_apps() } else { Vec::new() };
+        apps.send(Batch { source: Source::App, root: 0, entries, last: true });
+    });
+    std::thread::spawn(move || {
+        let roots = if cfg.folders.enabled { &cfg.folders.roots[..] } else { &[] };
+        if roots.is_empty() {
+            out.send(Batch { source: Source::Folder, root: 0, entries: Vec::new(), last: true });
+        }
+        for (i, root) in roots.iter().enumerate() {
+            let entries = scan_root(root, &out.cancel);
+            if !out.send(Batch { source: Source::Folder, root: i, entries, last: i + 1 == roots.len() }) {
+                return;
+            }
+        }
     });
 }
 
@@ -223,36 +249,33 @@ pub fn file_entry(path: &str, name: String, dir: bool) -> Entry {
     }
 }
 
-fn scan_folders(roots: &[FolderRoot], cancel: &AtomicBool) -> Vec<Entry> {
+fn scan_root(root: &FolderRoot, cancel: &AtomicBool) -> Vec<Entry> {
     let mut out = Vec::new();
-    for root in roots {
-        let base = super::launch::env(&root.path);
-        let base = base.trim_end_matches(['\\', '/']).to_string();
-        let start = out.len();
-        let mut stack = vec![(base, 0)];
-        'walk: while let Some((dir, depth)) = stack.pop() {
-            if cancel.load(Ordering::Relaxed) {
-                return out;
+    let base = super::launch::env(&root.path);
+    let base = base.trim_end_matches(['\\', '/']).to_string();
+    let mut stack = vec![(base, 0)];
+    'walk: while let Some((dir, depth)) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        for (name, attrs) in list_dir(&dir) {
+            if out.len() >= root.max_items {
+                break 'walk;
             }
-            for (name, attrs) in list_dir(&dir) {
-                if out.len() - start >= root.max_items {
-                    break 'walk;
+            if attrs & (FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0) != 0 || excluded(root, &name) {
+                continue;
+            }
+            let path = format!(r"{dir}\{name}");
+            let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+            if is_dir {
+                if depth < root.depth && attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0 {
+                    stack.push((path.clone(), depth + 1));
                 }
-                if attrs & (FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0) != 0 || excluded(root, &name) {
-                    continue;
+                if root.include_dirs {
+                    out.push(file_entry(&path, name, true));
                 }
-                let path = format!(r"{dir}\{name}");
-                let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
-                if is_dir {
-                    if depth < root.depth && attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0 {
-                        stack.push((path.clone(), depth + 1));
-                    }
-                    if root.include_dirs {
-                        out.push(file_entry(&path, name, true));
-                    }
-                } else if wants_file(root, &name) {
-                    out.push(file_entry(&path, name, false));
-                }
+            } else if wants_file(root, &name) {
+                out.push(file_entry(&path, name, false));
             }
         }
     }

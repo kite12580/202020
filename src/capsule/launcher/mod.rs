@@ -38,11 +38,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VK_V, VK_X,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, GetCursorPos, KillTimer, SW_HIDE, SW_SHOW,
-    SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, WA_INACTIVE, WM_ACTIVATE,
-    WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DPICHANGED, WM_ERASEBKGND, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, GetCursorPos, GetQueueStatus, KillTimer, QS_KEY,
+    QS_MOUSEBUTTON, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos,
+    ShowWindow, USER_TIMER_MINIMUM, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -74,6 +74,9 @@ const WM_SCAN: u32 = WM_APP + 1;
 const WM_ICON: u32 = WM_APP + 2;
 const TIMER_IDLE: usize = 1;
 const TIMER_CARET: usize = 2;
+const TIMER_MATCH: usize = 3;
+/// Entries scored between checks for pending input.
+const MATCH_CHUNK: u32 = 512;
 
 const WIDTH: f32 = 640.0;
 const PAD: f32 = 8.0;
@@ -199,11 +202,16 @@ struct Launcher {
     /// Positions of the entries that have history.
     by_key: HashMap<String, (usize, usize)>,
     scanned: [bool; RECENT],
-    scan: Option<(Receiver<Batch>, Arc<AtomicBool>)>,
+    /// Entries per folder root, in order, in the folders list.
+    root_lens: Vec<usize>,
+    scan: Option<Scan>,
     scan_started: Option<Instant>,
-    /// Matches for `found_query`, which a longer query only narrows.
+    /// Matches for `found_query`, which a longer query only narrows. Still
+    /// incomplete while `recheck` or the lists from `next` are unscored.
     found: Vec<(usize, usize, Match)>,
     found_query: Option<(Option<Source>, String)>,
+    recheck: Vec<(usize, usize)>,
+    next: (usize, usize),
     rows: Vec<Row>,
     selected: usize,
     hover: Option<usize>,
@@ -214,6 +222,13 @@ struct Launcher {
     next_icon: u64,
     caret_on: bool,
     deferred: Option<Deferred>,
+}
+
+struct Scan {
+    rx: Receiver<Batch>,
+    cancel: Arc<AtomicBool>,
+    /// Sources whose last batch hasn't arrived.
+    pending: usize,
 }
 
 fn row_rect(i: usize) -> Rect {
@@ -282,10 +297,13 @@ impl Launcher {
             lists: Default::default(),
             by_key: HashMap::new(),
             scanned: [false; RECENT],
+            root_lens: Vec::new(),
             scan: None,
             scan_started: None,
             found: Vec::new(),
             found_query: None,
+            recheck: Vec::new(),
+            next: (RECENT, 0),
             rows: Vec::new(),
             selected: 0,
             hover: None,
@@ -357,9 +375,10 @@ impl Launcher {
         } else {
             Vec::new()
         };
-        self.lists_changed();
-        if rescan && let Some((_, cancel)) = self.scan.take() {
-            cancel.store(true, Ordering::Relaxed);
+        self.list_changed(list_of(Source::Window));
+        self.list_changed(list_of(Source::Command));
+        if rescan && let Some(scan) = self.scan.take() {
+            scan.cancel.store(true, Ordering::Relaxed);
         }
         if rescan || self.scan_started.is_none_or(|t| t.elapsed() > RESCAN_AFTER) {
             self.start_scan();
@@ -389,8 +408,9 @@ impl Launcher {
         self.visible = false;
         self.rows.clear();
         self.lists[list_of(Source::Window)].clear();
+        self.stop_matching();
         self.found = Vec::new();
-        self.found_query = None;
+        self.recheck = Vec::new();
         self.hover = None;
         self.pressed = None;
         self.surface = None;
@@ -406,27 +426,48 @@ impl Launcher {
         if self.scan.is_some() {
             return;
         }
+        let roots = if self.cfg.folders.enabled { self.cfg.folders.roots.len() } else { 0 };
+        if roots < self.root_lens.len() {
+            self.root_lens.truncate(roots);
+            self.lists[list_of(Source::Folder)].truncate(self.root_lens.iter().sum());
+            self.list_changed(list_of(Source::Folder));
+        }
+        self.root_lens.resize(roots, 0);
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
-        self.scan = Some((rx, cancel));
+        self.scan = Some(Scan { rx, cancel, pending: 2 });
         self.scan_started = Some(Instant::now());
     }
 
     fn on_scan(&mut self) {
-        let Some((rx, _)) = &self.scan else { return };
-        let batches: Vec<Batch> = rx.try_iter().collect();
+        let Some(scan) = &self.scan else { return };
+        let batches: Vec<Batch> = scan.rx.try_iter().collect();
+        if batches.is_empty() {
+            return;
+        }
+        let keep = self.rows.get(self.selected).map(|r| self.entry(r).key.clone());
+        let mut finished = 0;
         for b in batches {
             let list = list_of(b.source);
-            self.lists[list] = b.entries;
-            self.scanned[list] = true;
+            if b.source == Source::Folder {
+                self.set_root(b.root, b.entries);
+            } else {
+                self.lists[list] = b.entries;
+            }
             if b.last {
+                self.scanned[list] = true;
+                finished += 1;
+            }
+            self.list_changed(list);
+        }
+        if let Some(scan) = &mut self.scan {
+            scan.pending = scan.pending.saturating_sub(finished);
+            if scan.pending == 0 {
                 self.scan = None;
             }
         }
-        self.lists_changed();
         if self.visible {
-            let keep = self.rows.get(self.selected).map(|r| self.entry(r).key.clone());
             self.refresh();
             if let Some(k) = keep.filter(|k| !k.is_empty())
                 && let Some(i) = self.rows.iter().position(|r| self.entry(r).key == k)
@@ -436,16 +477,32 @@ impl Launcher {
         }
     }
 
-    fn lists_changed(&mut self) {
-        self.found_query = None;
-        self.by_key.clear();
-        let (lists, by_key) = (&self.lists, &mut self.by_key);
+    fn set_root(&mut self, root: usize, entries: Vec<Entry>) {
+        let Some(&len) = self.root_lens.get(root) else { return };
+        let start: usize = self.root_lens[..root].iter().sum();
+        self.root_lens[root] = entries.len();
+        self.lists[list_of(Source::Folder)].splice(start..start + len, entries);
+    }
+
+    /// Drops what refers to positions in `list`.
+    fn list_changed(&mut self, list: usize) {
+        self.stop_matching();
+        let rows = self.rows.len();
+        self.rows.retain(|r| r.list != list);
+        if self.rows.len() != rows {
+            self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+            self.hover = None;
+            if self.visible {
+                self.place();
+                self.invalidate();
+            }
+        }
+        self.by_key.retain(|_, &mut (l, _)| l != list);
+        let (entries, by_key) = (&self.lists[list], &mut self.by_key);
         with_history(|h| {
-            for (l, list) in lists[..RECENT].iter().enumerate() {
-                for (i, e) in list.iter().enumerate() {
-                    if h.contains(&e.key) {
-                        by_key.insert(e.key.clone(), (l, i));
-                    }
+            for (i, e) in entries.iter().enumerate() {
+                if h.contains(&e.key) {
+                    by_key.insert(e.key.clone(), (list, i));
                 }
             }
         });
@@ -466,93 +523,175 @@ impl Launcher {
         }
     }
 
-    /// Re-runs the query and resizes the window to fit the results.
+    /// Re-runs the query and resizes the window to fit the results. A search
+    /// through many entries yields to pending input and finishes on
+    /// `TIMER_MATCH`.
     fn refresh(&mut self) {
         let text = self.input.text();
         self.search = self.gfx.text(&text, Font::Search);
         let (only, q) = query::split(&text, &self.cfg.prefixes);
         self.searcher.set_query(q);
+        if self.searcher.is_empty() {
+            self.stop_matching();
+            self.rows.clear();
+            self.lists[RECENT].clear();
+            self.list_recent(only);
+            self.rows_changed();
+            return;
+        }
+        let narrow = self
+            .found_query
+            .as_ref()
+            .is_some_and(|(o, prev)| *o == only && q.starts_with(prev.as_str()) && !prev.ends_with('\\'));
+        if narrow {
+            self.recheck.extend(self.found.drain(..).map(|(l, i, _)| (l, i)));
+        } else {
+            self.stop_matching();
+            self.next = (0, 0);
+        }
+        self.found_query = Some((only, q.to_string()));
+        self.repaint_search();
+        self.resume_matching();
+    }
+
+    fn list_recent(&mut self, only: Option<Source>) {
         let wanted = |s: Source| only.is_none_or(|o| o == s);
         let k = self.cfg.max_results;
-        let now = now();
-        self.rows.clear();
-        self.lists[RECENT].clear();
-        if self.searcher.is_empty() {
-            self.found.clear();
-            self.found_query = None;
-            let recent: Vec<(String, String)> =
-                with_history(|h| h.top(now).into_iter().map(|(key, e)| (key.to_string(), e.name.clone())).collect());
-            for (key, name) in recent {
+        let recent: Vec<(String, String)> =
+            with_history(|h| h.top(now()).into_iter().map(|(key, e)| (key.to_string(), e.name.clone())).collect());
+        for (key, name) in recent {
+            if self.rows.len() >= k {
+                break;
+            }
+            let Some((source, _)) = split_key(&key) else { continue };
+            if !wanted(source) || !self.enabled(source) {
+                continue;
+            }
+            if let Some(&(list, index)) = self.by_key.get(&key) {
+                let row = self.row(list, index, Vec::new());
+                self.rows.push(row);
+            } else if !self.scanned[list_of(source)]
+                && let Some(e) = remembered(&key, &name)
+            {
+                self.lists[RECENT].push(e);
+                let row = self.row(RECENT, self.lists[RECENT].len() - 1, Vec::new());
+                self.rows.push(row);
+            }
+        }
+        if let Some(source) = only {
+            let list = list_of(source);
+            for index in 0..self.lists[list].len() {
                 if self.rows.len() >= k {
                     break;
                 }
-                let Some((source, _)) = split_key(&key) else { continue };
-                if !wanted(source) || !self.enabled(source) {
-                    continue;
-                }
-                if let Some(&(list, index)) = self.by_key.get(&key) {
+                if !self.rows.iter().any(|r| r.list == list && r.index == index) {
                     let row = self.row(list, index, Vec::new());
                     self.rows.push(row);
-                } else if !self.scanned[list_of(source)]
-                    && let Some(e) = remembered(&key, &name)
-                {
-                    self.lists[RECENT].push(e);
-                    let row = self.row(RECENT, self.lists[RECENT].len() - 1, Vec::new());
-                    self.rows.push(row);
                 }
             }
-            if let Some(source) = only {
-                let list = list_of(source);
-                for index in 0..self.lists[list].len() {
-                    if self.rows.len() >= k {
-                        break;
-                    }
-                    if !self.rows.iter().any(|r| r.list == list && r.index == index) {
-                        let row = self.row(list, index, Vec::new());
-                        self.rows.push(row);
-                    }
-                }
-            }
-        } else {
-            let narrow = self
-                .found_query
-                .as_ref()
-                .is_some_and(|(o, prev)| *o == only && q.starts_with(prev.as_str()) && !prev.ends_with('\\'));
-            let prev = std::mem::take(&mut self.found);
-            let mut found = Vec::new();
-            let mut ranked: Vec<(f64, usize, usize)> = Vec::new();
-            let weights: Vec<Option<f32>> =
-                SOURCES.iter().map(|&s| (wanted(s) && self.enabled(s)).then(|| self.weight(s))).collect();
-            let (lists, searcher) = (&self.lists, &mut self.searcher);
-            with_history(|h| {
-                let mut consider = |l: usize, i: usize| {
-                    let Some(weight) = weights[l] else { return };
-                    let e = &lists[l][i];
-                    if let Some(m) = searcher.score(&e.keys) {
-                        let boost = if e.key.is_empty() { 1.0 } else { h.boost(&e.key, now) };
-                        ranked.push((rank(m.score, weight, boost), e.name.len(), found.len()));
-                        found.push((l, i, m));
-                    }
-                };
-                if narrow {
-                    prev.iter().for_each(|&(l, i, _)| consider(l, i));
-                } else {
-                    for (l, list) in lists[..RECENT].iter().enumerate() {
-                        if weights[l].is_some() {
-                            (0..list.len()).for_each(|i| consider(l, i));
-                        }
-                    }
-                }
-            });
-            for f in top(&mut ranked, k) {
-                let (list, index, m) = found[f];
-                let marks = self.searcher.highlight(&self.lists[list][index].keys, m);
-                let row = self.row(list, index, marks);
-                self.rows.push(row);
-            }
-            self.found = found;
-            self.found_query = Some((only, q.to_string()));
         }
+    }
+
+    fn matching(&self) -> bool {
+        self.found_query.is_some() && (!self.recheck.is_empty() || self.next.0 < RECENT)
+    }
+
+    fn stop_matching(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
+        }
+        self.found_query = None;
+        self.found.clear();
+        self.recheck.clear();
+    }
+
+    fn resume_matching(&mut self) {
+        if self.score_entries(true) {
+            self.show_matches();
+        } else {
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_MATCH, USER_TIMER_MINIMUM, None);
+            }
+        }
+    }
+
+    /// Completes a search that yielded, so keys act on its results.
+    fn settle(&mut self) {
+        if self.matching() {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
+            }
+            self.score_entries(false);
+            self.show_matches();
+        }
+    }
+
+    /// Scores entries for `found_query`. Returns false if it stopped for
+    /// pending key or mouse button input.
+    fn score_entries(&mut self, yield_to_input: bool) -> bool {
+        let only = self.found_query.as_ref().and_then(|(o, _)| *o);
+        let wanted = SOURCES.map(|s| only.is_none_or(|o| o == s) && self.enabled(s));
+        let (lists, searcher, found) = (&self.lists, &mut self.searcher, &mut self.found);
+        let mut consider = |l: usize, i: usize| {
+            if wanted[l]
+                && let Some(m) = searcher.score(&lists[l][i].keys)
+            {
+                found.push((l, i, m));
+            }
+        };
+        let mut budget = MATCH_CHUNK;
+        loop {
+            budget -= 1;
+            if budget == 0 {
+                budget = MATCH_CHUNK;
+                if yield_to_input && unsafe { GetQueueStatus(QS_KEY | QS_MOUSEBUTTON) } >> 16 != 0 {
+                    return false;
+                }
+            }
+            if let Some((l, i)) = self.recheck.pop() {
+                consider(l, i);
+                continue;
+            }
+            let (l, i) = self.next;
+            if l >= RECENT {
+                return true;
+            }
+            if !wanted[l] || i >= lists[l].len() {
+                self.next = (l + 1, 0);
+                continue;
+            }
+            consider(l, i);
+            self.next.1 += 1;
+        }
+    }
+
+    fn show_matches(&mut self) {
+        let now = now();
+        let weights = SOURCES.map(|s| self.weight(s));
+        let (lists, found) = (&self.lists, &self.found);
+        let mut ranked: Vec<(f64, usize, usize)> = with_history(|h| {
+            found
+                .iter()
+                .enumerate()
+                .map(|(n, &(l, i, m))| {
+                    let e = &lists[l][i];
+                    let boost = if e.key.is_empty() { 1.0 } else { h.boost(&e.key, now) };
+                    (rank(m.score, weights[l], boost), e.name.len(), n)
+                })
+                .collect()
+        });
+        self.rows.clear();
+        self.lists[RECENT].clear();
+        for f in top(&mut ranked, self.cfg.max_results) {
+            let (list, index, m) = self.found[f];
+            let marks = self.searcher.highlight(&self.lists[list][index].keys, m);
+            let row = self.row(list, index, marks);
+            self.rows.push(row);
+        }
+        self.rows_changed();
+    }
+
+    fn rows_changed(&mut self) {
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
         self.request_icons();
         self.place();
@@ -688,7 +827,11 @@ impl Launcher {
 
     fn blink(&mut self) {
         self.caret_on = !self.caret_on;
-        let Some(theme) = self.theme else { return };
+        self.repaint_search();
+    }
+
+    fn repaint_search(&mut self) {
+        let Some(theme) = self.theme.filter(|_| self.visible) else { return };
         let Some(mut s) = self.surface.take() else { return };
         s.begin_band(0.0, SEARCH_H);
         self.paint_search(&mut s, &theme.palette(1.0));
@@ -784,6 +927,9 @@ impl Launcher {
                 l.invalidate();
             }
         };
+        if [VK_RETURN, VK_UP, VK_DOWN, VK_TAB, VK_PRIOR, VK_NEXT].iter().any(|k| k.0 == vk) {
+            self.settle();
+        }
         match vk {
             v if v == VK_ESCAPE.0 => self.hide(),
             v if v == VK_RETURN.0 => self.deferred = Some(Deferred::Activate(self.selected)),
@@ -867,6 +1013,14 @@ impl Launcher {
                 return None;
             }
             WM_TIMER if wparam.0 == TIMER_CARET => self.blink(),
+            WM_TIMER if wparam.0 == TIMER_MATCH => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
+                }
+                if self.matching() {
+                    self.resume_matching();
+                }
+            }
             WM_SCAN => self.on_scan(),
             WM_ICON => self.on_icon(wparam.0 as u64, HBITMAP(lparam.0 as *mut _)),
             WM_DPICHANGED => {
@@ -932,13 +1086,15 @@ impl Launcher {
                     self.deferred = Some(Deferred::Menu(i, pt.x, pt.y));
                 }
             }
-            WM_CONTEXTMENU => {
-                if lparam.0 == -1 && self.selected < self.rows.len() {
+            WM_CONTEXTMENU if lparam.0 == -1 => {
+                self.settle();
+                if self.selected < self.rows.len() {
                     let (x, y) = self.menu_point(self.selected);
                     self.deferred = Some(Deferred::Menu(self.selected, x, y));
                 }
             }
             WM_MOUSEWHEEL => {
+                self.settle();
                 let delta = (wparam.0 >> 16) as i16;
                 self.step(if delta > 0 { -1 } else { 1 });
             }
@@ -969,8 +1125,8 @@ impl Launcher {
 
 impl Drop for Launcher {
     fn drop(&mut self) {
-        if let Some((_, cancel)) = &self.scan {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(scan) = &self.scan {
+            scan.cancel.store(true, Ordering::Relaxed);
         }
         unsafe {
             let _ = DestroyWindow(self.hwnd);
