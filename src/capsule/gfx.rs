@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use ab_glyph::{Font as _, FontRef, GlyphId, PxScale, VariableFont, point};
 use capsule_core::layout::Rect;
+use capsule_core::shell_proto::Bitmap;
 use tiny_skia::{
     FillRule, GradientStop, IntSize, LinearGradient, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Point,
     SpreadMode, Transform,
@@ -288,9 +289,9 @@ impl Gfx {
             let _ = DeleteObject(HGDIOBJ(info.hbmColor.0));
             let _ = DeleteObject(HGDIOBJ(info.hbmMask.0));
         }
-        let (w, h, _, mut pixels) = color?;
+        let Bitmap { width: w, height: h, mut pixels, .. } = color?;
         if pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-            let (_, _, _, mask) = mask?;
+            let mask = mask?.pixels;
             for (p, m) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(mask.as_chunks::<4>().0) {
                 p[3] = if m[0] == 0 { 255 } else { 0 };
             }
@@ -300,7 +301,11 @@ impl Gfx {
     }
 
     pub fn image_from_hbitmap(&self, bitmap: HBITMAP, px: u32) -> Option<Image> {
-        let (w, h, bpp, mut pixels) = read_bitmap(bitmap)?;
+        self.image_from_bitmap(read_bitmap(bitmap)?, px)
+    }
+
+    pub fn image_from_bitmap(&self, bitmap: Bitmap, px: u32) -> Option<Image> {
+        let Bitmap { width: w, height: h, bpp, mut pixels } = bitmap;
         if bpp < 32 {
             pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         } else if !premultiplied(&pixels) {
@@ -325,8 +330,7 @@ fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
     }
 }
 
-/// Top-down BGRA pixels of a bitmap, with its original bits per pixel.
-fn read_bitmap(bitmap: HBITMAP) -> Option<(u32, u32, u16, Vec<u8>)> {
+fn read_bitmap(bitmap: HBITMAP) -> Option<Bitmap> {
     let mut bm = BITMAP::default();
     let size = size_of::<BITMAP>() as i32;
     if unsafe { GetObjectW(HGDIOBJ(bitmap.0), size, Some(&mut bm as *mut BITMAP as *mut c_void)) } == 0
@@ -345,7 +349,7 @@ fn read_bitmap(bitmap: HBITMAP) -> Option<(u32, u32, u16, Vec<u8>)> {
         let _ = DeleteDC(dc);
         rows
     };
-    (rows == h).then_some((w as u32, h as u32, bm.bmBitsPixel, pixels))
+    (rows == h).then_some(Bitmap { width: w as u32, height: h as u32, bpp: bm.bmBitsPixel, pixels })
 }
 
 fn premultiplied(pixels: &[u8]) -> bool {

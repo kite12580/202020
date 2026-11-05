@@ -5,6 +5,7 @@ pub mod launcher;
 pub mod layout;
 pub mod pins;
 pub mod pinyin;
+pub mod shell_proto;
 pub mod taskband;
 pub mod tray_proto;
 pub mod winfilter;

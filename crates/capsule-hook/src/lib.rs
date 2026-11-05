@@ -1,10 +1,13 @@
-//! Loaded into explorer's tray thread, where it subclasses `Shell_TrayWnd`
-//! and relays tray icon messages to the capsule bar. A panic here aborts
-//! explorer, so nothing may panic.
+//! Loaded into explorer's tray thread, where it subclasses `Shell_TrayWnd`,
+//! relays tray icon messages to the capsule bar and runs shell lookups for
+//! it. A panic here aborts explorer, so nothing may panic.
+
+mod shell;
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering::Relaxed};
 
+use capsule_core::shell_proto::{self, Request};
 use capsule_core::tray_proto::{COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG};
 use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
@@ -147,8 +150,32 @@ fn relay(h: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
             r
         }
         Some(COPYDATA_ICON_RECT) => send(wparam, lparam).unwrap_or_else(|| original(h, WM_COPYDATA, wparam, lparam)),
+        Some(shell_proto::COPYDATA_REQUEST) => LRESULT(request(hwnd(wparam.0 as isize), cds) as isize),
         _ => original(h, WM_COPYDATA, wparam, lparam),
     }
+}
+
+/// Accepts requests only from the attached bar's process.
+fn request(from: HWND, cds: *const COPYDATASTRUCT) -> bool {
+    if RECEIVER.load(Relaxed) == 0 || pid_of(from) != RECEIVER_PID.load(Relaxed) {
+        return false;
+    }
+    let cds = unsafe { &*cds };
+    let bytes: &[u8] = if cds.lpData.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) }
+    };
+    Request::decode(bytes).is_some_and(shell::submit)
+}
+
+fn answer(bytes: &[u8]) {
+    let cds = COPYDATASTRUCT {
+        dwData: shell_proto::COPYDATA_ANSWER,
+        cbData: bytes.len() as u32,
+        lpData: bytes.as_ptr() as *mut c_void,
+    };
+    send(WPARAM(0), LPARAM(&cds as *const COPYDATASTRUCT as isize));
 }
 
 fn send(wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
@@ -184,6 +211,7 @@ fn detach(h: HWND, pid: WPARAM) {
         return;
     }
     RECEIVER.store(0, Relaxed);
+    shell::clear();
     if unsafe { GetWindowLongPtrW(h, GWLP_WNDPROC) } == subclass_addr() {
         unsafe { SetWindowLongPtrW(h, GWLP_WNDPROC, ORIGINAL.swap(0, Relaxed)) };
         UNLOAD.store(true, Relaxed);

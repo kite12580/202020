@@ -6,11 +6,12 @@ use std::time::{Duration, Instant};
 
 use capsule_core::config::CapsuleBar;
 use capsule_core::layout::{self, Hit, Input, Layout, METRICS, Rect};
+use capsule_core::shell_proto::{Answer, Bitmap, PinInfo, Request};
 use capsule_core::taskband::{Pin, Task};
 use capsule_core::{clock, kbd};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Globalization::{DATE_LONGDATE, GetDateFormatEx, GetTimeFormatEx, TIME_FORMAT_FLAGS};
-use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HGDIOBJ, InvalidateRect, ScreenToClient, ValidateRect};
+use windows::Win32::Graphics::Gdi::{InvalidateRect, ScreenToClient, ValidateRect};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
@@ -51,7 +52,6 @@ use windows::core::{GUID, PCWSTR, w};
 
 use crate::capsule::config_store::ConfigStore;
 use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
-use crate::capsule::icons::IconWorker;
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
 use crate::capsule::launcher;
@@ -61,7 +61,7 @@ use crate::capsule::popup::Popup;
 use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
 use crate::capsule::tooltip::Tooltip;
-use crate::capsule::tray::relay::{Rects, Relay, Shared};
+use crate::capsule::tray::relay::{self, HookEvent, Rects, Relay, Shared};
 use crate::capsule::tray::{self, Change, NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
 use crate::capsule::util::{
     apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, register_class, scale,
@@ -90,7 +90,7 @@ impl Options {
 const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_VOLUME: u32 = WM_APP + 2;
 const WM_APP_AUDIO_DEVICE: u32 = WM_APP + 3;
-const WM_APP_ICON: u32 = WM_APP + 4;
+const WM_APP_HOOK: u32 = WM_APP + 4;
 const WM_APP_APPBAR: u32 = WM_APP + 5;
 const WM_APP_WINEVENT: u32 = WM_APP + 6;
 const WM_APP_WIN_DIGIT: u32 = WM_APP + 7;
@@ -227,7 +227,8 @@ pub struct App {
     last_win_digit: Option<Instant>,
     clock: (String, String),
     texts: Texts,
-    icon_worker: IconWorker,
+    /// Whether the DLL in explorer takes shell lookup requests.
+    hook_attached: bool,
     icon_requests: HashMap<u64, IconKey>,
     icon_waiters: HashMap<IconKey, Vec<IconTarget>>,
     icon_cache: HashMap<IconKey, Image>,
@@ -500,6 +501,8 @@ impl App {
             rects: Mutex::new(Rects::default()),
             notify: AtomicIsize::new(hwnd.0 as isize),
             notify_msg: WM_APP_TRAY,
+            hook_events: Mutex::new(VecDeque::new()),
+            hook_msg: WM_APP_HOOK,
         });
         App {
             hwnd,
@@ -530,7 +533,7 @@ impl App {
             last_win_digit: None,
             clock: Default::default(),
             texts: Texts::default(),
-            icon_worker: IconWorker::new(hwnd.0 as isize, WM_APP_ICON),
+            hook_attached: false,
             icon_requests: HashMap::new(),
             icon_waiters: HashMap::new(),
             icon_cache: HashMap::new(),
@@ -584,7 +587,6 @@ impl App {
             self.takeover = Takeover::start(real);
         }
 
-        self.set_pins(pinned::read());
         self.windows.enumerate();
         self.foreground = self.root(unsafe { GetForegroundWindow() });
         for i in 0..self.windows.items.len() {
@@ -960,10 +962,44 @@ impl App {
         let waiters = self.icon_waiters.entry(key.clone()).or_default();
         waiters.push(target);
         if waiters.len() == 1 {
-            let id = self.next_icon_request;
-            self.next_icon_request += 1;
-            self.icon_worker.request(id, key.0.clone(), px);
+            self.send_icon_request(key);
+        }
+    }
+
+    /// Requests that are not sent stay in `icon_waiters` until the hook attaches.
+    fn send_icon_request(&mut self, key: IconKey) {
+        let Some(tray) = shell::real_tray().filter(|_| self.hook_attached) else { return };
+        let id = self.next_icon_request;
+        self.next_icon_request += 1;
+        if relay::request(tray, self.hwnd, &Request::Icon { id, px: key.1, name: key.0.clone() }) {
             self.icon_requests.insert(id, key);
+        }
+    }
+
+    fn request_pins(&self) {
+        if let Some(tray) = shell::real_tray().filter(|_| self.hook_attached) {
+            relay::request(tray, self.hwnd, &Request::Pins);
+        }
+    }
+
+    fn on_hook_events(&mut self) {
+        let events: Vec<_> = self.tray_shared.hook_events.lock().unwrap().drain(..).collect();
+        for ev in events {
+            match ev {
+                HookEvent::Attached => self.on_hook_attached(),
+                HookEvent::Answer(Answer::Pins(pins)) => self.on_pins(pins),
+                HookEvent::Answer(Answer::Icon { id, bitmap }) => self.on_shell_icon(id, bitmap),
+            }
+        }
+    }
+
+    fn on_hook_attached(&mut self) {
+        self.hook_attached = true;
+        self.icon_requests.clear();
+        self.request_pins();
+        let keys: Vec<IconKey> = self.icon_waiters.keys().cloned().collect();
+        for key in keys {
+            self.send_icon_request(key);
         }
     }
 
@@ -1008,17 +1044,10 @@ impl App {
         }
     }
 
-    fn on_shell_icon(&mut self, id: u64, bitmap: HBITMAP) {
-        let key = self.icon_requests.remove(&id);
-        let targets = key.as_ref().and_then(|k| self.icon_waiters.remove(k)).unwrap_or_default();
-        if bitmap.is_invalid() {
-            return;
-        }
-        let img = key.as_ref().and_then(|k| self.gfx.image_from_hbitmap(bitmap, k.1));
-        unsafe {
-            let _ = DeleteObject(HGDIOBJ(bitmap.0));
-        }
-        let (Some(key), Some(img)) = (key, img) else { return };
+    fn on_shell_icon(&mut self, id: u64, bitmap: Option<Bitmap>) {
+        let Some(key) = self.icon_requests.remove(&id) else { return };
+        let targets = self.icon_waiters.remove(&key).unwrap_or_default();
+        let Some(img) = bitmap.and_then(|b| self.gfx.image_from_bitmap(b, key.1)) else { return };
         for target in targets {
             self.apply_shell_icon(target, img.clone());
         }
@@ -1172,6 +1201,7 @@ impl App {
             return;
         }
         log::info!("explorer restarted");
+        self.hook_attached = false;
         REAL_TRAY.store(real.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
         if let (Some(t), Some(real)) = (&mut self.takeover, real) {
             t.apply(real);
@@ -1316,8 +1346,12 @@ impl App {
         self.request_icon_target(IconTarget::Pin(name.clone()), name, self.window_icon_px());
     }
 
-    fn refresh_pins(&mut self) {
-        let pins = pinned::read();
+    fn on_pins(&mut self, pins: Vec<PinInfo>) {
+        log::debug!(
+            "taskbar pins {:?}",
+            pins.iter().map(|p| (&p.aumid, &p.target, &p.parsing_name)).collect::<Vec<_>>()
+        );
+        let pins: Vec<PinnedApp> = pins.into_iter().map(PinnedApp::from).collect();
         fn key(p: &PinnedApp) -> (&Pin, &str, &str) {
             (&p.pin, &p.parsing_name, &p.name)
         }
@@ -1417,7 +1451,7 @@ impl App {
                 }
             }
             TIMER_REVEAL => self.conceal_when_idle(),
-            TIMER_PINS => self.refresh_pins(),
+            TIMER_PINS => self.request_pins(),
             TIMER_ICONS => self.refresh_window_icons(),
             TIMER_AUDIO => {
                 self.volume.attach();
@@ -2025,7 +2059,7 @@ impl App {
             WM_APP_AUDIO_DEVICE => unsafe {
                 SetTimer(Some(self.hwnd), TIMER_AUDIO, 200, None);
             },
-            WM_APP_ICON => self.on_shell_icon(wparam.0 as u64, HBITMAP(lparam.0 as *mut _)),
+            WM_APP_HOOK => self.on_hook_events(),
             WM_APP_APPBAR => {
                 if wparam.0 == ABN_FULLSCREENAPP {
                     self.appbar_fullscreen = lparam.0 != 0;

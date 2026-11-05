@@ -73,7 +73,7 @@ The launcher keeps nothing in memory until you first open it. Its index is rebui
 
 ## Running
 
-`202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. Keep `capsule_hook.dll` next to it: while the capsule bar runs, it is loaded into explorer to pass tray icons to the bar. To start at login, put a shortcut to it in `shell:startup`.
+`202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. Keep `capsule_hook.dll` next to it: while the capsule bar runs, it is loaded into explorer to pass tray icons to the bar and to look up taskbar pins and program icons there, so the bar does not load the shell itself. To start at login, put a shortcut to it in `shell:startup`.
 
 | Flag | Effect |
 |---|---|

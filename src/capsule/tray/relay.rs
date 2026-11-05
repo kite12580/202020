@@ -1,5 +1,6 @@
 //! Receives the tray icon messages explorer's `Shell_TrayWnd` gets, relayed by
-//! `capsule_hook.dll` from inside explorer. Runs on its own thread because
+//! `capsule_hook.dll` from inside explorer, and the answers to the shell
+//! lookups the bar asks the DLL for. Runs on its own thread because
 //! explorer's tray thread waits for each relayed message.
 
 use std::cell::{OnceCell, RefCell};
@@ -8,6 +9,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
+use capsule_core::shell_proto::{self, Answer, Request};
 use capsule_core::tray_proto::{
     self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG, NIF_ICON, NotifyIconMessage,
     handle,
@@ -21,8 +23,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CopyIcon, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, FindWindowExW, GetIconInfo, GetMessageW, HHOOK, HICON, HOOKPROC, HWND_MESSAGE, ICONINFO,
     KillTimer, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterWindowMessageW,
-    SendNotifyMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_GETMESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_COPYDATA, WM_DESTROY, WM_TIMER, WNDCLASSEXW,
+    SMTO_ABORTIFHUNG, SendMessageTimeoutW, SendNotifyMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx,
+    WH_GETMESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COPYDATA, WM_DESTROY, WM_TIMER, WNDCLASSEXW,
 };
 use windows::core::{PCWSTR, s, w};
 
@@ -37,6 +39,12 @@ pub struct TrayEvent {
     pub icon: isize,
 }
 
+pub enum HookEvent {
+    /// The DLL attached to a new `Shell_TrayWnd` and takes requests.
+    Attached,
+    Answer(Answer),
+}
+
 pub struct Shared {
     pub queue: Mutex<VecDeque<TrayEvent>>,
     pub taskbar_created_msg: u32,
@@ -44,6 +52,9 @@ pub struct Shared {
     /// Window that receives `WM_APP_TRAY` when the queue becomes non-empty.
     pub notify: AtomicIsize,
     pub notify_msg: u32,
+    pub hook_events: Mutex<VecDeque<HookEvent>>,
+    /// Posted to `notify` when `hook_events` becomes non-empty.
+    pub hook_msg: u32,
 }
 
 #[derive(Default)]
@@ -103,6 +114,32 @@ pub fn detach(tray: HWND, bar_pid: u32) {
     unsafe {
         let _ = PostMessageW(Some(tray), detach_msg(), WPARAM(bar_pid as usize), LPARAM(0));
     }
+}
+
+const REQUEST_TIMEOUT_MS: u32 = 500;
+
+/// Asks the DLL attached to `tray` for a shell lookup, answered through
+/// `HookEvent::Answer`. False when it did not take the request.
+pub fn request(tray: HWND, from: HWND, req: &Request) -> bool {
+    let bytes = req.encode();
+    let cds = COPYDATASTRUCT {
+        dwData: shell_proto::COPYDATA_REQUEST,
+        cbData: bytes.len() as u32,
+        lpData: bytes.as_ptr() as *mut _,
+    };
+    let mut result = 0usize;
+    let ok = unsafe {
+        SendMessageTimeoutW(
+            tray,
+            WM_COPYDATA,
+            WPARAM(from.0 as usize),
+            LPARAM(&cds as *const COPYDATASTRUCT as isize),
+            SMTO_ABORTIFHUNG,
+            REQUEST_TIMEOUT_MS,
+            Some(&mut result),
+        )
+    };
+    ok.0 != 0 && result == 1
 }
 
 const RELAY_QUIT: u32 = WM_APP + 0x3F0;
@@ -266,24 +303,30 @@ fn copy_icon(h: isize) -> isize {
     copy
 }
 
-fn record(m: NotifyIconMessage) {
-    let Some(shared) = shared() else { return };
-    let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 { copy_icon(handle(m.data.icon)) } else { 0 };
+/// Posts `msg` to the bar when `queue` was empty.
+fn push<T>(shared: &Shared, queue: &Mutex<VecDeque<T>>, item: T, msg: u32) {
     let was_empty = {
-        let mut q = shared.queue.lock().unwrap();
+        let mut q = queue.lock().unwrap();
         let was_empty = q.is_empty();
-        q.push_back(TrayEvent { msg: m, icon });
+        q.push_back(item);
         was_empty
     };
     if was_empty {
         unsafe {
-            let _ = PostMessageW(
-                Some(hwnd(shared.notify.load(Ordering::Relaxed))),
-                shared.notify_msg,
-                WPARAM(0),
-                LPARAM(0),
-            );
+            let _ = PostMessageW(Some(hwnd(shared.notify.load(Ordering::Relaxed))), msg, WPARAM(0), LPARAM(0));
         }
+    }
+}
+
+fn record(m: NotifyIconMessage) {
+    let Some(shared) = shared() else { return };
+    let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 { copy_icon(handle(m.data.icon)) } else { 0 };
+    push(&shared, &shared.queue, TrayEvent { msg: m, icon }, shared.notify_msg);
+}
+
+fn hook_event(ev: HookEvent) {
+    if let Some(shared) = shared() {
+        push(&shared, &shared.hook_events, ev, shared.hook_msg);
     }
 }
 
@@ -308,6 +351,13 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     Some(q) => icon_rect(&q),
                     None => LRESULT(0),
                 },
+                shell_proto::COPYDATA_ANSWER => {
+                    match Answer::decode(bytes) {
+                        Some(a) => hook_event(HookEvent::Answer(a)),
+                        None => log::debug!("hook answer unparsed ({} bytes)", bytes.len()),
+                    }
+                    LRESULT(1)
+                }
                 _ => LRESULT(0),
             }
         }
@@ -333,6 +383,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             if HOOK.with_borrow_mut(|hook| hook.injection.take()).is_some() {
                 log::info!("tray hook attached");
+                hook_event(HookEvent::Attached);
                 if let Some(shared) = shared() {
                     announce_taskbar(shared.taskbar_created_msg);
                 }
