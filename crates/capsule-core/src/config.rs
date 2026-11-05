@@ -331,6 +331,13 @@ exclude = ["node_modules", ".git", "target"]
 include_dirs = true
 # Stop scanning this root after this many entries.
 max_items = 20000
+# Shortcuts (.lnk, .url) open their target:
+# [[launcher.folders.roots]]
+# path = "%USERPROFILE%\\Desktop"
+# depth = 1
+# extensions = ["lnk", "url"]
+# exclude = []
+# include_dirs = false
 
 [logging]
 # Write logs to the logs folder next to the exe: "off", "error", "warn", "info", "debug" or "trace". Use "debug" when
