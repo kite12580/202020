@@ -69,11 +69,11 @@ Matching is fuzzy: the letters you type must appear in order, and matches at wor
 
 Each source can be turned off or weighted under `[launcher]` in the config, and the hotkey can be changed (applied by Reload config). If another program already uses the hotkey, the tray menu shows "Launcher (hotkey unavailable)". While the launcher is on, `Alt+Space` no longer opens a window's system menu.
 
-The launcher keeps nothing in memory until you first open it. Its index is rebuilt in the background each time it opens and freed after 10 minutes without use. Launch counts are kept in memory and written to `launcher_history.tsv` next to the exe only when 202020 quits or Windows shuts down.
+The launcher keeps nothing in memory until you first open it. Its index is rebuilt in the background each time it opens and freed after 10 minutes without use. Explorer opens what you pick, so programs start as they would from the Start menu, without administrator rights even when 202020 has them. Launch counts are kept in memory and written to `launcher_history.tsv` next to the exe only when 202020 quits or Windows shuts down.
 
 ## Running
 
-`202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. Keep `capsule_hook.dll` next to it: while the capsule bar runs, it is loaded into explorer to pass tray icons to the bar and to look up taskbar pins and program icons there, so the bar does not load the shell itself. To start at login, put a shortcut to it in `shell:startup`.
+`202020.exe` is portable: `config.toml` (and logs, if enabled) live next to the exe, so put it in a writable folder. Keep `capsule_hook.dll` next to it: while the capsule bar runs or the launcher's index is loaded, it is loaded into explorer to pass tray icons to the bar and to do the shell work (taskbar pins, program icons, the All apps list, opening items) there, so 202020 does not load the shell itself. To start at login, put a shortcut to it in `shell:startup`.
 
 | Flag | Effect |
 |---|---|

@@ -1,6 +1,6 @@
-//! Shell lookups for the bar, on a worker thread of our own so explorer's
-//! tray thread never waits for them. Explorer already has the shell's COM
-//! servers and caches loaded, which the bar's process would otherwise load
+//! Shell work for the bar and the launcher, on a worker thread of our own so
+//! explorer's tray thread never waits for it. Explorer already has the
+//! shell's COM servers and caches loaded, which 202020 would otherwise load
 //! for itself.
 
 use std::collections::VecDeque;
@@ -8,8 +8,8 @@ use std::ffi::c_void;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use capsule_core::shell_proto::{Answer, Bitmap, PinInfo, Request};
-use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HMODULE, PROPERTYKEY, SIZE};
+use capsule_core::shell_proto::{Answer, AppInfo, Bitmap, PinInfo, Request};
+use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HMODULE, HWND, PROPERTYKEY, SIZE};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject,
     GetDIBits, GetObjectW, HBITMAP, HGDIOBJ,
@@ -24,9 +24,12 @@ use windows::Win32::System::LibraryLoader::{
 use windows::Win32::System::Threading::{CreateThread, THREAD_CREATION_FLAGS};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IEnumFullIDList, IShellItem2, IShellItemImageFactory, SHCreateItemFromIDList, SHCreateItemFromParsingName, SIGDN,
-    SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+    BHID_EnumItems, FOLDERID_AppsFolder, IEnumFullIDList, IEnumShellItems, IShellItem, IShellItem2,
+    IShellItemImageFactory, KF_FLAG_DEFAULT, SEE_MASK_NOASYNC, SEE_MASK_UNICODE, SHCreateItemFromIDList,
+    SHCreateItemFromParsingName, SHELLEXECUTEINFOW, SHGetKnownFolderItem, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING,
+    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY, ShellExecuteExW,
 };
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows_core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, PCWSTR, PWSTR, interface};
 
 const IDLE: Duration = Duration::from_secs(10);
@@ -44,7 +47,8 @@ unsafe trait IPinnedList3: IUnknown {
 }
 
 struct Queue {
-    requests: VecDeque<Request>,
+    /// With the window that made each.
+    requests: VecDeque<(HWND, Request)>,
     running: bool,
 }
 
@@ -57,9 +61,9 @@ fn queue() -> MutexGuard<'static, Queue> {
 
 /// Queues `req`, starting the worker if it is not running. The worker holds
 /// its own reference to this DLL and exits after `IDLE` without requests.
-pub fn submit(req: Request) -> bool {
+pub fn submit(from: HWND, req: Request) -> bool {
     let mut q = queue();
-    q.requests.push_back(req);
+    q.requests.push_back((from, req));
     if q.running {
         WAKE.notify_one();
         return true;
@@ -89,7 +93,10 @@ pub fn clear() {
     queue().requests.clear();
 }
 
-fn next() -> Option<Request> {
+// SAFETY: window handles are plain values usable from any thread.
+unsafe impl Send for Queue {}
+
+fn next() -> Option<(HWND, Request)> {
     let q = queue();
     let (mut q, _) =
         WAKE.wait_timeout_while(q, IDLE, |q| q.requests.is_empty()).unwrap_or_else(PoisonError::into_inner);
@@ -102,12 +109,17 @@ unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     }
-    while let Some(req) = next() {
+    while let Some((from, req)) = next() {
         let answer = match req {
             Request::Pins => Answer::Pins(pins()),
+            Request::Apps => Answer::Apps(apps()),
             Request::Icon { id, px, name } => Answer::Icon { id, bitmap: icon(&name, px) },
+            Request::Open { file, params, dir } => {
+                open(&file, &params, &dir);
+                continue;
+            }
         };
-        crate::answer(&answer.encode());
+        crate::answer(from, &answer.encode());
     }
     unsafe {
         CoUninitialize();
@@ -159,8 +171,52 @@ fn pins() -> Vec<PinInfo> {
     pins
 }
 
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+
+fn apps() -> Vec<AppInfo> {
+    let mut out = Vec::new();
+    let Ok(folder) = (unsafe { SHGetKnownFolderItem::<IShellItem>(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None) })
+    else {
+        return out;
+    };
+    let Ok(items) = (unsafe { folder.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) }) else {
+        return out;
+    };
+    loop {
+        let mut batch: [Option<IShellItem>; 64] = std::array::from_fn(|_| None);
+        let mut fetched = 0;
+        if unsafe { items.Next(&mut batch, Some(&mut fetched)) }.is_err() || fetched == 0 {
+            break;
+        }
+        for item in batch.iter().take(fetched as usize).flatten() {
+            let display = |sigdn: SIGDN| unsafe { item.GetDisplayName(sigdn) }.ok().and_then(take_string);
+            if let (Some(name), Some(id)) = (display(SIGDN_NORMALDISPLAY), display(SIGDN_PARENTRELATIVEPARSING)) {
+                out.push(AppInfo { name, id });
+            }
+        }
+    }
+    out
+}
+
+fn open(file: &str, params: &str, dir: &str) {
+    let (file, params, dir) = (wide(file), wide(params), wide(dir));
+    let ptr = |s: &[u16]| if s.len() > 1 { PCWSTR(s.as_ptr()) } else { PCWSTR::null() };
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_UNICODE | SEE_MASK_NOASYNC,
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: ptr(&params),
+        lpDirectory: ptr(&dir),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    let _ = unsafe { ShellExecuteExW(&mut info) };
+}
+
 fn icon(name: &str, px: u32) -> Option<Bitmap> {
-    let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let name = wide(name);
     let px = px as i32;
     let bitmap = unsafe {
         SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(PCWSTR(name.as_ptr()), None)

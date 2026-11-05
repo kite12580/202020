@@ -1,6 +1,7 @@
-//! Shell lookups the bar asks `capsule_hook.dll` to run inside explorer, and
-//! the answers, as `WM_COPYDATA` payloads. Requests go to `Shell_TrayWnd`
-//! (wParam: the requesting window), answers to the bar's relay window.
+//! Shell work the bar and launcher ask `capsule_hook.dll` to do inside
+//! explorer, and the answers, as `WM_COPYDATA` payloads. Requests go to
+//! `Shell_TrayWnd` (wParam: the requesting window), answers to the relay
+//! window (wParam: the window that made the request).
 
 /// Distinct from the `dwData` values `Shell_TrayWnd` itself handles.
 pub const COPYDATA_REQUEST: usize = 0x2020_0001;
@@ -9,11 +10,19 @@ pub const COPYDATA_ANSWER: usize = 0x2020_0002;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Pins,
+    /// The Start menu's All apps list.
+    Apps,
     /// `name` is a path or a `shell:AppsFolder\…` name.
     Icon {
         id: u64,
         px: u32,
         name: String,
+    },
+    /// `ShellExecuteEx`, without an answer.
+    Open {
+        file: String,
+        params: String,
+        dir: String,
     },
 }
 
@@ -24,6 +33,13 @@ pub struct PinInfo {
     pub target: Option<String>,
     pub parsing_name: String,
     pub name: String,
+}
+
+/// An entry of the All apps list; `id` is its parsing name in the Apps folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppInfo {
+    pub name: String,
+    pub id: String,
 }
 
 /// Top-down BGRA pixels, with the source bitmap's bits per pixel.
@@ -38,11 +54,14 @@ pub struct Bitmap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Pins(Vec<PinInfo>),
+    Apps(Vec<AppInfo>),
     Icon { id: u64, bitmap: Option<Bitmap> },
 }
 
 const PINS: u32 = 0;
 const ICON: u32 = 1;
+const APPS: u32 = 2;
+const OPEN: u32 = 3;
 const NONE: u32 = u32::MAX;
 
 #[derive(Default)]
@@ -112,6 +131,13 @@ impl Request {
         let mut w = Writer::default();
         match self {
             Request::Pins => w.u32(PINS),
+            Request::Apps => w.u32(APPS),
+            Request::Open { file, params, dir } => {
+                w.u32(OPEN);
+                w.str(file);
+                w.str(params);
+                w.str(dir);
+            }
             Request::Icon { id, px, name } => {
                 w.u32(ICON);
                 w.u64(*id);
@@ -126,6 +152,8 @@ impl Request {
         let mut r = Reader(bytes);
         match r.u32()? {
             PINS => Some(Request::Pins),
+            APPS => Some(Request::Apps),
+            OPEN => Some(Request::Open { file: r.str()?, params: r.str()?, dir: r.str()? }),
             ICON => Some(Request::Icon { id: r.u64()?, px: r.u32()?, name: r.str()? }),
             _ => None,
         }
@@ -144,6 +172,14 @@ impl Answer {
                     w.opt_str(p.target.as_deref());
                     w.str(&p.parsing_name);
                     w.str(&p.name);
+                }
+            }
+            Answer::Apps(apps) => {
+                w.u32(APPS);
+                w.u32(apps.len() as u32);
+                for a in apps {
+                    w.str(&a.name);
+                    w.str(&a.id);
                 }
             }
             Answer::Icon { id, bitmap } => {
@@ -179,6 +215,14 @@ impl Answer {
                 }
                 Some(Answer::Pins(pins))
             }
+            APPS => {
+                let n = r.u32()?;
+                let mut apps = Vec::new();
+                for _ in 0..n {
+                    apps.push(AppInfo { name: r.str()?, id: r.str()? });
+                }
+                Some(Answer::Apps(apps))
+            }
             ICON => {
                 let id = r.u64()?;
                 let width = r.u32()?;
@@ -202,7 +246,10 @@ mod tests {
 
     #[test]
     fn requests_round_trip() {
-        for req in [Request::Pins, Request::Icon { id: 7, px: 30, name: r"shell:AppsFolder\微信".into() }] {
+        let open = Request::Open { file: r"C:\a b\c.exe".into(), params: String::new(), dir: r"C:\a b".into() };
+        for req in
+            [Request::Pins, Request::Apps, Request::Icon { id: 7, px: 30, name: r"shell:AppsFolder\微信".into() }, open]
+        {
             assert_eq!(Request::decode(&req.encode()), Some(req));
         }
     }
@@ -215,7 +262,8 @@ mod tests {
         ]);
         let icon =
             Answer::Icon { id: 3, bitmap: Some(Bitmap { width: 2, height: 1, bpp: 32, pixels: (0..8).collect() }) };
-        for a in [pins, icon, Answer::Icon { id: 4, bitmap: None }] {
+        let apps = Answer::Apps(vec![AppInfo { name: "微信".into(), id: "Tencent.WeChat".into() }, AppInfo::default()]);
+        for a in [pins, apps, icon, Answer::Icon { id: 4, bitmap: None }] {
             assert_eq!(Answer::decode(&a.encode()), Some(a));
         }
     }

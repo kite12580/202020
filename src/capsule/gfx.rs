@@ -300,10 +300,6 @@ impl Gfx {
         self.finish(w, h, pixels, px)
     }
 
-    pub fn image_from_hbitmap(&self, bitmap: HBITMAP, px: u32) -> Option<Image> {
-        self.image_from_bitmap(read_bitmap(bitmap)?, px)
-    }
-
     pub fn image_from_bitmap(&self, bitmap: Bitmap, px: u32) -> Option<Image> {
         let Bitmap { width: w, height: h, bpp, mut pixels } = bitmap;
         if bpp < 32 {

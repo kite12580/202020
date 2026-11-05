@@ -1,12 +1,13 @@
 use std::cell::RefCell;
 
 use capsule_core::launcher::folders::expand_env;
+use capsule_core::shell_proto::Request;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT};
 use windows::Win32::UI::Shell::{
     BHID_SFUIObject, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_CONTROL_DOWN, CMIC_MASK_PTINVOKE, CMIC_MASK_SHIFT_DOWN,
     CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, IContextMenu, IContextMenu2, IContextMenu3, IShellItem,
-    SEE_MASK_UNICODE, SHCreateItemFromParsingName, SHELLEXECUTEINFOW, SHEmptyRecycleBinW, ShellExecuteExW,
+    SEE_MASK_UNICODE, SHCreateItemFromParsingName, SHEmptyRecycleBinW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, CreatePopupMenu, DestroyMenu, PostMessageW, SW_SHOWNORMAL, TPM_RETURNCMD,
@@ -14,6 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{Interface, PCSTR, PCWSTR};
 
+use crate::capsule::hook;
 use crate::capsule::util::{hwnd, wide};
 
 const FIRST_ID: u32 = 1;
@@ -22,31 +24,20 @@ pub fn env(s: &str) -> String {
     expand_env(s, |n| std::env::var(n).ok())
 }
 
-/// Opens a path, URI or shell parsing name like the Run dialog does.
-pub fn open(owner: HWND, target: &str, args: &str) -> bool {
-    let target = env(target);
-    let (file, params) = (wide(&target), wide(&env(args)));
-    let dir = fs_parent(&target).map(wide);
-    let mut info = SHELLEXECUTEINFOW {
-        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_UNICODE,
-        hwnd: owner,
-        lpFile: PCWSTR(file.as_ptr()),
-        lpParameters: if args.is_empty() { PCWSTR::null() } else { PCWSTR(params.as_ptr()) },
-        lpDirectory: dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
-        nShow: SW_SHOWNORMAL.0,
-        ..Default::default()
-    };
+/// Has explorer open a path, URI or shell parsing name like the Run dialog
+/// does. False when the hook in explorer did not take it.
+pub fn open(from: HWND, target: &str, args: &str) -> bool {
+    let file = env(target);
+    let dir = fs_parent(&file).unwrap_or_default().to_string();
+    let req = Request::Open { params: env(args), dir, file };
     unsafe {
         let _ = AllowSetForegroundWindow(ASFW_ANY);
-        match ShellExecuteExW(&mut info) {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("launch {target}: {e}");
-                false
-            }
-        }
     }
+    let taken = hook::request(from, &req);
+    if !taken {
+        log::warn!("launch {target}: hook not attached");
+    }
+    taken
 }
 
 fn fs_parent(path: &str) -> Option<&str> {

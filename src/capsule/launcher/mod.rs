@@ -22,8 +22,9 @@ use capsule_core::launcher::input::TextInput;
 use capsule_core::launcher::rank::{Match, Searcher, rank, top};
 use capsule_core::launcher::{Source, query};
 use capsule_core::layout::Rect;
+use capsule_core::shell_proto::{Answer, AppInfo, Bitmap, Request};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::{ClientToScreen, DeleteObject, HBITMAP, HGDIOBJ, InvalidateRect, ValidateRect};
+use windows::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect, ValidateRect};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcess, INFINITE, SetProcessWorkingSetSize};
@@ -48,7 +49,7 @@ use windows::core::{PCWSTR, w};
 
 use crate::capsule::config_store;
 use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
-use crate::capsule::icons::IconWorker;
+use crate::capsule::hook::{self, Hook, HookEvent};
 use crate::capsule::theme::{self, Palette, Theme};
 use crate::capsule::util::{hwnd, lparam_point, primary_monitor, register_class, scale};
 use crate::capsule::windows_list as winlist;
@@ -71,7 +72,7 @@ pub struct Options {
 const CLASS: PCWSTR = w!("202020Launcher");
 const HISTORY_FILE: &str = "launcher_history.tsv";
 const WM_SCAN: u32 = WM_APP + 1;
-const WM_ICON: u32 = WM_APP + 2;
+const WM_HOOK: u32 = WM_APP + 2;
 const TIMER_IDLE: usize = 1;
 const TIMER_CARET: usize = 2;
 const TIMER_MATCH: usize = 3;
@@ -216,7 +217,9 @@ struct Launcher {
     selected: usize,
     hover: Option<usize>,
     pressed: Option<usize>,
-    icons: IconWorker,
+    hook: Hook,
+    /// Whether the apps list is wanted from explorer.
+    apps_pending: bool,
     images: HashMap<String, Option<Image>>,
     pending: HashMap<u64, String>,
     next_icon: u64,
@@ -227,8 +230,6 @@ struct Launcher {
 struct Scan {
     rx: Receiver<Batch>,
     cancel: Arc<AtomicBool>,
-    /// Sources whose last batch hasn't arrived.
-    pending: usize,
 }
 
 fn row_rect(i: usize) -> Rect {
@@ -308,7 +309,8 @@ impl Launcher {
             selected: 0,
             hover: None,
             pressed: None,
-            icons: IconWorker::new(hwnd.0 as isize, WM_ICON),
+            hook: Hook::acquire(hwnd, WM_HOOK, None),
+            apps_pending: false,
             images: HashMap::new(),
             pending: HashMap::new(),
             next_icon: 1,
@@ -437,19 +439,43 @@ impl Launcher {
         self.root_lens.resize(roots, 0);
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        let pending = index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
-        self.scan = Some(Scan { rx, cancel, pending });
+        index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
+        self.scan = Some(Scan { rx, cancel });
         self.scan_started = Some(Instant::now());
+        self.apps_pending = self.cfg.apps.enabled;
+        if self.apps_pending {
+            self.request_apps();
+        } else {
+            self.apply(vec![Batch { source: Source::App, root: 0, entries: Vec::new(), last: true }]);
+        }
+    }
+
+    fn request_apps(&self) {
+        hook::request(self.hwnd, &Request::Apps);
     }
 
     fn on_scan(&mut self) {
         let Some(scan) = &self.scan else { return };
         let batches: Vec<Batch> = scan.rx.try_iter().collect();
+        if batches.iter().any(|b| b.last) {
+            self.scan = None;
+        }
+        self.apply(batches);
+    }
+
+    fn on_apps(&mut self, apps: Vec<AppInfo>) {
+        if !std::mem::take(&mut self.apps_pending) {
+            return;
+        }
+        let entries = apps.into_iter().map(|a| index::app_entry(a.name, &a.id)).collect();
+        self.apply(vec![Batch { source: Source::App, root: 0, entries, last: true }]);
+    }
+
+    fn apply(&mut self, batches: Vec<Batch>) {
         if batches.is_empty() {
             return;
         }
         let keep = self.rows.get(self.selected).map(|r| self.entry(r).key.clone());
-        let mut finished = 0;
         let mut changed = [false; RECENT];
         for b in batches {
             let list = list_of(b.source);
@@ -460,18 +486,11 @@ impl Launcher {
             }
             if b.last {
                 self.scanned[list] = true;
-                finished += 1;
             }
             changed[list] = true;
         }
         for list in (0..RECENT).filter(|&l| changed[l]) {
             self.list_changed(list);
-        }
-        if let Some(scan) = &mut self.scan {
-            scan.pending = scan.pending.saturating_sub(finished);
-            if scan.pending == 0 {
-                self.scan = None;
-            }
         }
         if self.visible {
             self.refresh();
@@ -783,19 +802,33 @@ impl Launcher {
             let Some(name) = self.lists[row.list][row.index].icon() else { continue };
             let id = self.next_icon;
             self.next_icon += 1;
-            self.images.insert(key.clone(), None);
-            self.pending.insert(id, key.clone());
-            self.icons.request(id, name, px);
+            if hook::request(self.hwnd, &Request::Icon { id, px, name }) {
+                self.images.insert(key.clone(), None);
+                self.pending.insert(id, key.clone());
+            }
         }
     }
 
-    fn on_icon(&mut self, id: u64, bitmap: HBITMAP) {
-        let image = if bitmap.is_invalid() { None } else { self.gfx.image_from_hbitmap(bitmap, self.px(ICON) as u32) };
-        if !bitmap.is_invalid() {
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ(bitmap.0));
+    fn on_hook_events(&mut self) {
+        for ev in self.hook.take_events() {
+            match ev {
+                HookEvent::Attached => {
+                    self.pending.clear();
+                    self.images.retain(|_, image| image.is_some());
+                    if self.apps_pending {
+                        self.request_apps();
+                    }
+                    self.request_icons();
+                }
+                HookEvent::Answer(Answer::Apps(apps)) => self.on_apps(apps),
+                HookEvent::Answer(Answer::Icon { id, bitmap }) => self.on_icon(id, bitmap),
+                HookEvent::Answer(Answer::Pins(_)) => {}
             }
         }
+    }
+
+    fn on_icon(&mut self, id: u64, bitmap: Option<Bitmap>) {
+        let image = bitmap.and_then(|b| self.gfx.image_from_bitmap(b, self.px(ICON) as u32));
         if let Some(key) = self.pending.remove(&id) {
             self.images.insert(key, image);
             self.invalidate();
@@ -1030,7 +1063,7 @@ impl Launcher {
                 }
             }
             WM_SCAN => self.on_scan(),
-            WM_ICON => self.on_icon(wparam.0 as u64, HBITMAP(lparam.0 as *mut _)),
+            WM_HOOK => self.on_hook_events(),
             WM_DPICHANGED => {
                 self.dpi = (wparam.0 & 0xFFFF) as u32;
                 if let Some(s) = &mut self.surface {

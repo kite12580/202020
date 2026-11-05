@@ -12,8 +12,12 @@ pub const COPYDATA_ICON_RECT: usize = 3;
 /// the relay window once attached.
 pub const HOOK_ATTACH_MSG: &str = "202020.TrayHook.Attach";
 /// Registered message posted to `Shell_TrayWnd` to detach the tray hook
-/// (wParam: process ID of the bar that attached it).
+/// (wParam: process ID of the 202020 that attached it).
 pub const HOOK_DETACH_MSG: &str = "202020.TrayHook.Detach";
+/// Registered message sent to `Shell_TrayWnd` to start (lParam 1) or stop
+/// (lParam 0) relaying tray icon messages (wParam: as for `HOOK_DETACH_MSG`).
+/// The hook relays none until started.
+pub const HOOK_TRAY_MSG: &str = "202020.TrayHook.Tray";
 
 pub const NIM_ADD: u32 = 0;
 pub const NIM_MODIFY: u32 = 1;

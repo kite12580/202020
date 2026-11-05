@@ -1,5 +1,6 @@
-//! Searchable entries. Apps and folders are scanned on worker threads, since
-//! both touch the disk; windows and commands are listed on the UI thread.
+//! Searchable entries. Folders are scanned on a worker thread, since that
+//! touches the disk, and apps listed by explorer; windows and commands are
+//! listed on the UI thread.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -16,14 +17,9 @@ use windows::Win32::Storage::FileSystem::{
     FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
     WIN32_FIND_DATAW,
 };
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
-use windows::Win32::UI::Shell::{
-    BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem,
-    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
-};
 use windows::core::PCWSTR;
 
-use crate::capsule::util::{apps_folder, from_wide, hwnd, take_string, wide};
+use crate::capsule::util::{apps_folder, from_wide, hwnd, wide};
 use crate::capsule::windows_list as winlist;
 
 #[derive(Clone)]
@@ -135,7 +131,6 @@ pub struct Batch {
     pub last: bool,
 }
 
-#[derive(Clone)]
 struct Outbox {
     tx: Sender<Batch>,
     notify: isize,
@@ -153,18 +148,10 @@ impl Outbox {
     }
 }
 
-/// Scans apps and folders on separate threads, sending apps as one batch and
-/// folders as one batch per root, and posting `msg` to `notify` after each.
-/// Stops early once `cancel` is set. Returns how many sources will send a
-/// `last` batch.
-pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) -> usize {
+/// Scans folders on a worker thread, sending one batch per root and posting
+/// `msg` to `notify` after each. Stops early once `cancel` is set.
+pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) {
     let out = Outbox { tx, notify, msg, cancel };
-    let apps = out.clone();
-    let apps_enabled = cfg.apps.enabled;
-    std::thread::spawn(move || {
-        let entries = if apps_enabled { scan_apps() } else { Vec::new() };
-        apps.send(Batch { source: Source::App, root: 0, entries, last: true });
-    });
     std::thread::spawn(move || {
         let roots = if cfg.folders.enabled { &cfg.folders.roots[..] } else { &[] };
         if roots.is_empty() {
@@ -177,45 +164,6 @@ pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cance
             }
         }
     });
-    2
-}
-
-fn scan_apps() -> Vec<Entry> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    }
-    let out = enum_apps().unwrap_or_else(|e| {
-        log::warn!("apps folder: {e}");
-        Vec::new()
-    });
-    unsafe { CoUninitialize() };
-    out
-}
-
-fn enum_apps() -> windows::core::Result<Vec<Entry>> {
-    let mut out = Vec::new();
-    unsafe {
-        let folder: IShellItem = SHGetKnownFolderItem(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None)?;
-        let items: IEnumShellItems = folder.BindToHandler(None, &BHID_EnumItems)?;
-        loop {
-            let mut batch: [Option<IShellItem>; 64] = std::array::from_fn(|_| None);
-            let mut fetched = 0;
-            items.Next(&mut batch, Some(&mut fetched))?;
-            if fetched == 0 {
-                break;
-            }
-            for item in batch.iter().take(fetched as usize).flatten() {
-                let Some(name) = item.GetDisplayName(SIGDN_NORMALDISPLAY).ok().and_then(take_string) else {
-                    continue;
-                };
-                let Some(id) = item.GetDisplayName(SIGDN_PARENTRELATIVEPARSING).ok().and_then(take_string) else {
-                    continue;
-                };
-                out.push(app_entry(name, &id));
-            }
-        }
-    }
-    Ok(out)
 }
 
 pub fn app_entry(name: String, id: &str) -> Entry {

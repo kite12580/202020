@@ -1,7 +1,7 @@
 mod app;
 mod config_store;
 mod gfx;
-mod icons;
+mod hook;
 mod keyboard;
 mod keyhook;
 pub mod launcher;

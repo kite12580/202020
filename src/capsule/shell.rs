@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::capsule::tray::relay;
+use crate::capsule::hook;
 use crate::capsule::util::{OwnedHandle, hwnd, open_process, primary_monitor_rect, process_path, wide, window_ids};
 
 const ABS_AUTOHIDE: u32 = 1;
@@ -260,7 +260,7 @@ pub fn run_watchdog(args: &[String]) -> i32 {
     if r == WAIT_OBJECT_0 && unsafe { WaitForSingleObject(event.0, 0) } != WAIT_OBJECT_0 {
         log::warn!("202020 {pid} exited without cleanup");
         if let Some(tray) = find_real_tray() {
-            relay::detach(tray, pid);
+            hook::detach(tray, pid);
         }
         restore(&saved);
     }

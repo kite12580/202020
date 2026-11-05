@@ -52,6 +52,7 @@ use windows::core::{GUID, PCWSTR, w};
 
 use crate::capsule::config_store::ConfigStore;
 use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
+use crate::capsule::hook::{self, Hook, HookEvent, Rects, TrayShared};
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
 use crate::capsule::launcher;
@@ -61,7 +62,6 @@ use crate::capsule::popup::Popup;
 use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
 use crate::capsule::tooltip::Tooltip;
-use crate::capsule::tray::relay::{self, HookEvent, Rects, Relay, Shared};
 use crate::capsule::tray::{self, Change, NIN_POPUPCLOSE, NIN_POPUPOPEN, Tray, TrayKey};
 use crate::capsule::util::{
     apps_folder, class_name, from_wide, hwnd, lparam_point, own_window, primary_monitor, register_class, scale,
@@ -210,8 +210,8 @@ pub struct App {
     pins: Vec<PinnedApp>,
     tasks: Vec<Task>,
     tray: Tray,
-    tray_shared: Arc<Shared>,
-    relay: Option<Relay>,
+    tray_shared: Arc<TrayShared>,
+    hook: Option<Hook>,
     takeover: Option<Takeover>,
     volume: Volume,
     keyhook: Option<KeyHook>,
@@ -227,8 +227,6 @@ pub struct App {
     last_win_digit: Option<Instant>,
     clock: (String, String),
     texts: Texts,
-    /// Whether the DLL in explorer takes shell lookup requests.
-    hook_attached: bool,
     icon_requests: HashMap<u64, IconKey>,
     icon_waiters: HashMap<IconKey, Vec<IconTarget>>,
     icon_cache: HashMap<IconKey, Image>,
@@ -495,14 +493,11 @@ impl App {
         let cfg = ConfigStore::open();
         let theme = Theme::read();
         let taskbar_created_msg = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
-        let tray_shared = Arc::new(Shared {
+        let tray_shared = Arc::new(TrayShared {
             queue: Mutex::new(VecDeque::new()),
-            taskbar_created_msg,
             rects: Mutex::new(Rects::default()),
             notify: AtomicIsize::new(hwnd.0 as isize),
             notify_msg: WM_APP_TRAY,
-            hook_events: Mutex::new(VecDeque::new()),
-            hook_msg: WM_APP_HOOK,
         });
         App {
             hwnd,
@@ -517,7 +512,7 @@ impl App {
             tasks: Vec::new(),
             tray: Tray::default(),
             tray_shared,
-            relay: None,
+            hook: None,
             takeover: None,
             volume: Volume::new(hwnd.0 as isize, WM_APP_VOLUME, WM_APP_AUDIO_DEVICE),
             keyhook: None,
@@ -533,7 +528,6 @@ impl App {
             last_win_digit: None,
             clock: Default::default(),
             texts: Texts::default(),
-            hook_attached: false,
             icon_requests: HashMap::new(),
             icon_waiters: HashMap::new(),
             icon_cache: HashMap::new(),
@@ -599,7 +593,6 @@ impl App {
         self.relayout();
         self.reposition();
 
-        self.relay = Some(Relay::start(self.tray_shared.clone()));
         self.keyhook = KeyHook::start(h, WM_APP_WIN_DIGIT, WM_APP_INPUT);
         if let Some(k) = &self.keyhook {
             k.set_digits(self.takeover.is_some());
@@ -632,9 +625,7 @@ impl App {
             let _ = SetCoalescableTimer(Some(h), TIMER_SLOW, 2000, None, 1000);
         }
         self.register_appbar();
-        if let (Some(relay), Some(real)) = (&self.relay, real) {
-            relay.attach(real);
-        }
+        self.hook = Some(Hook::acquire(h, WM_APP_HOOK, Some(self.tray_shared.clone())));
         unsafe {
             let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
             SendMessageW(h, WM_NCACTIVATE, Some(WPARAM(1)), Some(LPARAM(0)));
@@ -660,7 +651,7 @@ impl App {
                 let _ = UnregisterPowerSettingNotification(n);
             }
         }
-        self.relay = None;
+        self.hook = None;
         for ev in self.tray_shared.queue.lock().unwrap().drain(..) {
             tray::destroy_icon(ev.icon);
         }
@@ -968,33 +959,34 @@ impl App {
 
     /// Requests that are not sent stay in `icon_waiters` until the hook attaches.
     fn send_icon_request(&mut self, key: IconKey) {
-        let Some(tray) = shell::real_tray().filter(|_| self.hook_attached) else { return };
         let id = self.next_icon_request;
         self.next_icon_request += 1;
-        if relay::request(tray, self.hwnd, &Request::Icon { id, px: key.1, name: key.0.clone() }) {
+        if hook::request(self.hwnd, &Request::Icon { id, px: key.1, name: key.0.clone() }) {
             self.icon_requests.insert(id, key);
         }
     }
 
     fn request_pins(&self) {
-        if let Some(tray) = shell::real_tray().filter(|_| self.hook_attached) {
-            relay::request(tray, self.hwnd, &Request::Pins);
-        }
+        hook::request(self.hwnd, &Request::Pins);
     }
 
     fn on_hook_events(&mut self) {
-        let events: Vec<_> = self.tray_shared.hook_events.lock().unwrap().drain(..).collect();
+        let events = self.hook.as_ref().map(Hook::take_events).unwrap_or_default();
         for ev in events {
             match ev {
                 HookEvent::Attached => self.on_hook_attached(),
                 HookEvent::Answer(Answer::Pins(pins)) => self.on_pins(pins),
                 HookEvent::Answer(Answer::Icon { id, bitmap }) => self.on_shell_icon(id, bitmap),
+                HookEvent::Answer(Answer::Apps(_)) => {}
             }
         }
     }
 
+    /// Explorer's tray icons are re-added once the hook relays them.
     fn on_hook_attached(&mut self) {
-        self.hook_attached = true;
+        self.close_popup();
+        self.tray.icons.clear();
+        self.relayout();
         self.icon_requests.clear();
         self.request_pins();
         let keys: Vec<IconKey> = self.icon_waiters.keys().cloned().collect();
@@ -1201,18 +1193,11 @@ impl App {
             return;
         }
         log::info!("explorer restarted");
-        self.hook_attached = false;
         REAL_TRAY.store(real.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
         if let (Some(t), Some(real)) = (&mut self.takeover, real) {
             t.apply(real);
         }
-        self.close_popup();
-        self.tray.icons.clear();
-        self.relayout();
         self.register_appbar();
-        if let (Some(relay), Some(real)) = (&self.relay, real) {
-            relay.attach(real);
-        }
     }
 
     fn on_tray_events(&mut self) {

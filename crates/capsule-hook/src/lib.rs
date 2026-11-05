@@ -1,6 +1,6 @@
 //! Loaded into explorer's tray thread, where it subclasses `Shell_TrayWnd`,
-//! relays tray icon messages to the capsule bar and runs shell lookups for
-//! it. A panic here aborts explorer, so nothing may panic.
+//! relays tray icon messages to the capsule bar and does shell work for the
+//! bar and the launcher. A panic here aborts explorer, so nothing may panic.
 
 mod shell;
 
@@ -8,7 +8,9 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering::Relaxed};
 
 use capsule_core::shell_proto::{self, Request};
-use capsule_core::tray_proto::{COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG};
+use capsule_core::tray_proto::{
+    COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG, HOOK_TRAY_MSG,
+};
 use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::{
@@ -25,13 +27,16 @@ use windows::core::PCWSTR;
 
 static ATTACH_MSG: AtomicU32 = AtomicU32::new(0);
 static DETACH_MSG: AtomicU32 = AtomicU32::new(0);
+static TRAY_MSG: AtomicU32 = AtomicU32::new(0);
+/// Whether tray icon messages are relayed.
+static TRAY: AtomicBool = AtomicBool::new(false);
 /// The tray's window procedure while we subclass it, else 0.
 static ORIGINAL: AtomicIsize = AtomicIsize::new(0);
 static RECEIVER: AtomicIsize = AtomicIsize::new(0);
 /// Guards against the relay window's handle being reused by another process
-/// after the bar exits without detaching.
+/// after 202020 exits without detaching.
 static RECEIVER_PID: AtomicU32 = AtomicU32::new(0);
-/// Our own reference to this DLL, which keeps it loaded after the bar
+/// Our own reference to this DLL, which keeps it loaded after 202020
 /// removes the hook, else 0.
 static PIN: AtomicIsize = AtomicIsize::new(0);
 static DEPTH: AtomicU32 = AtomicU32::new(0);
@@ -70,6 +75,7 @@ pub unsafe extern "system" fn GetMsgProc(code: i32, wparam: WPARAM, lparam: LPAR
     if code == HC_ACTION as i32 && wparam.0 == PM_REMOVE.0 as usize && lparam.0 != 0 {
         if ATTACH_MSG.load(Relaxed) == 0 {
             DETACH_MSG.store(register(HOOK_DETACH_MSG), Relaxed);
+            TRAY_MSG.store(register(HOOK_TRAY_MSG), Relaxed);
             ATTACH_MSG.store(register(HOOK_ATTACH_MSG), Relaxed);
         }
         let msg = unsafe { &mut *(lparam.0 as *mut MSG) };
@@ -107,6 +113,7 @@ fn attach(tray: HWND, receiver: HWND) {
         ORIGINAL.store(original, Relaxed);
     }
     UNLOAD.store(false, Relaxed);
+    TRAY.store(false, Relaxed);
     RECEIVER_PID.store(receiver_pid, Relaxed);
     RECEIVER.store(receiver.0 as isize, Relaxed);
     unsafe {
@@ -133,6 +140,12 @@ unsafe extern "system" fn subclass(h: HWND, msg: u32, wparam: WPARAM, lparam: LP
             detach(h, wparam);
             LRESULT(0)
         }
+        m if m != 0 && m == TRAY_MSG.load(Relaxed) => {
+            if wparam.0 as u32 == RECEIVER_PID.load(Relaxed) {
+                TRAY.store(lparam.0 != 0, Relaxed);
+            }
+            LRESULT(0)
+        }
         _ => original(h, msg, wparam, lparam),
     };
     if DEPTH.fetch_sub(1, Relaxed) == 1 && UNLOAD.load(Relaxed) {
@@ -144,18 +157,20 @@ unsafe extern "system" fn subclass(h: HWND, msg: u32, wparam: WPARAM, lparam: LP
 fn relay(h: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let cds = lparam.0 as *const COPYDATASTRUCT;
     match (!cds.is_null()).then(|| unsafe { (*cds).dwData }) {
-        Some(COPYDATA_NOTIFYICON) => {
+        Some(COPYDATA_NOTIFYICON) if TRAY.load(Relaxed) => {
             let r = original(h, WM_COPYDATA, wparam, lparam);
             send(wparam, lparam);
             r
         }
-        Some(COPYDATA_ICON_RECT) => send(wparam, lparam).unwrap_or_else(|| original(h, WM_COPYDATA, wparam, lparam)),
+        Some(COPYDATA_ICON_RECT) if TRAY.load(Relaxed) => {
+            send(wparam, lparam).unwrap_or_else(|| original(h, WM_COPYDATA, wparam, lparam))
+        }
         Some(shell_proto::COPYDATA_REQUEST) => LRESULT(request(hwnd(wparam.0 as isize), cds) as isize),
         _ => original(h, WM_COPYDATA, wparam, lparam),
     }
 }
 
-/// Accepts requests only from the attached bar's process.
+/// Accepts requests only from the attached process.
 fn request(from: HWND, cds: *const COPYDATASTRUCT) -> bool {
     if RECEIVER.load(Relaxed) == 0 || pid_of(from) != RECEIVER_PID.load(Relaxed) {
         return false;
@@ -166,16 +181,16 @@ fn request(from: HWND, cds: *const COPYDATASTRUCT) -> bool {
     } else {
         unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) }
     };
-    Request::decode(bytes).is_some_and(shell::submit)
+    Request::decode(bytes).is_some_and(|req| shell::submit(from, req))
 }
 
-fn answer(bytes: &[u8]) {
+fn answer(to: HWND, bytes: &[u8]) {
     let cds = COPYDATASTRUCT {
         dwData: shell_proto::COPYDATA_ANSWER,
         cbData: bytes.len() as u32,
         lpData: bytes.as_ptr() as *mut c_void,
     };
-    send(WPARAM(0), LPARAM(&cds as *const COPYDATASTRUCT as isize));
+    send(WPARAM(to.0 as usize), LPARAM(&cds as *const COPYDATASTRUCT as isize));
 }
 
 fn send(wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
@@ -202,7 +217,7 @@ fn send(wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
     (ok.0 != 0).then_some(LRESULT(result as isize))
 }
 
-/// Ignores detaches from other bar processes than the attached one, such as
+/// Ignores detaches from other 202020 processes than the attached one, such as
 /// a watchdog's for a bar that was already restarted. Stays subclassed,
 /// relaying nothing, if another subclass was installed on top of ours:
 /// restoring the original procedure would cut it out.
@@ -211,6 +226,7 @@ fn detach(h: HWND, pid: WPARAM) {
         return;
     }
     RECEIVER.store(0, Relaxed);
+    TRAY.store(false, Relaxed);
     shell::clear();
     if unsafe { GetWindowLongPtrW(h, GWLP_WNDPROC) } == subclass_addr() {
         unsafe { SetWindowLongPtrW(h, GWLP_WNDPROC, ORIGINAL.swap(0, Relaxed)) };
