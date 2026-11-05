@@ -3,14 +3,14 @@
 //! explorer's tray thread waits for each relayed message.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use capsule_core::tray_proto::{
-    self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG, NIF_ICON, NIM_DELETE,
-    NotifyIconMessage, handle,
+    self, COPYDATA_ICON_RECT, COPYDATA_NOTIFYICON, HOOK_ATTACH_MSG, HOOK_DETACH_MSG, NIF_ICON, NotifyIconMessage,
+    handle,
 };
 use windows::Win32::Foundation::{FreeLibrary, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
@@ -33,9 +33,8 @@ const HOOK_DLL: &str = "capsule_hook.dll";
 
 pub struct TrayEvent {
     pub msg: NotifyIconMessage,
-    /// Our own copy of the icon, or 0; `None` when the app sent the same
-    /// handle as last time, so it wasn't copied.
-    pub icon: Option<isize>,
+    /// Our own copy of the icon, or 0.
+    pub icon: isize,
 }
 
 pub struct Shared {
@@ -80,10 +79,7 @@ struct Hook {
 thread_local! {
     static SHARED: OnceCell<Arc<Shared>> = const { OnceCell::new() };
     static HOOK: RefCell<Hook> = RefCell::default();
-    static SENT_ICONS: RefCell<HashMap<TrayKey, u32>> = RefCell::default();
 }
-
-const MAX_SENT_ICONS: usize = 512;
 
 fn shared() -> Option<Arc<Shared>> {
     SHARED.with(|s| s.get().cloned())
@@ -252,7 +248,7 @@ fn icon_rect(q: &tray_proto::IconRectQuery) -> LRESULT {
 
 /// `CopyIcon` can fail for icons of other processes when it tries to reload
 /// them from their module, so fall back to copying the bitmaps.
-pub fn copy_icon(h: isize) -> isize {
+fn copy_icon(h: isize) -> isize {
     let h = HICON(h as *mut _);
     if let Ok(c) = unsafe { CopyIcon(h) } {
         return c.0 as isize;
@@ -270,31 +266,9 @@ pub fn copy_icon(h: isize) -> isize {
     copy
 }
 
-/// Our copy of the icon `m` sets, or `None` when the app sent the same handle
-/// as last time.
-fn copy_sent_icon(m: &NotifyIconMessage) -> Option<isize> {
-    let key = TrayKey::of(&m.data);
-    SENT_ICONS.with_borrow_mut(|sent| {
-        if m.message == NIM_DELETE || m.data.flags & NIF_ICON != 0 && m.data.icon == 0 {
-            sent.remove(&key);
-            return Some(0);
-        }
-        if m.data.flags & NIF_ICON == 0 {
-            return Some(0);
-        }
-        if sent.len() >= MAX_SENT_ICONS {
-            sent.clear();
-        }
-        if sent.insert(key, m.data.icon) == Some(m.data.icon) {
-            return None;
-        }
-        Some(copy_icon(handle(m.data.icon)))
-    })
-}
-
 fn record(m: NotifyIconMessage) {
     let Some(shared) = shared() else { return };
-    let icon = copy_sent_icon(&m);
+    let icon = if m.data.flags & NIF_ICON != 0 && m.data.icon != 0 { copy_icon(handle(m.data.icon)) } else { 0 };
     let was_empty = {
         let mut q = shared.queue.lock().unwrap();
         let was_empty = q.is_empty();

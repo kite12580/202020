@@ -660,7 +660,7 @@ impl App {
         }
         self.relay = None;
         for ev in self.tray_shared.queue.lock().unwrap().drain(..) {
-            tray::destroy_icon(ev.icon.unwrap_or(0));
+            tray::destroy_icon(ev.icon);
         }
         self.keyhook = None;
         if let Some(t) = self.takeover.take() {
