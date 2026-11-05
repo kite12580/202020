@@ -3,7 +3,7 @@ pub mod relay;
 use capsule_core::pins::pin_key;
 use capsule_core::tray_proto::{
     NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_STATE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION,
-    NIS_HIDDEN, handle,
+    NIS_HIDDEN, NotifyIconData, handle,
 };
 use windows::Win32::Foundation::{E_ACCESSDENIED, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -26,6 +26,10 @@ pub struct TrayKey {
 }
 
 impl TrayKey {
+    pub fn of(d: &NotifyIconData) -> Self {
+        TrayKey { hwnd: d.hwnd, uid: d.uid, guid: d.guid }
+    }
+
     pub fn same(&self, o: &TrayKey) -> bool {
         match (self.guid, o.guid) {
             (Some(a), Some(b)) => a == b,
@@ -134,7 +138,7 @@ pub enum Change {
 impl Tray {
     pub fn apply(&mut self, ev: TrayEvent) -> Change {
         let d = &ev.msg.data;
-        let key = TrayKey { hwnd: d.hwnd, uid: d.uid, guid: d.guid };
+        let key = TrayKey::of(d);
         let pos = self.icons.iter().position(|i| i.key.same(&key));
         log::debug!("tray msg {} {:?} flags {:#x} pos {:?} tip {:?}", ev.msg.message, key, d.flags, pos, d.tip);
         match ev.msg.message {
@@ -161,10 +165,10 @@ impl Tray {
                 if d.flags & NIF_MESSAGE != 0 {
                     icon.callback = d.callback_message;
                 }
-                let new_icon = d.flags & NIF_ICON != 0 && !(ev.same_icon && icon.hicon != 0);
+                let new_icon = d.flags & NIF_ICON != 0 && !(ev.icon.is_none() && icon.hicon != 0);
                 if new_icon {
                     destroy_icon(icon.hicon);
-                    icon.hicon = if ev.same_icon { relay::copy_icon(handle(d.icon)) } else { ev.icon };
+                    icon.hicon = ev.icon.unwrap_or_else(|| relay::copy_icon(handle(d.icon)));
                     icon.image = None;
                 }
                 if d.flags & NIF_TIP != 0 {
@@ -188,7 +192,7 @@ impl Tray {
                 }
             }
             NIM_DELETE => {
-                destroy_icon(ev.icon);
+                destroy_icon(ev.icon.unwrap_or(0));
                 match pos {
                     Some(i) => {
                         self.icons.remove(i);
@@ -204,7 +208,7 @@ impl Tray {
                 Change::None
             }
             _ => {
-                destroy_icon(ev.icon);
+                destroy_icon(ev.icon.unwrap_or(0));
                 Change::None
             }
         }

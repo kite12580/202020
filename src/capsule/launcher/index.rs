@@ -11,7 +11,6 @@ use capsule_core::launcher::Source;
 use capsule_core::launcher::folders::{excluded, wants_file};
 use capsule_core::launcher::haystack::{Keys, app_keyword};
 use capsule_core::launcher::history::{key, split_key};
-use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
     FIND_FIRST_EX_LARGE_FETCH, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
@@ -22,7 +21,6 @@ use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem,
     SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
 };
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::core::PCWSTR;
 
 use crate::capsule::util::{apps_folder, from_wide, hwnd, take_string, wide};
@@ -68,7 +66,7 @@ pub fn exe_stem(exe: &str) -> &str {
 impl Entry {
     fn folder_path(&self) -> Option<&str> {
         match split_key(&self.key)? {
-            (Source::Folder, path) => Some(path.trim_end_matches('\\')),
+            (Source::Folder, path) => Some(split_dir(path).0),
             _ => None,
         }
     }
@@ -134,7 +132,6 @@ pub struct Batch {
     /// Index into the folder roots; 0 for other sources.
     pub root: usize,
     pub entries: Vec<Entry>,
-    /// Whether this is the source's final batch.
     pub last: bool,
 }
 
@@ -151,17 +148,16 @@ impl Outbox {
         if self.cancel.load(Ordering::Relaxed) || self.tx.send(batch).is_err() {
             return false;
         }
-        unsafe {
-            let _ = PostMessageW(Some(hwnd(self.notify)), self.msg, WPARAM(0), LPARAM(0));
-        }
+        super::launch::post(self.notify, self.msg, 0);
         true
     }
 }
 
 /// Scans apps and folders on separate threads, sending apps as one batch and
 /// folders as one batch per root, and posting `msg` to `notify` after each.
-/// Stops early once `cancel` is set.
-pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) {
+/// Stops early once `cancel` is set. Returns how many sources will send a
+/// `last` batch.
+pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cancel: Arc<AtomicBool>) -> usize {
     let out = Outbox { tx, notify, msg, cancel };
     let apps = out.clone();
     let apps_enabled = cfg.apps.enabled;
@@ -181,6 +177,7 @@ pub fn spawn_scan(cfg: Config, tx: Sender<Batch>, notify: isize, msg: u32, cance
             }
         }
     });
+    2
 }
 
 fn scan_apps() -> Vec<Entry> {
@@ -232,6 +229,10 @@ pub fn app_entry(name: String, id: &str) -> Entry {
         glyph: None,
         action: Action::Item,
     }
+}
+
+pub fn split_dir(id: &str) -> (&str, bool) {
+    id.strip_suffix('\\').map_or((id, false), |path| (path, true))
 }
 
 pub fn file_entry(path: &str, name: String, dir: bool) -> Entry {

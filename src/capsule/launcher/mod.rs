@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use capsule_core::config::{Backdrop, Launcher as Config};
+use capsule_core::config::{Backdrop, FolderRoot, Launcher as Config};
 use capsule_core::launcher::history::{History, split_key};
 use capsule_core::launcher::input::TextInput;
 use capsule_core::launcher::rank::{Match, Searcher, rank, top};
@@ -241,8 +241,8 @@ fn remembered(key: &str, name: &str) -> Option<Entry> {
     match source {
         Source::App => Some(index::app_entry(name.to_string(), id)),
         Source::Folder => {
-            let path = id.trim_end_matches('\\');
-            Some(index::file_entry(path, name.to_string(), path.len() != id.len()))
+            let (path, dir) = index::split_dir(id);
+            Some(index::file_entry(path, name.to_string(), dir))
         }
         Source::Window | Source::Command => None,
     }
@@ -355,7 +355,9 @@ impl Launcher {
         }
         self.cfg_stamp = stamp;
         let cfg = config_store::launcher();
-        let scanned = |c: &Config| (c.apps.enabled, c.folders.enabled, c.folders.roots.clone());
+        fn scanned(c: &Config) -> (bool, bool, &[FolderRoot]) {
+            (c.apps.enabled, c.folders.enabled, &c.folders.roots)
+        }
         let rescan = scanned(&cfg) != scanned(&self.cfg);
         self.cfg = cfg;
         self.theme = None;
@@ -435,8 +437,8 @@ impl Launcher {
         self.root_lens.resize(roots, 0);
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
-        self.scan = Some(Scan { rx, cancel, pending: 2 });
+        let pending = index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
+        self.scan = Some(Scan { rx, cancel, pending });
         self.scan_started = Some(Instant::now());
     }
 
@@ -448,6 +450,7 @@ impl Launcher {
         }
         let keep = self.rows.get(self.selected).map(|r| self.entry(r).key.clone());
         let mut finished = 0;
+        let mut changed = [false; RECENT];
         for b in batches {
             let list = list_of(b.source);
             if b.source == Source::Folder {
@@ -459,6 +462,9 @@ impl Launcher {
                 self.scanned[list] = true;
                 finished += 1;
             }
+            changed[list] = true;
+        }
+        for list in (0..RECENT).filter(|&l| changed[l]) {
             self.list_changed(list);
         }
         if let Some(scan) = &mut self.scan {
@@ -550,8 +556,10 @@ impl Launcher {
             self.next = (0, 0);
         }
         self.found_query = Some((only, q.to_string()));
-        self.repaint_search();
         self.resume_matching();
+        if self.matching() {
+            self.repaint_search();
+        }
     }
 
     fn list_recent(&mut self, only: Option<Source>) {
@@ -596,10 +604,14 @@ impl Launcher {
         self.found_query.is_some() && (!self.recheck.is_empty() || self.next.0 < RECENT)
     }
 
-    fn stop_matching(&mut self) {
+    fn kill_match_timer(&self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
         }
+    }
+
+    fn stop_matching(&mut self) {
+        self.kill_match_timer();
         self.found_query = None;
         self.found.clear();
         self.recheck.clear();
@@ -618,9 +630,7 @@ impl Launcher {
     /// Completes a search that yielded, so keys act on its results.
     fn settle(&mut self) {
         if self.matching() {
-            unsafe {
-                let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
-            }
+            self.kill_match_timer();
             self.score_entries(false);
             self.show_matches();
         }
@@ -924,7 +934,7 @@ impl Launcher {
                 l.edited();
             } else {
                 l.place_ime();
-                l.invalidate();
+                l.repaint_search();
             }
         };
         if [VK_RETURN, VK_UP, VK_DOWN, VK_TAB, VK_PRIOR, VK_NEXT].iter().any(|k| k.0 == vk) {
@@ -985,7 +995,7 @@ impl Launcher {
         self.input.move_to(i, extend);
         self.caret_on = true;
         self.place_ime();
-        self.invalidate();
+        self.repaint_search();
     }
 
     fn menu_point(&self, i: usize) -> (i32, i32) {
@@ -1014,9 +1024,7 @@ impl Launcher {
             }
             WM_TIMER if wparam.0 == TIMER_CARET => self.blink(),
             WM_TIMER if wparam.0 == TIMER_MATCH => {
-                unsafe {
-                    let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
-                }
+                self.kill_match_timer();
                 if self.matching() {
                     self.resume_matching();
                 }

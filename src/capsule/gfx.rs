@@ -480,10 +480,15 @@ impl Surface {
     }
 
     pub fn begin(&mut self) {
+        self.clear(0, self.height);
+    }
+
+    fn clear(&mut self, from: u32, to: u32) {
         unsafe {
             let _ = GdiFlush();
         }
-        self.data().fill(0);
+        let row = self.width as usize * 4;
+        self.data()[from as usize * row..to as usize * row].fill(0);
     }
 
     fn band(&self, top: f32, height: f32) -> (u32, u32) {
@@ -493,12 +498,8 @@ impl Surface {
     }
 
     pub fn begin_band(&mut self, top: f32, height: f32) {
-        unsafe {
-            let _ = GdiFlush();
-        }
         let (from, to) = self.band(top, height);
-        let row = self.width as usize * 4;
-        self.data()[from as usize * row..to as usize * row].fill(0);
+        self.clear(from, to);
     }
 
     pub fn end_band(&mut self, top: f32, height: f32) {

@@ -33,10 +33,9 @@ const HOOK_DLL: &str = "capsule_hook.dll";
 
 pub struct TrayEvent {
     pub msg: NotifyIconMessage,
-    /// Our own copy of the icon, or 0.
-    pub icon: isize,
-    /// The icon handle is the one the app last sent, so it wasn't copied.
-    pub same_icon: bool,
+    /// Our own copy of the icon, or 0; `None` when the app sent the same
+    /// handle as last time, so it wasn't copied.
+    pub icon: Option<isize>,
 }
 
 pub struct Shared {
@@ -274,7 +273,7 @@ pub fn copy_icon(h: isize) -> isize {
 /// Our copy of the icon `m` sets, or `None` when the app sent the same handle
 /// as last time.
 fn copy_sent_icon(m: &NotifyIconMessage) -> Option<isize> {
-    let key = TrayKey { hwnd: m.data.hwnd, uid: m.data.uid, guid: m.data.guid };
+    let key = TrayKey::of(&m.data);
     SENT_ICONS.with_borrow_mut(|sent| {
         if m.message == NIM_DELETE || m.data.flags & NIF_ICON != 0 && m.data.icon == 0 {
             sent.remove(&key);
@@ -295,11 +294,11 @@ fn copy_sent_icon(m: &NotifyIconMessage) -> Option<isize> {
 
 fn record(m: NotifyIconMessage) {
     let Some(shared) = shared() else { return };
-    let copy = copy_sent_icon(&m);
+    let icon = copy_sent_icon(&m);
     let was_empty = {
         let mut q = shared.queue.lock().unwrap();
         let was_empty = q.is_empty();
-        q.push_back(TrayEvent { msg: m, icon: copy.unwrap_or(0), same_icon: copy.is_none() });
+        q.push_back(TrayEvent { msg: m, icon });
         was_empty
     };
     if was_empty {
