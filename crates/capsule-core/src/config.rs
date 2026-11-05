@@ -217,7 +217,7 @@ pub struct FoldersSource {
 
 impl Default for FoldersSource {
     fn default() -> Self {
-        Self { enabled: true, weight: 0.7, roots: vec![FolderRoot::default()] }
+        Self { enabled: true, weight: 1.0, roots: vec![FolderRoot::default()] }
     }
 }
 
@@ -315,7 +315,7 @@ custom = []
 
 [launcher.folders]
 enabled = true
-weight = 0.7
+weight = 1.0
 
 # Folders whose files and subfolders are searchable by name. Repeat the table for more roots.
 [[launcher.folders.roots]]

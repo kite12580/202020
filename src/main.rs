@@ -393,7 +393,7 @@ impl App {
         unsafe {
             let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_LAUNCHER);
         }
-        let (cfg, _) = capsule::launcher_config();
+        let cfg = capsule::launcher_config();
         if !cfg.enabled {
             self.launcher = LauncherState::Off;
             launcher::unload();

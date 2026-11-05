@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use capsule_core::config::{Appearance, Launcher as Config};
+use capsule_core::config::{Backdrop, Launcher as Config};
 use capsule_core::launcher::history::{History, split_key};
 use capsule_core::launcher::input::TextInput;
 use capsule_core::launcher::rank::{Match, Searcher, rank, top};
@@ -185,7 +185,6 @@ struct Launcher {
     surface: Option<Surface>,
     theme: Option<Theme>,
     cfg: Config,
-    appearance: Appearance,
     cfg_stamp: Option<SystemTime>,
     visible: bool,
     bounds: (i32, i32, i32, i32),
@@ -261,7 +260,7 @@ impl Launcher {
             unsafe { CoUninitialize() };
             return None;
         };
-        let (cfg, appearance) = config_store::launcher();
+        let cfg = config_store::launcher();
         let gfx = Gfx::new();
         Some(Launcher {
             opts,
@@ -273,7 +272,6 @@ impl Launcher {
             surface: None,
             theme: None,
             cfg,
-            appearance,
             cfg_stamp: config_store::modified(),
             visible: false,
             bounds: (0, 0, 0, 0),
@@ -337,7 +335,7 @@ impl Launcher {
             return;
         }
         self.cfg_stamp = stamp;
-        (self.cfg, self.appearance) = config_store::launcher();
+        self.cfg = config_store::launcher();
         self.theme = None;
     }
 
@@ -345,7 +343,7 @@ impl Launcher {
         self.reload_config();
         let theme = Theme::read();
         if self.theme != Some(theme) {
-            theme::apply(self.hwnd, self.appearance.backdrop, &theme);
+            theme::apply(self.hwnd, Backdrop::None, &theme);
             self.theme = Some(theme);
         }
         self.lists[list_of(Source::Window)] = if self.cfg.windows.enabled { sources::windows() } else { Vec::new() };
@@ -685,7 +683,7 @@ impl Launcher {
         let Some(theme) = self.theme else { return };
         let Some(mut s) = self.surface.take() else { return };
         s.begin_band(0.0, SEARCH_H);
-        self.paint_search(&mut s, &theme.palette(self.appearance.opacity));
+        self.paint_search(&mut s, &theme.palette(1.0));
         s.end_band(0.0, SEARCH_H);
         self.surface = Some(s);
     }
@@ -702,7 +700,7 @@ impl Launcher {
             self.surface = Surface::new(self.hwnd, w, h, self.dpi);
         }
         let Some(theme) = self.theme else { return };
-        let pal = theme.palette(self.appearance.opacity);
+        let pal = theme.palette(1.0);
         let dim = pal.text.alpha(0.6);
         let accent = if theme.high_contrast { pal.text } else { pal.accent };
         let height = self.to_dip(h as i32);

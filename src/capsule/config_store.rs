@@ -1,4 +1,4 @@
-use capsule_core::config::{self, Appearance, CapsuleBar, Config, Launcher};
+use capsule_core::config::{self, CapsuleBar, Config, Launcher};
 use std::path::PathBuf;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
@@ -61,9 +61,8 @@ pub fn set_enabled(enabled: bool) {
     edit_file(|t| config::set_enabled(t, enabled));
 }
 
-pub fn launcher() -> (Launcher, Appearance) {
-    let c = read().2;
-    (c.launcher, c.capsule_bar.appearance)
+pub fn launcher() -> Launcher {
+    read().2.launcher
 }
 
 pub fn set_launcher_enabled(enabled: bool) {
