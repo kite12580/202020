@@ -329,18 +329,23 @@ impl Launcher {
         &self.lists[row.list][row.index]
     }
 
-    fn reload_config(&mut self) {
+    /// Whether the scanned sources changed.
+    fn reload_config(&mut self) -> bool {
         let stamp = config_store::modified();
         if stamp == self.cfg_stamp {
-            return;
+            return false;
         }
         self.cfg_stamp = stamp;
-        self.cfg = config_store::launcher();
+        let cfg = config_store::launcher();
+        let scanned = |c: &Config| (c.apps.enabled, c.folders.enabled, c.folders.roots.clone());
+        let rescan = scanned(&cfg) != scanned(&self.cfg);
+        self.cfg = cfg;
         self.theme = None;
+        rescan
     }
 
     fn show(&mut self) {
-        self.reload_config();
+        let rescan = self.reload_config();
         let theme = Theme::read();
         if self.theme != Some(theme) {
             theme::apply(self.hwnd, Backdrop::None, &theme);
@@ -353,7 +358,10 @@ impl Launcher {
             Vec::new()
         };
         self.lists_changed();
-        if self.scan_started.is_none_or(|t| t.elapsed() > RESCAN_AFTER) {
+        if rescan && let Some((_, cancel)) = self.scan.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if rescan || self.scan_started.is_none_or(|t| t.elapsed() > RESCAN_AFTER) {
             self.start_scan();
         }
         self.input.select_all();
