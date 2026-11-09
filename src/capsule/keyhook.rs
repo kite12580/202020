@@ -190,6 +190,16 @@ fn on_key(vk: u32, down: bool) -> bool {
     false
 }
 
+/// Hands Win+`vk` to the bar while it replays Win+digit keys. Returns whether
+/// it did.
+pub fn win_digit(vk: u16) -> bool {
+    let bar = BAR.load(Relaxed) && DIGITS.load(Relaxed);
+    if bar {
+        post(&DIGIT_MSG, vk as usize, 0);
+    }
+    bar
+}
+
 pub fn input_handled() {
     INPUT_PENDING.store(false, Relaxed);
 }

@@ -10,9 +10,10 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use capsule_core::config::Hyper;
-use capsule_core::hyper::{Effect, Event, Layer, Target};
+use capsule_core::hyper::{Chord, Effect, Event, Layer, Target, WIN, vk};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_CONTROL};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, HC_ACTION, HHOOK, MSLLHOOKSTRUCT, PostMessageW, SetWindowsHookExW,
     UnhookWindowsHookEx, WH_MOUSE_LL, WM_MOUSEWHEEL,
@@ -42,6 +43,7 @@ thread_local! {
     static TARGET: Cell<(isize, u32, Target)> = const { Cell::new((0, u32::MAX, Target::Other)) };
     static SAVED_SPEED: Cell<Option<u32>> = const { Cell::new(None) };
     static ALPHA: RefCell<Option<Alpha>> = const { RefCell::new(None) };
+    static WHEEL_HOOK: Cell<Option<HHOOK>> = const { Cell::new(None) };
     static KEYMAPS: RefCell<Option<(u32, Arc<Hyper>)>> = const { RefCell::new(None) };
 }
 
@@ -79,7 +81,10 @@ pub(super) fn on_key(vk_code: u32, down: bool, time: u32) -> bool {
             }
             let Some((_, cfg)) = cached.as_ref() else { return false };
             let ev = Event { vk: vk_code as u16, down, time };
-            layer.on_key(ev, &cfg.keys, &cfg.alt_keys, input::held_mods, || target(cfg), &mut |e| run(e, cfg))
+            if matches!(ev.vk, vk::LCONTROL | vk::RCONTROL) {
+                block_wheel(cfg.block_ctrl_wheel && ctrl_held(ev));
+            }
+            layer.on_key(ev, cfg, input::held_mods, || target(cfg), &mut |e| run(e, cfg))
         })
     })
 }
@@ -89,11 +94,16 @@ pub(super) fn reset() {
     KEYMAPS.with(|k| k.borrow_mut().take());
     slow_mouse(None);
     end_alpha(false);
+    block_wheel(false);
 }
 
 fn run(effect: Effect, cfg: &Arc<Hyper>) {
     match effect {
         Effect::Keys(keys) => input::keys(keys),
+        Effect::WinKeys(keys) => match *keys {
+            [Chord { mods: WIN, vk: digit @ vk::D0..=vk::D9 }] if keyhook::win_digit(digit) => {}
+            _ => input::keys_holding_win(keys),
+        },
         Effect::Wheel(n) => input::wheel(n),
         Effect::Job(job) => jobs::spawn(job.clone(), cfg.clone()),
         Effect::Reload => {
@@ -172,6 +182,32 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         if ALPHA.with(|a| a.borrow().as_ref().is_some_and(|a| a.tx.send(AlphaMsg::Wheel(up)).is_ok())) {
             return LRESULT(1);
         }
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn ctrl_held(ev: Event) -> bool {
+    let other = if ev.vk == vk::LCONTROL { vk::RCONTROL } else { vk::LCONTROL };
+    ev.down || input::held(VIRTUAL_KEY(other))
+}
+
+fn block_wheel(on: bool) {
+    match WHEEL_HOOK.get() {
+        None if on => {
+            let module = unsafe { GetModuleHandleW(None) }.ok().map(Into::into);
+            WHEEL_HOOK.set(unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(wheel_proc), module, 0) }.ok());
+        }
+        Some(hook) if !on => unsafe {
+            WHEEL_HOOK.set(None);
+            let _ = UnhookWindowsHookEx(hook);
+        },
+        _ => {}
+    }
+}
+
+unsafe extern "system" fn wheel_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && wparam.0 as u32 == WM_MOUSEWHEEL && input::held(VK_CONTROL) {
+        return LRESULT(1);
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::config::Hyper;
 use crate::layout::PxRect;
 
 pub mod vk {
@@ -281,6 +282,7 @@ pub struct Event {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect<'a> {
     Keys(&'a [Chord]),
+    WinKeys(&'a [Chord]),
     Wheel(i32),
     Job(&'a Job),
     Reload,
@@ -345,14 +347,12 @@ impl Layer {
         was
     }
 
-    /// Returns whether to swallow the event. `keys` and `alt_keys` map the
-    /// layer without and with left Alt. `mods` reads `CTRL`, `SHIFT`, `WIN`
-    /// and `ALT` (left Alt) as the system sees them.
+    /// Returns whether to swallow the event. `mods` reads `CTRL`, `SHIFT`,
+    /// `WIN` and `ALT` (left Alt) as the system sees them.
     pub fn on_key<'a>(
         &mut self,
         ev: Event,
-        keys: &'a Keymap,
-        alt_keys: &'a Keymap,
+        cfg: &'a Hyper,
         mods: impl FnOnce() -> u8,
         target: impl FnOnce() -> Target,
         emit: &mut impl FnMut(Effect<'a>),
@@ -397,7 +397,13 @@ impl Layer {
             return true;
         }
         if self.caps_at.is_none() {
-            return false;
+            let Some(Action::Keys(chords)) = cfg.win_keys.get(key, target) else { return false };
+            if mods() != WIN {
+                return false;
+            }
+            self.mark(key);
+            emit(Effect::WinKeys(chords));
+            return true;
         }
         self.used = true;
         if is_modifier(key) {
@@ -420,7 +426,7 @@ impl Layer {
         if self.passthrough || mods() & (CTRL | SHIFT | WIN) != 0 {
             return false;
         }
-        let action = if self.alt { alt_keys } else { keys }.get(key, target);
+        let action = if self.alt { &cfg.alt_keys } else { &cfg.keys }.get(key, target);
         if action.is_none() && !in_layer(key) {
             return false;
         }
@@ -554,7 +560,6 @@ pub fn window_preset(monitor: PxRect, work: PxRect, cursor_y: i32) -> (PxRect, b
 mod tests {
     use super::vk::*;
     use super::*;
-    use crate::config::Hyper;
     use std::sync::LazyLock;
 
     static CFG: LazyLock<Hyper> = LazyLock::new(Hyper::default);
@@ -569,7 +574,7 @@ mod tests {
 
     fn run_with(layer: &mut Layer, e: Event, mods: u8) -> (bool, Vec<Effect<'static>>) {
         let mut out = Vec::new();
-        let swallow = layer.on_key(e, &CFG.keys, &CFG.alt_keys, || mods, || Target::Other, &mut |x| out.push(x));
+        let swallow = layer.on_key(e, &CFG, || mods, || Target::Other, &mut |x| out.push(x));
         (swallow, out)
     }
 
@@ -685,6 +690,22 @@ mod tests {
     }
 
     #[test]
+    fn win_keys_need_win_alone() {
+        let mut layer = Layer::new();
+        assert_eq!(
+            run_with(&mut layer, ev(E, true, 0), WIN),
+            (true, vec![Effect::WinKeys(&[Chord { mods: WIN, vk: D2 }])])
+        );
+        assert_eq!(run_with(&mut layer, ev(E, false, 10), WIN), (true, vec![]));
+        assert_eq!(run_with(&mut layer, ev(T, true, 20), WIN).1, vec![Effect::WinKeys(&[cs(T)])]);
+        assert!(run(&mut layer, ev(T, false, 30)).0);
+        assert!(!run_with(&mut layer, ev(E, true, 40), WIN | super::SHIFT).0);
+        assert!(!run(&mut layer, ev(E, true, 50)).0);
+        assert!(!run_with(&mut layer, ev(R, true, 60), WIN).0);
+        assert!(!engaged(&layer));
+    }
+
+    #[test]
     fn transparency_session() {
         let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
@@ -725,10 +746,11 @@ mod tests {
             .into_iter()
             .map(|(key, a)| (key, Binding { action: action(a).unwrap(), terminal: None }))
             .collect();
+        let cfg = Hyper { keys: keys.clone(), alt_keys: keys, ..Hyper::default() };
         let mut layer = Layer::new();
         let mut out = Vec::new();
         let mut press = |layer: &mut Layer, vk, down, time| {
-            layer.on_key(ev(vk, down, time), &keys, &keys, || 0, || Target::Other, &mut |x| out.push(x))
+            layer.on_key(ev(vk, down, time), &cfg, || 0, || Target::Other, &mut |x| out.push(x))
         };
         press(&mut layer, CAPITAL, true, 0);
         press(&mut layer, A, true, 10);

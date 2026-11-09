@@ -114,6 +114,8 @@ These are the default keys. They are listed in the config under `[hyper.keys]` a
 | `F9` | Power Options | |
 
 - While CapsLock and the left `Alt` are held, the mouse moves at `slow_mouse_speed`.
+- `Win+E` presses `Win+2` (the second program pinned to the taskbar) and `Win+T` presses `Ctrl+Shift+T`. These are listed under `[hyper.win_keys]`; leave the table empty to keep the Windows shortcuts.
+- `Ctrl` + mouse wheel does nothing instead of zooming; set `block_ctrl_wheel = false` to zoom again.
 - With `Ctrl`, `Shift` or `Win` also held, keys go through unchanged.
 - "Terminals" are the programs listed in `terminals`.
 - Hotstrings live under `[hyper.hotstrings]`: type a key such as `sig`, press `CapsLock+Tab`, and the key is replaced by its text.

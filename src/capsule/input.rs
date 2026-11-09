@@ -16,6 +16,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// still handling keys injected by remappers such as AutoHotkey.
 pub const OWN_INPUT: usize = 0x4342_4152;
 
+const MASK: u16 = 0xE8;
+
 const MODS: [(u8, u16); 4] = [(CTRL, vk::LCONTROL), (SHIFT, vk::LSHIFT), (ALT, vk::LMENU), (WIN, vk::LWIN)];
 
 fn extended(key: u16) -> bool {
@@ -128,6 +130,31 @@ pub fn button(b: Button, down: bool) {
         (Button::Right, false) => MOUSEEVENTF_RIGHTUP,
     };
     unsafe { SendInput(&[mouse(flags, 0)], size_of::<INPUT>() as i32) };
+}
+
+/// Types `chords` while the user may hold Win: chords with Win use the held
+/// key, the others are typed with it let go. An unassigned key is pressed
+/// before Win is let go and after it is pressed again, or Start would open.
+pub fn keys_holding_win(chords: &[Chord]) {
+    let wins = [vk::LWIN, vk::RWIN].map(|w| held(VIRTUAL_KEY(w)).then_some(w));
+    let mut batch = Batch::new();
+    for &c in chords {
+        if wins == [None; 2] {
+            batch.chord(c);
+        } else if c.mods & WIN != 0 {
+            batch.chord(Chord { mods: c.mods & !WIN, ..c });
+        } else {
+            batch.chord(k(MASK));
+            for w in wins.into_iter().flatten() {
+                batch.push(key(w, true));
+            }
+            batch.chord(c);
+            for w in wins.into_iter().flatten() {
+                batch.push(key(w, false));
+            }
+            batch.chord(k(MASK));
+        }
+    }
 }
 
 /// Types `vk` with Win held, pressing Win only if the user has released it.

@@ -274,6 +274,8 @@ pub struct Hyper {
     pub enabled: bool,
     #[serde(default = "slow_mouse_speed")]
     pub slow_mouse_speed: u32,
+    #[serde(default = "yes")]
+    pub block_ctrl_wheel: bool,
     #[serde(default = "terminals")]
     pub terminals: Vec<String>,
     #[serde(default)]
@@ -282,6 +284,8 @@ pub struct Hyper {
     pub keys: Keymap,
     #[serde(default = "alt_keys")]
     pub alt_keys: Keymap,
+    #[serde(default = "win_keys", deserialize_with = "parse_win_keys")]
+    pub win_keys: Keymap,
 }
 
 fn yes() -> bool {
@@ -296,7 +300,7 @@ fn terminals() -> Vec<String> {
     vec!["WindowsTerminal.exe".into()]
 }
 
-fn default_keymaps() -> (Keymap, Keymap) {
+fn default_keymaps() -> (Keymap, Keymap, Keymap) {
     #[derive(Deserialize)]
     struct Doc {
         hyper: Keys,
@@ -305,9 +309,11 @@ fn default_keymaps() -> (Keymap, Keymap) {
     struct Keys {
         keys: Keymap,
         alt_keys: Keymap,
+        #[serde(deserialize_with = "parse_win_keys")]
+        win_keys: Keymap,
     }
-    let Doc { hyper: Keys { keys, alt_keys } } = toml::from_str(DEFAULT_KEYS).expect("DEFAULT_KEYS");
-    (keys, alt_keys)
+    let Doc { hyper: Keys { keys, alt_keys, win_keys } } = toml::from_str(DEFAULT_KEYS).expect("DEFAULT_KEYS");
+    (keys, alt_keys, win_keys)
 }
 
 fn keys() -> Keymap {
@@ -318,16 +324,22 @@ fn alt_keys() -> Keymap {
     default_keymaps().1
 }
 
+fn win_keys() -> Keymap {
+    default_keymaps().2
+}
+
 impl Default for Hyper {
     fn default() -> Self {
-        let (keys, alt_keys) = default_keymaps();
+        let (keys, alt_keys, win_keys) = default_keymaps();
         Self {
             enabled: yes(),
             slow_mouse_speed: slow_mouse_speed(),
+            block_ctrl_wheel: yes(),
             terminals: terminals(),
             hotstrings: BTreeMap::new(),
             keys,
             alt_keys,
+            win_keys,
         }
     }
 }
@@ -378,6 +390,27 @@ fn keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(String))
             binding(v).map(|b| (key as u16, b)).map_err(|e| skipped(format!("{name:?}: {e}"))).ok()
         })
         .collect()
+}
+
+fn win_keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(String)) -> Keymap {
+    table
+        .into_iter()
+        .filter_map(|(name, v)| match (crate::launcher::hotkey::key(&name), v.as_str().and_then(hyper::action)) {
+            (Some(key), Some(action @ Action::Keys(_))) => Some((key as u16, Binding { action, terminal: None })),
+            (None, _) => {
+                skipped(format!("{name:?}: unknown key"));
+                None
+            }
+            _ => {
+                skipped(format!("{name:?}: needs keys to press"));
+                None
+            }
+        })
+        .collect()
+}
+
+fn parse_win_keys<'de, D: Deserializer<'de>>(d: D) -> Result<Keymap, D::Error> {
+    Ok(win_keymap(BTreeMap::deserialize(d)?, |e| log::warn!("hyper win_keys: {e}")))
 }
 
 impl<'de> Deserialize<'de> for Keymap {
@@ -472,6 +505,12 @@ p = "paste_plain"
 f1 = "caption"
 f2 = "MediaPlayPause"
 f3 = "MediaPrev"
+
+[hyper.win_keys]
+# Win + key with no other modifier, mapped to keys to press instead. Without this table these defaults apply;
+# leave it empty to keep Windows' own shortcuts.
+e = "Win+2"
+t = "Ctrl+Shift+T"
 "#
     };
 }
@@ -571,6 +610,8 @@ max_items = 20000
 enabled = true
 # Mouse speed (1 – 20) while CapsLock and left Alt are held.
 slow_mouse_speed = 1
+# Ctrl + mouse wheel does nothing instead of zooming.
+block_ctrl_wheel = true
 # Programs that get the terminal = ... variant of a key below.
 terminals = ["WindowsTerminal.exe"]
 
@@ -724,6 +765,16 @@ mod tests {
             let n = table.len();
             assert_eq!(keymap(table, |e| panic!("{e}")).len(), n);
         }
+        let table = doc.hyper.remove("win_keys").unwrap();
+        let n = table.len();
+        assert_eq!(win_keymap(table, |e| panic!("{e}")).len(), n);
+        let mut skipped = Vec::new();
+        let table = toml::from_str("x = 'Win+1'\nbogus = 'End'\ny = 'reload'\nz = { do = 'End' }").unwrap();
+        assert_eq!(win_keymap(table, |e| skipped.push(e)).len(), 1);
+        assert_eq!(skipped.len(), 3, "{skipped:?}");
+        let h = parse("[hyper]\nblock_ctrl_wheel = false\n[hyper.win_keys]").unwrap().hyper;
+        assert!(!h.block_ctrl_wheel && h.win_keys.is_empty());
+        assert_eq!(parse("").unwrap().hyper.win_keys, Hyper::default().win_keys);
 
         let text = "[hyper.keys]\nh = 'Home'\nbogus = 'End'\nj = { do = 'End', wheel = 1 }\nk = { wrap = ['a'] }\n\
                     l = { do = 'Left', terminal = 'nope' }\nm = { tetx = 'x' }\nn = 'Ctrl+Bogus'";
