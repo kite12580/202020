@@ -524,7 +524,7 @@ custom = []
 # args = ""
 
 [launcher.folders]
-enabled = false
+enabled = true
 weight = 1.0
 
 # Folders whose files and subfolders are searchable by name. Repeat the table for more roots.
@@ -544,7 +544,7 @@ max_items = 20000
 
 [hyper]
 # Hold CapsLock for the hyper layer, tap it for Esc. Toggle it from the tray menu. Applied by Reload config.
-enabled = false
+enabled = true
 # Mouse speed (1 – 20) while CapsLock and left Alt are held.
 slow_mouse_speed = 1
 # Programs that get the terminal = ... variant of a key below.
