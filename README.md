@@ -95,9 +95,9 @@ These are the default keys. They are listed in the config under `[hyper.keys]` a
 | `1` `2` `3` | Left / middle / right mouse button (hold to drag) | |
 | `,` `.` | Browser back / forward | |
 | `` ` `` | Context menu key | |
-| `W` | Delete word left (terminals, Vim: `Ctrl+W`) | Join with the next line |
+| `W` | Delete word left (terminals: `Ctrl+W`) | Join with the next line |
 | `Backspace` | Delete the word under the caret | |
-| `D` | Delete line (terminals, Vim: `Ctrl+U`) | Clear line |
+| `D` | Delete line (terminals: `Ctrl+U`) | Clear line |
 | `X` | Cut (copy, then `Del`) | Copy, then `Backspace` |
 | `Y` | Copy the selection, or the line if nothing is selected | Same |
 | `P` | Paste | Paste as plain text |
@@ -115,7 +115,7 @@ These are the default keys. They are listed in the config under `[hyper.keys]` a
 
 - While CapsLock and the left `Alt` are held, the mouse moves at `slow_mouse_speed`.
 - With `Ctrl`, `Shift` or `Win` also held, keys go through unchanged.
-- "Terminals" are the programs listed in `terminals`; "Vim" is gvim and nvim-qt.
+- "Terminals" are the programs listed in `terminals`.
 - Hotstrings live under `[hyper.hotstrings]`: type a key such as `sig`, press `CapsLock+Tab`, and the key is replaced by its text.
 - Copying, wrapping, plain paste, hotstrings and line deletion go through the clipboard and put back what was there. What 202020 writes is kept out of clipboard history (Win+V, Ditto), but copies the program itself makes to read the selection may show up.
 

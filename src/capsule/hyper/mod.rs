@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     UnhookWindowsHookEx, WH_MOUSE_LL, WM_MOUSEWHEEL,
 };
 
-use crate::capsule::util::{class_name, foreground, hwnd, process_path, window_ids};
+use crate::capsule::util::{foreground, hwnd, process_path, window_ids};
 use crate::capsule::{input, keyhook};
 use jobs::AlphaMsg;
 
@@ -128,14 +128,8 @@ fn target() -> Target {
 }
 
 fn classify(h: HWND) -> Target {
-    if class_name(h) == "Vim" {
-        return Target::Vim;
-    }
     let path = process_path(window_ids(h).1).unwrap_or_default();
     let exe = path.rsplit('\\').next().unwrap_or_default();
-    if exe.eq_ignore_ascii_case("nvim-qt.exe") {
-        return Target::Vim;
-    }
     if config().terminals.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
         return Target::Terminal;
     }

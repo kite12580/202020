@@ -304,7 +304,6 @@ struct BindingTable {
     text: Option<String>,
     wheel: Option<i32>,
     terminal: Option<String>,
-    vim: Option<String>,
 }
 
 fn action(s: &str) -> Result<Action, String> {
@@ -313,7 +312,7 @@ fn action(s: &str) -> Result<Action, String> {
 
 fn binding(v: toml::Value) -> Result<Binding, String> {
     if let toml::Value::String(s) = &v {
-        return Ok(Binding { action: action(s)?, terminal: None, vim: None });
+        return Ok(Binding { action: action(s)?, terminal: None });
     }
     let t: BindingTable = v.try_into().map_err(|e: toml::de::Error| e.message().to_owned())?;
     let actions = [
@@ -326,11 +325,7 @@ fn binding(v: toml::Value) -> Result<Binding, String> {
     let (Some(main), None) = (actions.next(), actions.next()) else {
         return Err("needs exactly one of do, wrap, text and wheel".into());
     };
-    Ok(Binding {
-        action: main,
-        terminal: t.terminal.as_deref().map(action).transpose()?,
-        vim: t.vim.as_deref().map(action).transpose()?,
-    })
+    Ok(Binding { action: main, terminal: t.terminal.as_deref().map(action).transpose()? })
 }
 
 fn keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(String)) -> Keymap {
@@ -364,7 +359,7 @@ macro_rules! default_keys {
 #   wrap = [open, close]   wraps the selection, or inserts both; with at_end = true, at the end of the line, then Enter
 #   text = "..."           types the text
 #   wheel = n              turns the wheel n notches, negative is down
-# plus terminal = ... and vim = ... for the programs in terminals, and for gvim and nvim-qt.
+# plus terminal = ... for the programs in terminals.
 h = "Left"
 j = "Down"
 k = "Up"
@@ -392,9 +387,9 @@ v = "Ctrl+Shift+V"
 "," = "BrowserBack"
 "." = "BrowserForward"
 "`" = "Apps"
-w = { do = "Ctrl+Shift+Left Backspace", terminal = "Ctrl+W", vim = "Ctrl+W" }
+w = { do = "Ctrl+Shift+Left Backspace", terminal = "Ctrl+W" }
 backspace = "Ctrl+Left Ctrl+Shift+Right Backspace"
-d = { do = "delete_line", terminal = "Ctrl+U", vim = "Ctrl+U" }
+d = { do = "delete_line", terminal = "Ctrl+U" }
 x = "Ctrl+Insert Delete"
 y = "copy_or_line"
 p = "Shift+Insert"
@@ -692,7 +687,7 @@ mod tests {
         }
 
         let text = "[hyper.keys]\nh = 'Home'\nbogus = 'End'\nj = { do = 'End', wheel = 1 }\nk = { wrap = ['a'] }\n\
-                    l = { do = 'Left', vim = 'nope' }\nm = { tetx = 'x' }\nn = 'Ctrl+Bogus'";
+                    l = { do = 'Left', terminal = 'nope' }\nm = { tetx = 'x' }\nn = 'Ctrl+Bogus'";
         let table: Doc = toml::from_str(text).unwrap();
         let mut skipped = Vec::new();
         let keys = keymap(table.hyper["keys"].clone(), |e| skipped.push(e));

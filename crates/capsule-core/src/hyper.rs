@@ -118,7 +118,6 @@ pub const fn cs(vk: u16) -> Chord {
 pub enum Target {
     Other,
     Terminal,
-    Vim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +201,6 @@ fn chord(s: &str) -> Option<Chord> {
 pub struct Binding {
     pub action: Action,
     pub terminal: Option<Action>,
-    pub vim: Option<Action>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -225,15 +223,10 @@ impl Keymap {
 
     pub fn get(&self, key: u16, target: impl FnOnce() -> Target) -> Option<&Action> {
         let b = self.0.get(&key)?;
-        if b.terminal.is_none() && b.vim.is_none() {
-            return Some(&b.action);
-        }
-        let special = match target() {
-            Target::Terminal => b.terminal.as_ref(),
-            Target::Vim => b.vim.as_ref(),
-            Target::Other => None,
-        };
-        Some(special.unwrap_or(&b.action))
+        Some(match &b.terminal {
+            Some(t) if target() == Target::Terminal => t,
+            _ => &b.action,
+        })
     }
 }
 
@@ -677,11 +670,11 @@ mod tests {
         let keys = |s: &str| Some(action(s).unwrap());
         let get = |key, t| CFG.keys.get(key, || t).cloned();
         assert_eq!(get(W, Target::Terminal), keys("Ctrl+W"));
-        assert_eq!(get(D, Target::Vim), keys("Ctrl+U"));
+        assert_eq!(get(D, Target::Terminal), keys("Ctrl+U"));
         assert_eq!(get(D, Target::Other), Some(Action::Job(Job::DeleteLine)));
         assert_eq!(get(U, Target::Terminal), keys("Ctrl+/"));
-        assert_eq!(get(U, Target::Vim), keys("Ctrl+Z"));
-        assert_eq!(get(M, Target::Vim), keys("Ctrl+Tab"));
+        assert_eq!(get(U, Target::Other), keys("Ctrl+Z"));
+        assert_eq!(get(M, Target::Terminal), keys("Ctrl+Tab"));
         assert_eq!(CFG.keys.get(H, || unreachable!()), keys("Left").as_ref());
         assert_eq!(CFG.alt_keys.get(D1, || unreachable!()), None);
     }
@@ -700,7 +693,7 @@ mod tests {
     fn remapped_click_and_transparency_follow_their_keys() {
         let keys: Keymap = [(A, "right_button"), (S, "transparency")]
             .into_iter()
-            .map(|(key, a)| (key, Binding { action: action(a).unwrap(), terminal: None, vim: None }))
+            .map(|(key, a)| (key, Binding { action: action(a).unwrap(), terminal: None }))
             .collect();
         let mut layer = Layer::new();
         let mut out = Vec::new();
