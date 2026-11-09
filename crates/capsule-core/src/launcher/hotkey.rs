@@ -24,6 +24,12 @@ const NAMED: &[(&str, u32)] = &[
     ("up", 0x26),
     ("right", 0x27),
     ("down", 0x28),
+    ("apps", 0x5D),
+    ("browserback", 0xA6),
+    ("browserforward", 0xA7),
+    ("medianext", 0xB0),
+    ("mediaprev", 0xB1),
+    ("mediaplaypause", 0xB3),
     ("`", 0xC0),
     ("backquote", 0xC0),
     ("-", 0xBD),
@@ -38,7 +44,7 @@ const NAMED: &[(&str, u32)] = &[
     ("/", 0xBF),
 ];
 
-fn key(name: &str) -> Option<u32> {
+pub fn key(name: &str) -> Option<u32> {
     let lower = name.to_ascii_lowercase();
     if let [c] = lower.as_bytes()
         && c.is_ascii_alphanumeric()

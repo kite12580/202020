@@ -278,7 +278,7 @@ impl Clip {
                     return;
                 }
             },
-            Job::Paste(text) => self.paste(text),
+            Job::Paste(text) => self.paste(&text),
             Job::Wrap { open, close, at_end } => {
                 let selection = if at_end {
                     input::keys(&[k(vk::END)]);
@@ -286,7 +286,7 @@ impl Clip {
                 } else {
                     self.copy().filter(|t| copy_accept(t))
                 };
-                let (text, back) = wrap_text(open, close, selection.as_deref());
+                let (text, back) = wrap_text(&open, &close, selection.as_deref());
                 let written = self.paste(&text);
                 input::repeat(vk::LEFT, back);
                 if at_end {

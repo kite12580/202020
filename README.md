@@ -75,6 +75,8 @@ The launcher keeps nothing in memory until you first open it. Its index is rebui
 
 Tap CapsLock for `Esc`. Hold it and press another key for the shortcuts below; add the left `Alt` for the second column. CapsLock itself never toggles. Turn it on or off with **CapsLock hyper** in the tray menu (on by default); its settings under `[hyper]` apply on Reload config or `CapsLock+F5`.
 
+These are the default keys. They are listed in the config under `[hyper.keys]` and `[hyper.alt_keys]`, where each key maps to keys to press (`"End Enter"`, `"Ctrl+Shift+Left"`) or an action; the comments there list the actions. Edit them and reload to remap without restarting. Without those tables the defaults apply; with them, keys left out do nothing, and entries 202020 can't read are skipped (logged at `warn`).
+
 | Key | CapsLock + key | CapsLock + Alt + key |
 |---|---|---|
 | `H` `J` `K` `L` | ← ↓ ↑ → | Select ← ↓ ↑ → |
@@ -134,7 +136,7 @@ Limitations:
 
 ## Config
 
-`config.toml` next to the exe is created on first run. Capsule bar settings live under `[capsule_bar]`, launcher settings under `[launcher]`. While the bar is running, changes apply on save; `enabled` is read at startup and set by the tray menu. See the comments in the file. If acrylic stops working (e.g. the capsule stays a solid color), set `backdrop` to `"accent"`.
+`config.toml` next to the exe is created on first run. Capsule bar settings live under `[capsule_bar]`, launcher settings under `[launcher]`, CapsLock hyper settings under `[hyper]`. While the bar is running, changes apply on save; `enabled` is read at startup and set by the tray menu. See the comments in the file. If acrylic stops working (e.g. the capsule stays a solid color), set `backdrop` to `"accent"`.
 
 To report a problem, set `level = "debug"` under `[logging]` and restart 202020. Logs go to `logs\log.txt` (and `logs\watchdog.txt` for the watchdog), including panics and crashes. `"trace"` also logs why each window was shown on or left off the capsule bar.
 

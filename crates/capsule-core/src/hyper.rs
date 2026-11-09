@@ -128,7 +128,7 @@ pub enum Button {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Job {
     CopyOrLine,
     PastePlain,
@@ -136,13 +136,13 @@ pub enum Job {
     /// the caret between them. `at_end` first moves to the end of the line,
     /// and presses Enter afterwards.
     Wrap {
-        open: &'static str,
-        close: &'static str,
+        open: String,
+        close: String,
         at_end: bool,
     },
     /// Insert text through the clipboard, so the IME and auto-closing
     /// brackets leave it alone.
-    Paste(&'static str),
+    Paste(String),
     DeleteLine,
     Hotstring,
     /// Esc, or with the mouse at the screen's left edge, place the window.
@@ -153,9 +153,9 @@ pub enum Job {
     Caption,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    Keys(&'static [Chord]),
+    Keys(Box<[Chord]>),
     Click(Button),
     /// Wheel notches, positive is up.
     Wheel(i32),
@@ -163,116 +163,79 @@ pub enum Action {
     Reload,
     Transparency,
     SwitchDesktop,
-    Noop,
 }
 
-macro_rules! keys {
-    ($($c:expr),* $(,)?) => {
-        Action::Keys({
-            const CHORDS: &[Chord] = &[$($c),*];
-            CHORDS
-        })
-    };
+const NAMED: &[(&str, Action)] = &[
+    ("copy_or_line", Action::Job(Job::CopyOrLine)),
+    ("paste_plain", Action::Job(Job::PastePlain)),
+    ("delete_line", Action::Job(Job::DeleteLine)),
+    ("hotstring", Action::Job(Job::Hotstring)),
+    ("escape_or_move", Action::Job(Job::EscapeOrMove)),
+    ("terminal", Action::Job(Job::Terminal)),
+    ("power_options", Action::Job(Job::PowerOptions)),
+    ("topmost", Action::Job(Job::Topmost)),
+    ("caption", Action::Job(Job::Caption)),
+    ("reload", Action::Reload),
+    ("transparency", Action::Transparency),
+    ("switch_desktop", Action::SwitchDesktop),
+    ("left_button", Action::Click(Button::Left)),
+    ("middle_button", Action::Click(Button::Middle)),
+    ("right_button", Action::Click(Button::Right)),
+];
+
+/// A named action, or chords separated by spaces such as `End Shift+Home`.
+pub fn action(s: &str) -> Option<Action> {
+    if let Some((_, a)) = NAMED.iter().find(|(name, _)| *name == s) {
+        return Some(a.clone());
+    }
+    let chords = s.split_whitespace().map(chord).collect::<Option<Box<[Chord]>>>()?;
+    (!chords.is_empty()).then_some(Action::Keys(chords))
 }
 
-const fn wrap(open: &'static str, close: &'static str) -> Action {
-    Action::Job(Job::Wrap { open, close, at_end: false })
+fn chord(s: &str) -> Option<Chord> {
+    use crate::launcher::hotkey::{self, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+    let (mods, vk) = hotkey::parse(s)?;
+    let bit = |m, b| if mods & m != 0 { b } else { 0 };
+    let mods = bit(MOD_CONTROL, CTRL) | bit(MOD_SHIFT, SHIFT) | bit(MOD_ALT, ALT) | bit(MOD_WIN, WIN);
+    Some(Chord { mods, vk: vk as u16 })
 }
 
-pub fn lookup(key: u16, alt: bool, target: impl FnOnce() -> Target) -> Action {
-    use vk::*;
-    if alt {
-        return match key {
-            H => keys![s(LEFT)],
-            J => keys![s(DOWN)],
-            K => keys![s(UP)],
-            L => keys![s(RIGHT)],
-            E => keys![cs(RIGHT)],
-            B => keys![cs(LEFT)],
-            SEMICOLON => keys![s(HOME)],
-            QUOTE => keys![s(END)],
-            G => keys![c(HOME)],
-            Q => Action::Wheel(-2),
-            R => Action::Wheel(2),
-            O => keys![k(HOME), k(RETURN), k(UP)],
-            U => keys![c(Y)],
-            Z => keys![cs(S)],
-            V => Action::SwitchDesktop,
-            W => keys![k(END), s(DOWN), s(HOME), k(BACK)],
-            D => keys![k(END), s(HOME), k(DELETE)],
-            X => keys![c(INSERT), k(BACK)],
-            Y => Action::Job(Job::CopyOrLine),
-            P => Action::Job(Job::PastePlain),
-            D9 => wrap("\"", "\""),
-            D0 => wrap("'", "'"),
-            LBRACKET => wrap("[", "]"),
-            F => Action::Job(Job::EscapeOrMove),
-            T => Action::Job(Job::Terminal),
-            F1 => Action::Job(Job::Caption),
-            F2 => keys![k(MEDIA_PLAY_PAUSE)],
-            F3 => keys![k(MEDIA_PREV_TRACK)],
-            _ => Action::Noop,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub action: Action,
+    pub terminal: Option<Action>,
+    pub vim: Option<Action>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Keymap(BTreeMap<u16, Binding>);
+
+impl FromIterator<(u16, Binding)> for Keymap {
+    fn from_iter<I: IntoIterator<Item = (u16, Binding)>>(iter: I) -> Self {
+        Keymap(iter.into_iter().collect())
+    }
+}
+
+impl Keymap {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn get(&self, key: u16, target: impl FnOnce() -> Target) -> Option<&Action> {
+        let b = self.0.get(&key)?;
+        if b.terminal.is_none() && b.vim.is_none() {
+            return Some(&b.action);
+        }
+        let special = match target() {
+            Target::Terminal => b.terminal.as_ref(),
+            Target::Vim => b.vim.as_ref(),
+            Target::Other => None,
         };
-    }
-    if let Some(b) = button(key) {
-        return Action::Click(b);
-    }
-    match key {
-        H => keys![k(LEFT)],
-        J => keys![k(DOWN)],
-        K => keys![k(UP)],
-        L => keys![k(RIGHT)],
-        E => keys![c(RIGHT)],
-        B => keys![c(LEFT)],
-        SEMICOLON => keys![k(HOME)],
-        QUOTE | RETURN => keys![k(END)],
-        SPACE => keys![k(RIGHT)],
-        G => keys![c(END)],
-        Q => keys![k(NEXT)],
-        R => keys![k(PRIOR)],
-        N => match target() {
-            Target::Vim => keys![k(F2)],
-            _ => keys![cs(TAB)],
-        },
-        M => match target() {
-            Target::Vim => keys![k(F3)],
-            _ => keys![c(TAB)],
-        },
-        O => keys![k(END), k(RETURN)],
-        U => match target() {
-            Target::Terminal => keys![c(SLASH)],
-            _ => keys![c(Z)],
-        },
-        Z => keys![c(S)],
-        C => keys![Chord { mods: ALT, vk: TAB }],
-        V => keys![cs(V)],
-        SLASH => keys![c(F)],
-        COMMA => keys![k(BROWSER_BACK)],
-        PERIOD => keys![k(BROWSER_FORWARD)],
-        BACKTICK => keys![k(APPS)],
-        W => match target() {
-            Target::Other => keys![cs(LEFT), k(BACK)],
-            _ => keys![c(W)],
-        },
-        BACK => keys![c(LEFT), cs(RIGHT), k(BACK)],
-        D => match target() {
-            Target::Other => Action::Job(Job::DeleteLine),
-            _ => keys![c(U)],
-        },
-        X => keys![c(INSERT), k(DELETE)],
-        Y => Action::Job(Job::CopyOrLine),
-        P => keys![s(INSERT)],
-        D9 => wrap("(", ")"),
-        D0 => Action::Job(Job::Paste(")")),
-        LBRACKET => Action::Job(Job::Wrap { open: " {", close: "}", at_end: true }),
-        EQUALS => wrap(" + \"", "\" + "),
-        TAB => Action::Job(Job::Hotstring),
-        F1 => Action::Job(Job::Topmost),
-        F3 => keys![k(MEDIA_NEXT_TRACK)],
-        F4 => Action::Transparency,
-        F5 => Action::Reload,
-        F9 => Action::Job(Job::PowerOptions),
-        _ => Action::Noop,
+        Some(special.unwrap_or(&b.action))
     }
 }
 
@@ -308,19 +271,6 @@ fn is_modifier(key: u16) -> bool {
     matches!(key, SHIFT | CONTROL | LSHIFT | RSHIFT | LCONTROL | RCONTROL | LWIN | RWIN)
 }
 
-fn button(key: u16) -> Option<Button> {
-    match key {
-        vk::D1 => Some(Button::Left),
-        vk::D2 => Some(Button::Middle),
-        vk::D3 => Some(Button::Right),
-        _ => None,
-    }
-}
-
-fn button_bit(b: Button) -> u8 {
-    1 << b as u8
-}
-
 fn slot(key: u16) -> (usize, u64) {
     (usize::from(key >> 6) & 3, 1u64 << (key & 63))
 }
@@ -334,10 +284,10 @@ pub struct Event {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Effect {
-    Keys(&'static [Chord]),
+pub enum Effect<'a> {
+    Keys(&'a [Chord]),
     Wheel(i32),
-    Job(Job),
+    Job(&'a Job),
     Reload,
     Button(Button, bool),
     SlowMouse(bool),
@@ -346,6 +296,7 @@ pub enum Effect {
 }
 
 const ESC: Effect = Effect::Keys(&[k(vk::ESCAPE)]);
+const BUTTONS: [Button; 3] = [Button::Left, Button::Middle, Button::Right];
 
 #[derive(Debug)]
 pub struct Layer {
@@ -354,8 +305,10 @@ pub struct Layer {
     passthrough: bool,
     alt: bool,
     swallowed: [u64; 4],
-    buttons: u8,
-    alpha_at: Option<u32>,
+    /// The key holding each of `BUTTONS` down, or 0.
+    buttons: [u16; 3],
+    /// The key that began the transparency session, and when.
+    alpha: Option<(u16, u32)>,
     desktop_right: bool,
 }
 
@@ -373,8 +326,8 @@ impl Layer {
             passthrough: false,
             alt: false,
             swallowed: [0; 4],
-            buttons: 0,
-            alpha_at: None,
+            buttons: [0; 3],
+            alpha: None,
             desktop_right: false,
         }
     }
@@ -394,14 +347,17 @@ impl Layer {
         was
     }
 
-    /// Returns whether to swallow the event. `mods` reads `CTRL`, `SHIFT`,
-    /// `WIN` and `ALT` (left Alt) as the system sees them.
-    pub fn on_key(
+    /// Returns whether to swallow the event. `keys` and `alt_keys` map the
+    /// layer without and with left Alt. `mods` reads `CTRL`, `SHIFT`, `WIN`
+    /// and `ALT` (left Alt) as the system sees them.
+    pub fn on_key<'a>(
         &mut self,
         ev: Event,
+        keys: &'a Keymap,
+        alt_keys: &'a Keymap,
         mods: impl FnOnce() -> u8,
         target: impl FnOnce() -> Target,
-        emit: &mut impl FnMut(Effect),
+        emit: &mut impl FnMut(Effect<'a>),
     ) -> bool {
         let Event { vk: key, down, time } = ev;
         if !down {
@@ -411,14 +367,14 @@ impl Layer {
             match key {
                 vk::CAPITAL => self.release_caps(time, emit),
                 vk::LMENU => self.end_alt(emit),
-                vk::F4 => self.end_alpha(time, emit),
+                _ if self.alpha.is_some_and(|(k, _)| k == key) => self.end_alpha(time, emit),
                 _ => {}
             }
-            if let Some(b) = button(key)
-                && self.buttons & button_bit(b) != 0
-            {
-                self.buttons &= !button_bit(b);
-                emit(Effect::Button(b, false));
+            for (b, held) in BUTTONS.into_iter().zip(&mut self.buttons) {
+                if *held == key {
+                    *held = 0;
+                    emit(Effect::Button(b, false));
+                }
             }
             return true;
         }
@@ -452,25 +408,35 @@ impl Layer {
             self.mark(key);
             return true;
         }
-        if self.passthrough || !in_layer(key) || mods() & (CTRL | SHIFT | WIN) != 0 {
+        if self.passthrough || mods() & (CTRL | SHIFT | WIN) != 0 {
+            return false;
+        }
+        let action = if self.alt { alt_keys } else { keys }.get(key, target);
+        if action.is_none() && !in_layer(key) {
             return false;
         }
         let repeat = self.mark(key);
-        match lookup(key, self.alt, target) {
-            Action::Keys(keys) => emit(Effect::Keys(keys)),
-            Action::Wheel(n) => emit(Effect::Wheel(n)),
+        match action {
+            None => {}
+            Some(Action::Keys(keys)) => emit(Effect::Keys(keys)),
+            Some(&Action::Wheel(n)) => emit(Effect::Wheel(n)),
             _ if repeat => {}
-            Action::Click(b) => {
-                self.buttons |= button_bit(b);
-                emit(Effect::Button(b, true));
+            Some(&Action::Click(b)) => {
+                let held = &mut self.buttons[b as usize];
+                if *held == 0 {
+                    *held = key;
+                    emit(Effect::Button(b, true));
+                }
             }
-            Action::Job(job) => emit(Effect::Job(job)),
-            Action::Reload => emit(Effect::Reload),
-            Action::Transparency => {
-                self.alpha_at = Some(time);
-                emit(Effect::AlphaBegin);
+            Some(Action::Job(job)) => emit(Effect::Job(job)),
+            Some(Action::Reload) => emit(Effect::Reload),
+            Some(Action::Transparency) => {
+                if self.alpha.is_none() {
+                    self.alpha = Some((key, time));
+                    emit(Effect::AlphaBegin);
+                }
             }
-            Action::SwitchDesktop => {
+            Some(Action::SwitchDesktop) => {
                 self.desktop_right = !self.desktop_right;
                 emit(Effect::Keys(if self.desktop_right {
                     &[Chord { mods: WIN | CTRL, vk: vk::RIGHT }]
@@ -478,12 +444,11 @@ impl Layer {
                     &[Chord { mods: WIN | CTRL, vk: vk::LEFT }]
                 }));
             }
-            Action::Noop => {}
         }
         true
     }
 
-    fn release_caps(&mut self, time: u32, emit: &mut impl FnMut(Effect)) {
+    fn release_caps<'a>(&mut self, time: u32, emit: &mut impl FnMut(Effect<'a>)) {
         let Some(at) = self.caps_at.take() else { return };
         self.end_alt(emit);
         self.end_alpha(time, emit);
@@ -493,15 +458,15 @@ impl Layer {
         self.passthrough = false;
     }
 
-    fn end_alt(&mut self, emit: &mut impl FnMut(Effect)) {
+    fn end_alt<'a>(&mut self, emit: &mut impl FnMut(Effect<'a>)) {
         if self.alt {
             self.alt = false;
             emit(Effect::SlowMouse(false));
         }
     }
 
-    fn end_alpha(&mut self, time: u32, emit: &mut impl FnMut(Effect)) {
-        if let Some(at) = self.alpha_at.take() {
+    fn end_alpha<'a>(&mut self, time: u32, emit: &mut impl FnMut(Effect<'a>)) {
+        if let Some((_, at)) = self.alpha.take() {
             emit(Effect::AlphaEnd { tap: time.wrapping_sub(at) < TAP_MS });
         }
     }
@@ -580,6 +545,10 @@ pub fn window_preset(monitor: PxRect, work: PxRect, cursor_y: i32) -> (PxRect, b
 mod tests {
     use super::vk::*;
     use super::*;
+    use crate::config::Hyper;
+    use std::sync::LazyLock;
+
+    static CFG: LazyLock<Hyper> = LazyLock::new(Hyper::default);
 
     fn ev(vk: u16, down: bool, time: u32) -> Event {
         Event { vk, down, time }
@@ -589,13 +558,13 @@ mod tests {
         layer.caps_at.is_some() || layer.swallowed != [0; 4]
     }
 
-    fn run_with(layer: &mut Layer, e: Event, mods: u8) -> (bool, Vec<Effect>) {
+    fn run_with(layer: &mut Layer, e: Event, mods: u8) -> (bool, Vec<Effect<'static>>) {
         let mut out = Vec::new();
-        let swallow = layer.on_key(e, || mods, || Target::Other, &mut |x| out.push(x));
+        let swallow = layer.on_key(e, &CFG.keys, &CFG.alt_keys, || mods, || Target::Other, &mut |x| out.push(x));
         (swallow, out)
     }
 
-    fn run(layer: &mut Layer, e: Event) -> (bool, Vec<Effect>) {
+    fn run(layer: &mut Layer, e: Event) -> (bool, Vec<Effect<'static>>) {
         run_with(layer, e, 0)
     }
 
@@ -677,7 +646,7 @@ mod tests {
         assert_eq!(run(&mut layer, ev(D1, true, 10)).1, vec![Effect::Button(Button::Left, true)]);
         assert_eq!(run(&mut layer, ev(D1, true, 40)).1, vec![]);
         assert_eq!(run(&mut layer, ev(D1, false, 50)).1, vec![Effect::Button(Button::Left, false)]);
-        assert_eq!(run(&mut layer, ev(Y, true, 60)).1, vec![Effect::Job(Job::CopyOrLine)]);
+        assert_eq!(run(&mut layer, ev(Y, true, 60)).1, vec![Effect::Job(&Job::CopyOrLine)]);
         assert_eq!(run(&mut layer, ev(Y, true, 90)).1, vec![]);
         assert_eq!(run(&mut layer, ev(F5, true, 100)).1, vec![Effect::Reload]);
     }
@@ -707,14 +676,55 @@ mod tests {
 
     #[test]
     fn targets() {
-        assert_eq!(lookup(W, false, || Target::Terminal), keys![c(W)]);
-        assert_eq!(lookup(D, false, || Target::Vim), keys![c(U)]);
-        assert_eq!(lookup(D, false, || Target::Other), Action::Job(Job::DeleteLine));
-        assert_eq!(lookup(U, false, || Target::Terminal), keys![c(SLASH)]);
-        assert_eq!(lookup(U, false, || Target::Vim), keys![c(Z)]);
-        assert_eq!(lookup(M, false, || Target::Vim), keys![k(F3)]);
-        assert_eq!(lookup(H, false, || unreachable!()), keys![k(LEFT)]);
-        assert_eq!(lookup(D1, true, || unreachable!()), Action::Noop);
+        let keys = |s: &str| Some(action(s).unwrap());
+        let get = |key, t| CFG.keys.get(key, || t).cloned();
+        assert_eq!(get(W, Target::Terminal), keys("Ctrl+W"));
+        assert_eq!(get(D, Target::Vim), keys("Ctrl+U"));
+        assert_eq!(get(D, Target::Other), Some(Action::Job(Job::DeleteLine)));
+        assert_eq!(get(U, Target::Terminal), keys("Ctrl+/"));
+        assert_eq!(get(U, Target::Vim), keys("Ctrl+Z"));
+        assert_eq!(get(M, Target::Vim), keys("F3"));
+        assert_eq!(CFG.keys.get(H, || unreachable!()), keys("Left").as_ref());
+        assert_eq!(CFG.alt_keys.get(D1, || unreachable!()), None);
+    }
+
+    #[test]
+    fn actions() {
+        assert_eq!(action("End Shift+Home"), Some(Action::Keys(Box::new([k(END), s(HOME)]))));
+        assert_eq!(action("Ctrl+Shift+Alt+Win+,"), Some(Action::Keys(Box::new([Chord { mods: 15, vk: COMMA }]))));
+        assert_eq!(action("left_button"), Some(Action::Click(Button::Left)));
+        for bad in ["", " ", "Left Bogus", "Ctrl+", "Left_Button"] {
+            assert_eq!(action(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn remapped_click_and_transparency_follow_their_keys() {
+        let keys: Keymap = [(A, "right_button"), (S, "transparency")]
+            .into_iter()
+            .map(|(key, a)| (key, Binding { action: action(a).unwrap(), terminal: None, vim: None }))
+            .collect();
+        let mut layer = Layer::new();
+        let mut out = Vec::new();
+        let mut press = |layer: &mut Layer, vk, down, time| {
+            layer.on_key(ev(vk, down, time), &keys, &keys, || 0, || Target::Other, &mut |x| out.push(x))
+        };
+        press(&mut layer, CAPITAL, true, 0);
+        press(&mut layer, A, true, 10);
+        press(&mut layer, S, true, 20);
+        press(&mut layer, F4, false, 30);
+        press(&mut layer, A, false, 40);
+        press(&mut layer, S, false, 50);
+        assert!(!press(&mut layer, INSERT, true, 60));
+        assert_eq!(
+            out,
+            [
+                Effect::Button(Button::Right, true),
+                Effect::AlphaBegin,
+                Effect::Button(Button::Right, false),
+                Effect::AlphaEnd { tap: true },
+            ]
+        );
     }
 
     #[test]

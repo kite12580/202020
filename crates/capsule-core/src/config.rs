@@ -1,6 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use toml_edit::{Array, DocumentMut, value};
+
+use crate::hyper::{self, Action, Binding, Job, Keymap};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(default)]
@@ -265,17 +267,90 @@ pub struct Hyper {
     pub terminals: Vec<String>,
     pub terminal: Program,
     pub hotstrings: BTreeMap<String, String>,
+    pub keys: Keymap,
+    pub alt_keys: Keymap,
 }
 
 impl Default for Hyper {
     fn default() -> Self {
+        #[derive(Deserialize)]
+        struct Doc {
+            hyper: Keys,
+        }
+        #[derive(Deserialize)]
+        struct Keys {
+            keys: Keymap,
+            alt_keys: Keymap,
+        }
+        let Doc { hyper: Keys { keys, alt_keys } } = toml::from_str(DEFAULT_KEYS).expect("DEFAULT_KEYS");
         Self {
             enabled: true,
             slow_mouse_speed: 1,
             terminals: vec!["WindowsTerminal.exe".into()],
             terminal: Program { command: "cmd.exe".into(), args: "/k cd /d %USERPROFILE%".into() },
             hotstrings: BTreeMap::new(),
+            keys,
+            alt_keys,
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindingTable {
+    #[serde(rename = "do")]
+    action: Option<String>,
+    wrap: Option<[String; 2]>,
+    #[serde(default)]
+    at_end: bool,
+    text: Option<String>,
+    wheel: Option<i32>,
+    terminal: Option<String>,
+    vim: Option<String>,
+}
+
+fn action(s: &str) -> Result<Action, String> {
+    hyper::action(s).ok_or_else(|| format!("{s:?} is neither keys nor an action"))
+}
+
+fn binding(v: toml::Value) -> Result<Binding, String> {
+    if let toml::Value::String(s) = &v {
+        return Ok(Binding { action: action(s)?, terminal: None, vim: None });
+    }
+    let t: BindingTable = v.try_into().map_err(|e: toml::de::Error| e.message().to_owned())?;
+    let actions = [
+        t.action.as_deref().map(action).transpose()?,
+        t.wrap.map(|[open, close]| Action::Job(Job::Wrap { open, close, at_end: t.at_end })),
+        t.text.map(|text| Action::Job(Job::Paste(text))),
+        t.wheel.map(Action::Wheel),
+    ];
+    let mut actions = actions.into_iter().flatten();
+    let (Some(main), None) = (actions.next(), actions.next()) else {
+        return Err("needs exactly one of do, wrap, text and wheel".into());
+    };
+    Ok(Binding {
+        action: main,
+        terminal: t.terminal.as_deref().map(action).transpose()?,
+        vim: t.vim.as_deref().map(action).transpose()?,
+    })
+}
+
+fn keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(String)) -> Keymap {
+    table
+        .into_iter()
+        .filter_map(|(name, v)| {
+            let Some(key) = crate::launcher::hotkey::key(&name) else {
+                skipped(format!("{name:?}: unknown key"));
+                return None;
+            };
+            binding(v).map(|b| (key as u16, b)).map_err(|e| skipped(format!("{name:?}: {e}"))).ok()
+        })
+        .collect()
+}
+
+impl<'de> Deserialize<'de> for Keymap {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(keymap(BTreeMap::deserialize(d)?, |e| log::warn!("hyper keys: {e}")))
     }
 }
 
@@ -286,7 +361,101 @@ pub struct Program {
     pub args: String,
 }
 
-pub const DEFAULT_TEXT: &str = r#"# 202020 settings. Capsule bar changes apply on save while it is running.
+macro_rules! default_keys {
+    () => {
+        r#"[hyper.keys]
+# CapsLock + key. Without this table these defaults apply; with it, keys left out of it do nothing.
+# A value is either keys to press, separated by spaces ("End Enter", "Ctrl+Shift+Left"), or one of the actions
+# copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, terminal, power_options, topmost, caption,
+# reload, transparency, switch_desktop, left_button, middle_button and right_button (held while the key is).
+# A table instead holds one of:
+#   do = keys or an action
+#   wrap = [open, close]   wraps the selection, or inserts both; with at_end = true, at the end of the line, then Enter
+#   text = "..."           types the text
+#   wheel = n              turns the wheel n notches, negative is down
+# plus terminal = ... and vim = ... for the programs in terminals, and for gvim and nvim-qt.
+h = "Left"
+j = "Down"
+k = "Up"
+l = "Right"
+e = "Ctrl+Right"
+b = "Ctrl+Left"
+";" = "Home"
+"'" = "End"
+enter = "End"
+space = "Right"
+g = "Ctrl+End"
+r = "PageUp"
+q = "PageDown"
+n = { do = "Ctrl+Shift+Tab", vim = "F2" }
+m = { do = "Ctrl+Tab", vim = "F3" }
+o = "End Enter"
+u = { do = "Ctrl+Z", terminal = "Ctrl+/" }
+z = "Ctrl+S"
+c = "Alt+Tab"
+v = "Ctrl+Shift+V"
+"/" = "Ctrl+F"
+1 = "left_button"
+2 = "middle_button"
+3 = "right_button"
+"," = "BrowserBack"
+"." = "BrowserForward"
+"`" = "Apps"
+w = { do = "Ctrl+Shift+Left Backspace", terminal = "Ctrl+W", vim = "Ctrl+W" }
+backspace = "Ctrl+Left Ctrl+Shift+Right Backspace"
+d = { do = "delete_line", terminal = "Ctrl+U", vim = "Ctrl+U" }
+x = "Ctrl+Insert Delete"
+y = "copy_or_line"
+p = "Shift+Insert"
+9 = { wrap = ["(", ")"] }
+0 = { text = ")" }
+"[" = { wrap = [" {", "}"], at_end = true }
+"=" = { wrap = [' + "', '" + '] }
+tab = "hotstring"
+f1 = "topmost"
+f3 = "MediaNext"
+f4 = "transparency"
+f5 = "reload"
+f9 = "power_options"
+
+[hyper.alt_keys]
+# CapsLock + left Alt + key, written as above.
+h = "Shift+Left"
+j = "Shift+Down"
+k = "Shift+Up"
+l = "Shift+Right"
+e = "Ctrl+Shift+Right"
+b = "Ctrl+Shift+Left"
+";" = "Shift+Home"
+"'" = "Shift+End"
+g = "Ctrl+Home"
+r = { wheel = 2 }
+q = { wheel = -2 }
+o = "Home Enter Up"
+u = "Ctrl+Y"
+z = "Ctrl+Shift+S"
+v = "switch_desktop"
+w = "End Shift+Down Shift+Home Backspace"
+d = "End Shift+Home Delete"
+x = "Ctrl+Insert Backspace"
+y = "copy_or_line"
+p = "paste_plain"
+9 = { wrap = ['"', '"'] }
+0 = { wrap = ["'", "'"] }
+"[" = { wrap = ["[", "]"] }
+f = "escape_or_move"
+t = "terminal"
+f1 = "caption"
+f2 = "MediaPlayPause"
+f3 = "MediaPrev"
+"#
+    };
+}
+
+const DEFAULT_KEYS: &str = default_keys!();
+
+pub const DEFAULT_TEXT: &str = concat!(
+    r#"# 202020 settings. Capsule bar changes apply on save while it is running.
 
 [capsule_bar]
 # Replace the Windows taskbar with the capsule bar. Toggle it from the tray menu.
@@ -355,7 +524,7 @@ custom = []
 # args = ""
 
 [launcher.folders]
-enabled = true
+enabled = false
 weight = 1.0
 
 # Folders whose files and subfolders are searchable by name. Repeat the table for more roots.
@@ -382,10 +551,10 @@ max_items = 20000
 
 [hyper]
 # Hold CapsLock for the hyper layer, tap it for Esc. Toggle it from the tray menu. Applied by Reload config.
-enabled = true
+enabled = false
 # Mouse speed (1 – 20) while CapsLock and left Alt are held.
 slow_mouse_speed = 1
-# Programs where CapsLock+W, D and U send Ctrl+W, Ctrl+U and Ctrl+/ for the shell.
+# Programs that get the terminal = ... variant of a key below.
 terminals = ["WindowsTerminal.exe"]
 
 [hyper.terminal]
@@ -397,11 +566,15 @@ args = "/k cd /d %USERPROFILE%"
 # Type a key, then CapsLock+Tab replaces it with the text. Keys match the end of the line, ignoring case.
 # sig = "Best regards,\nMe"
 
+"#,
+    default_keys!(),
+    r#"
 [logging]
 # Write logs to the logs folder next to the exe: "off", "error", "warn", "info", "debug" or "trace". Use "debug" when
 # reporting a problem; "trace" also logs why each window was shown on or left off the capsule bar. Read at startup.
 level = "off"
-"#;
+"#
+);
 
 pub fn parse(text: &str) -> Result<Config, String> {
     let mut config: Config = toml::from_str(text).map_err(|e| e.to_string())?;
@@ -526,6 +699,31 @@ mod tests {
         let t = set_hyper_enabled(DEFAULT_TEXT, false);
         assert!(t.contains("# Hold CapsLock"));
         assert!(!parse(&t).unwrap().hyper.enabled);
+    }
+
+    #[test]
+    fn keymaps() {
+        #[derive(Deserialize)]
+        struct Doc {
+            hyper: BTreeMap<String, BTreeMap<String, toml::Value>>,
+        }
+        let mut doc: Doc = toml::from_str(DEFAULT_KEYS).unwrap();
+        for name in ["keys", "alt_keys"] {
+            let table = doc.hyper.remove(name).unwrap();
+            let n = table.len();
+            assert_eq!(keymap(table, |e| panic!("{e}")).len(), n);
+        }
+
+        let text = "[hyper.keys]\nh = 'Home'\nbogus = 'End'\nj = { do = 'End', wheel = 1 }\nk = { wrap = ['a'] }\n\
+                    l = { do = 'Left', vim = 'nope' }\nm = { tetx = 'x' }\nn = 'Ctrl+Bogus'";
+        let table: Doc = toml::from_str(text).unwrap();
+        let mut skipped = Vec::new();
+        let keys = keymap(table.hyper["keys"].clone(), |e| skipped.push(e));
+        assert_eq!(keys.len(), 1);
+        assert_eq!(skipped.len(), 6, "{skipped:?}");
+        let h = parse(text).unwrap().hyper;
+        assert_eq!(h.keys, keys);
+        assert_eq!(h.alt_keys, Hyper::default().alt_keys);
     }
 
     #[test]

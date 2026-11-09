@@ -42,6 +42,7 @@ thread_local! {
     static TARGET: Cell<(isize, u32, Target)> = const { Cell::new((0, u32::MAX, Target::Other)) };
     static SAVED_SPEED: Cell<Option<u32>> = const { Cell::new(None) };
     static ALPHA: RefCell<Option<Alpha>> = const { RefCell::new(None) };
+    static KEYMAPS: RefCell<Option<(u32, Arc<Hyper>)>> = const { RefCell::new(None) };
 }
 
 pub fn init(opts: Options) {
@@ -74,21 +75,31 @@ fn config() -> Arc<Hyper> {
 pub(super) fn on_key(vk_code: u32, down: bool, time: u32) -> bool {
     LAYER.with(|layer| {
         let Ok(mut layer) = layer.try_borrow_mut() else { return false };
-        layer.on_key(Event { vk: vk_code as u16, down, time }, input::held_mods, target, &mut run)
+        KEYMAPS.with(|cached| {
+            let mut cached = cached.borrow_mut();
+            let generation = GENERATION.load(Relaxed);
+            if cached.as_ref().is_none_or(|(g, _)| *g != generation) {
+                *cached = Some((generation, config()));
+            }
+            let Some((_, cfg)) = cached.as_ref() else { return false };
+            let ev = Event { vk: vk_code as u16, down, time };
+            layer.on_key(ev, &cfg.keys, &cfg.alt_keys, input::held_mods, target, &mut |e| run(e, cfg))
+        })
     })
 }
 
 pub(super) fn reset() {
     LAYER.with(|l| *l.borrow_mut() = Layer::new());
+    KEYMAPS.with(|k| k.borrow_mut().take());
     slow_mouse(false);
     end_alpha(false);
 }
 
-fn run(effect: Effect) {
+fn run(effect: Effect, cfg: &Arc<Hyper>) {
     match effect {
         Effect::Keys(keys) => input::keys(keys),
         Effect::Wheel(n) => input::wheel(n),
-        Effect::Job(job) => jobs::spawn(job, config()),
+        Effect::Job(job) => jobs::spawn(job.clone(), cfg.clone()),
         Effect::Reload => {
             if let Some(o) = OPTIONS.get() {
                 unsafe {
