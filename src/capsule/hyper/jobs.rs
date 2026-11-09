@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
-use crate::capsule::util::{env, foreground, hwnd, px_rect, wide};
+use crate::capsule::util::{foreground, hwnd, px_rect, wide};
 use crate::capsule::{clipboard, input};
 
 const COPY_TIMEOUT: Duration = Duration::from_millis(100);
@@ -55,7 +55,6 @@ fn run(job: Job, cfg: &Hyper) {
         Job::Topmost => toggle_topmost(),
         Job::Caption => toggle_caption(),
         Job::EscapeOrMove => escape_or_move(),
-        Job::Terminal => launch(&cfg.terminal.command, &cfg.terminal.args),
         Job::PowerOptions => launch("control.exe", "/name Microsoft.PowerOptions"),
         Job::CopyOrLine => {
             if let Some(clip) = Clip::new() {
@@ -112,7 +111,7 @@ fn escape_or_move() {
 }
 
 fn launch(command: &str, args: &str) {
-    let mut line = wide(&format!("\"{}\" {}", env(command), env(args)));
+    let mut line = wide(&format!("\"{command}\" {args}"));
     let startup = STARTUPINFOW { cb: size_of::<STARTUPINFOW>() as u32, ..Default::default() };
     let mut info = PROCESS_INFORMATION::default();
     unsafe {

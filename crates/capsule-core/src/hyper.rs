@@ -147,7 +147,6 @@ pub enum Job {
     Hotstring,
     /// Esc, or with the mouse at the screen's left edge, place the window.
     EscapeOrMove,
-    Terminal,
     PowerOptions,
     Topmost,
     Caption,
@@ -171,7 +170,6 @@ const NAMED: &[(&str, Action)] = &[
     ("delete_line", Action::Job(Job::DeleteLine)),
     ("hotstring", Action::Job(Job::Hotstring)),
     ("escape_or_move", Action::Job(Job::EscapeOrMove)),
-    ("terminal", Action::Job(Job::Terminal)),
     ("power_options", Action::Job(Job::PowerOptions)),
     ("topmost", Action::Job(Job::Topmost)),
     ("caption", Action::Job(Job::Caption)),
@@ -683,7 +681,7 @@ mod tests {
         assert_eq!(get(D, Target::Other), Some(Action::Job(Job::DeleteLine)));
         assert_eq!(get(U, Target::Terminal), keys("Ctrl+/"));
         assert_eq!(get(U, Target::Vim), keys("Ctrl+Z"));
-        assert_eq!(get(M, Target::Vim), keys("F3"));
+        assert_eq!(get(M, Target::Vim), keys("Ctrl+Tab"));
         assert_eq!(CFG.keys.get(H, || unreachable!()), keys("Left").as_ref());
         assert_eq!(CFG.alt_keys.get(D1, || unreachable!()), None);
     }

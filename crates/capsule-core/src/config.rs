@@ -265,7 +265,6 @@ pub struct Hyper {
     pub enabled: bool,
     pub slow_mouse_speed: u32,
     pub terminals: Vec<String>,
-    pub terminal: Program,
     pub hotstrings: BTreeMap<String, String>,
     pub keys: Keymap,
     pub alt_keys: Keymap,
@@ -287,7 +286,6 @@ impl Default for Hyper {
             enabled: true,
             slow_mouse_speed: 1,
             terminals: vec!["WindowsTerminal.exe".into()],
-            terminal: Program { command: "cmd.exe".into(), args: "/k cd /d %USERPROFILE%".into() },
             hotstrings: BTreeMap::new(),
             keys,
             alt_keys,
@@ -354,19 +352,12 @@ impl<'de> Deserialize<'de> for Keymap {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
-#[serde(default)]
-pub struct Program {
-    pub command: String,
-    pub args: String,
-}
-
 macro_rules! default_keys {
     () => {
         r#"[hyper.keys]
 # CapsLock + key. Without this table these defaults apply; with it, keys left out of it do nothing.
 # A value is either keys to press, separated by spaces ("End Enter", "Ctrl+Shift+Left"), or one of the actions
-# copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, terminal, power_options, topmost, caption,
+# copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, power_options, topmost, caption,
 # reload, transparency, switch_desktop, left_button, middle_button and right_button (held while the key is).
 # A table instead holds one of:
 #   do = keys or an action
@@ -387,8 +378,8 @@ space = "Right"
 g = "Ctrl+End"
 r = "PageUp"
 q = "PageDown"
-n = { do = "Ctrl+Shift+Tab", vim = "F2" }
-m = { do = "Ctrl+Tab", vim = "F3" }
+n = "Ctrl+Shift+Tab"
+m = "Ctrl+Tab"
 o = "End Enter"
 u = { do = "Ctrl+Z", terminal = "Ctrl+/" }
 z = "Ctrl+S"
@@ -444,7 +435,6 @@ p = "paste_plain"
 0 = { wrap = ["'", "'"] }
 "[" = { wrap = ["[", "]"] }
 f = "escape_or_move"
-t = "terminal"
 f1 = "caption"
 f2 = "MediaPlayPause"
 f3 = "MediaPrev"
@@ -549,11 +539,6 @@ enabled = true
 slow_mouse_speed = 1
 # Programs that get the terminal = ... variant of a key below.
 terminals = ["WindowsTerminal.exe"]
-
-[hyper.terminal]
-# Started by CapsLock+Alt+T. %VARIABLES% are expanded.
-command = "cmd.exe"
-args = "/k cd /d %USERPROFILE%"
 
 [hyper.hotstrings]
 # Type a key, then CapsLock+Tab replaces it with the text. Keys match the end of the line, ignoring case.
@@ -686,7 +671,6 @@ mod tests {
         let h = parse("[hyper]\nslow_mouse_speed = 50\n[hyper.hotstrings]\nsig = 'a\\nb'").unwrap().hyper;
         assert!(h.enabled);
         assert_eq!(h.slow_mouse_speed, 20);
-        assert_eq!(h.terminal.command, "cmd.exe");
         assert_eq!(h.hotstrings["sig"], "a\\nb");
         assert_eq!(parse("[hyper.hotstrings]\nsig = \"a\\nb\"").unwrap().hyper.hotstrings["sig"], "a\nb");
         let t = set_hyper_enabled(DEFAULT_TEXT, false);

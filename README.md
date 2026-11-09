@@ -85,7 +85,7 @@ These are the default keys. They are listed in the config under `[hyper.keys]` a
 | `Enter` `Space` | End / → | |
 | `G` | End of document | Start of document |
 | `R` `Q` | Page up / down | Wheel up / down |
-| `N` `M` | Previous / next tab (Vim: `F2` / `F3`) | |
+| `N` `M` | Previous / next tab | |
 | `O` | New line below | New line above |
 | `U` | Undo (terminals: `Ctrl+/`) | Redo |
 | `Z` | Save | Save all (`Ctrl+Shift+S`) |
@@ -107,7 +107,6 @@ These are the default keys. They are listed in the config under `[hyper.keys]` a
 | `=` | Wrap in ` + "` … `" + ` | |
 | `Tab` | Expand the hotstring before the caret | |
 | `F` | | `Esc`; with the mouse at the screen's left edge, move the window: top → small, middle → large, bottom → bottom-right corner and always on top |
-| `T` | | Open the `[hyper.terminal]` command (`cmd.exe` in your profile folder) |
 | `F1` | Toggle always on top | Toggle the title bar |
 | `F2` `F3` | — / next track | Play-pause / previous track |
 | `F4` | Tap: toggle transparency. Hold and turn the wheel: adjust it | |
