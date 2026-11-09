@@ -398,6 +398,7 @@ p = "Shift+Insert"
 "[" = { wrap = [" {", "}"], at_end = true }
 "=" = { wrap = [' + "', '" + '] }
 tab = "hotstring"
+f = "escape_or_move"
 f1 = "topmost"
 f3 = "MediaNext"
 f4 = "transparency"
@@ -429,7 +430,6 @@ p = "paste_plain"
 9 = { wrap = ['"', '"'] }
 0 = { wrap = ["'", "'"] }
 "[" = { wrap = ["[", "]"] }
-f = "escape_or_move"
 f1 = "caption"
 f2 = "MediaPlayPause"
 f3 = "MediaPrev"
@@ -528,7 +528,7 @@ include_dirs = false
 max_items = 20000
 
 [hyper]
-# Hold CapsLock for the hyper layer, tap it for Esc. Toggle it from the tray menu. Applied by Reload config.
+# Hold CapsLock for the hyper layer, tap it for Esc, press Shift+CapsLock for CapsLock. Toggle it from the tray menu. Applied by Reload config.
 enabled = true
 # Mouse speed (1 – 20) while CapsLock and left Alt are held.
 slow_mouse_speed = 1

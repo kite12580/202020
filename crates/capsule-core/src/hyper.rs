@@ -292,6 +292,8 @@ const BUTTONS: [Button; 3] = [Button::Left, Button::Middle, Button::Right];
 #[derive(Debug)]
 pub struct Layer {
     caps_at: Option<u32>,
+    /// CapsLock went down with Shift held and goes to the system until released.
+    caps_through: bool,
     used: bool,
     passthrough: bool,
     alt: bool,
@@ -313,6 +315,7 @@ impl Layer {
     pub const fn new() -> Self {
         Layer {
             caps_at: None,
+            caps_through: false,
             used: false,
             passthrough: false,
             alt: false,
@@ -352,6 +355,9 @@ impl Layer {
     ) -> bool {
         let Event { vk: key, down, time } = ev;
         if !down {
+            if key == vk::CAPITAL {
+                self.caps_through = false;
+            }
             if !self.take(key) {
                 return false;
             }
@@ -370,8 +376,16 @@ impl Layer {
             return true;
         }
         if key == vk::CAPITAL {
+            if self.caps_through {
+                return false;
+            }
             if !self.mark(key) && self.caps_at.is_none() {
                 let mods = mods();
+                if mods & SHIFT != 0 {
+                    self.take(key);
+                    self.caps_through = true;
+                    return false;
+                }
                 self.caps_at = Some(time);
                 self.used = mods != 0;
                 self.passthrough = mods & ALT != 0;
@@ -576,6 +590,18 @@ mod tests {
 
         run(&mut layer, ev(CAPITAL, true, u32::MAX - 10));
         assert_eq!(run(&mut layer, ev(CAPITAL, false, 20)).1, vec![ESC]);
+    }
+
+    #[test]
+    fn shift_caps_goes_to_the_system() {
+        let mut layer = Layer::new();
+        assert_eq!(run_with(&mut layer, ev(CAPITAL, true, 0), super::SHIFT), (false, vec![]));
+        assert_eq!(run(&mut layer, ev(CAPITAL, true, 30)), (false, vec![]));
+        assert!(!run(&mut layer, ev(H, true, 40)).0);
+        assert_eq!(run(&mut layer, ev(CAPITAL, false, 50)), (false, vec![]));
+        assert!(!engaged(&layer));
+        run(&mut layer, ev(CAPITAL, true, 1000));
+        assert_eq!(run(&mut layer, ev(CAPITAL, false, 1010)), (true, vec![ESC]));
     }
 
     #[test]

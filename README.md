@@ -73,7 +73,7 @@ The launcher keeps nothing in memory until you first open it. Its index is rebui
 
 ## CapsLock hyper
 
-Tap CapsLock for `Esc`. Hold it and press another key for the shortcuts below; add the left `Alt` for the second column. CapsLock itself never toggles. Turn it on or off with **CapsLock hyper** in the tray menu (on by default); its settings under `[hyper]` apply on Reload config or `CapsLock+F5`.
+Tap CapsLock for `Esc`. Hold it and press another key for the shortcuts below; add the left `Alt` for the second column. `Shift+CapsLock` toggles CapsLock. Turn it on or off with **CapsLock hyper** in the tray menu (on by default); its settings under `[hyper]` apply on Reload config or `CapsLock+F5`.
 
 These are the default keys. They are listed in the config under `[hyper.keys]` and `[hyper.alt_keys]`, where each key maps to keys to press (`"End Enter"`, `"Ctrl+Shift+Left"`) or an action; the comments there list the actions. Edit them and reload to remap without restarting. Without those tables the defaults apply; with them, keys left out do nothing, and entries 202020 can't read are skipped (logged at `warn`).
 
@@ -106,7 +106,7 @@ These are the default keys. They are listed in the config under `[hyper.keys]` a
 | `[` | ` {` + new line + `}` at the end of the line | Wrap in `[ ]` |
 | `=` | Wrap in ` + "` … `" + ` | |
 | `Tab` | Expand the hotstring before the caret | |
-| `F` | | `Esc`; with the mouse at the screen's left edge, move the window: top → small, middle → large, bottom → bottom-right corner and always on top |
+| `F` | `Esc`; with the mouse at the screen's left edge, move the window: top → small, middle → large, bottom → bottom-right corner and always on top | |
 | `F1` | Toggle always on top | Toggle the title bar |
 | `F2` `F3` | — / next track | Play-pause / previous track |
 | `F4` | Tap: toggle transparency. Hold and turn the wheel: adjust it | |
