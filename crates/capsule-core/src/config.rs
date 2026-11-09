@@ -541,13 +541,6 @@ exclude = []
 include_dirs = false
 # Stop scanning this root after this many entries.
 max_items = 20000
-# Shortcuts (.lnk, .url) open their target:
-# [[launcher.folders.roots]]
-# path = "%USERPROFILE%\\Desktop"
-# depth = 1
-# extensions = ["lnk", "url"]
-# exclude = []
-# include_dirs = false
 
 [hyper]
 # Hold CapsLock for the hyper layer, tap it for Esc. Toggle it from the tray menu. Applied by Reload config.
