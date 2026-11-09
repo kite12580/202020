@@ -70,12 +70,14 @@ const CMD_BAR: i32 = 5;
 const CMD_EDIT_CONFIG: i32 = 6;
 const CMD_RELOAD_CONFIG: i32 = 7;
 const CMD_LAUNCHER: i32 = 8;
+const CMD_HYPER: i32 = 9;
 
 const LAUNCHER_COMMANDS: &[AppCommand] = &[
     AppCommand { id: CMD_TOGGLE as u32, name: "Pause or resume timer  暂停 继续计时" },
     AppCommand { id: CMD_BREAK as u32, name: "Break now  立即休息" },
     AppCommand { id: CMD_RESET as u32, name: "Reset timer  重置计时" },
     AppCommand { id: CMD_BAR as u32, name: "Toggle capsule bar  切换胶囊栏" },
+    AppCommand { id: CMD_HYPER as u32, name: "Toggle CapsLock hyper  切换 CapsLock 超级键" },
     AppCommand { id: CMD_EDIT_CONFIG as u32, name: "Edit config  编辑配置" },
     AppCommand { id: CMD_RELOAD_CONFIG as u32, name: "Reload config  重新加载配置" },
 ];
@@ -146,6 +148,7 @@ struct App {
     bar_opts: capsule::Options,
     bar: BarState,
     launcher: LauncherState,
+    hyper: bool,
     restarting: bool,
     quitting: bool,
 }
@@ -386,6 +389,7 @@ impl App {
             bar.reload_config();
         }
         self.apply_launcher();
+        self.apply_hyper();
     }
 
     /// Registers the launcher hotkey from the config, or frees the launcher.
@@ -413,6 +417,15 @@ impl App {
         self.apply_launcher();
     }
 
+    fn apply_hyper(&mut self) {
+        self.hyper = capsule::hyper::apply(capsule::hyper_config());
+    }
+
+    fn toggle_hyper(&mut self) {
+        capsule::set_hyper_enabled(!self.hyper);
+        self.apply_hyper();
+    }
+
     fn on_bar_exited(&mut self) {
         if let BarState::Running(bar) | BarState::Stopping(bar) = std::mem::replace(&mut self.bar, BarState::Off) {
             bar.join();
@@ -430,6 +443,7 @@ impl App {
             return self.stop_bar();
         }
         self.dismiss_break();
+        capsule::hyper::stop();
         launcher::flush_history();
         launcher::unload();
         self.notify(NIM_DELETE);
@@ -499,13 +513,13 @@ fn paint_overlay(hdc: HDC, overlay: &Overlay) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let Some((paused, bar_flags, launcher)) = with_app(|app| {
+    let Some((paused, bar_flags, launcher, hyper)) = with_app(|app| {
         let bar_flags = match app.bar {
             BarState::Off => MF_UNCHECKED,
             BarState::Running(_) => MF_CHECKED,
             BarState::Stopping(_) => MF_GRAYED,
         };
-        (app.paused, bar_flags, app.launcher)
+        (app.paused, bar_flags, app.launcher, app.hyper)
     }) else {
         return;
     };
@@ -518,6 +532,7 @@ fn show_menu(hwnd: HWND) {
                 LauncherState::On => (MF_STRING | MF_CHECKED, CMD_LAUNCHER, w!("Launcher")),
                 LauncherState::NoHotkey => (MF_STRING | MF_CHECKED, CMD_LAUNCHER, w!("Launcher (hotkey unavailable)")),
             },
+            (MF_STRING | if hyper { MF_CHECKED } else { MF_UNCHECKED }, CMD_HYPER, w!("CapsLock hyper")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
             (MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") }),
             (MF_STRING, CMD_BREAK, w!("Break now")),
@@ -550,6 +565,7 @@ fn run_command(cmd: i32) {
         CMD_QUIT => with_app(App::quit),
         CMD_BAR => with_app(App::toggle_bar),
         CMD_LAUNCHER => with_app(App::toggle_launcher),
+        CMD_HYPER => with_app(App::toggle_hyper),
         CMD_EDIT_CONFIG => {
             capsule::edit_config();
             None
@@ -718,6 +734,7 @@ fn main() {
             },
             bar: BarState::Off,
             launcher: LauncherState::Off,
+            hyper: false,
             restarting: false,
             quitting: false,
         };
@@ -733,6 +750,12 @@ fn main() {
             commands: LAUNCHER_COMMANDS,
         });
         with_app(App::apply_launcher);
+        capsule::hyper::init(capsule::hyper::Options {
+            owner: hwnd.0 as isize,
+            command_msg: WM_LAUNCHER_CMD,
+            reload_command: CMD_RELOAD_CONFIG as u32,
+        });
+        with_app(App::apply_hyper);
 
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);
         let _ = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);

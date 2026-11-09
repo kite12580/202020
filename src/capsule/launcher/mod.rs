@@ -1,7 +1,6 @@
 //! Spotlight-style search window. Lives on the main thread; everything but the
 //! launch history is freed after `idle_unload_minutes` without an open.
 
-mod clipboard;
 mod index;
 mod launch;
 mod sources;
@@ -36,7 +35,8 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_A, VK_BACK, VK_C, VK_CONTROL, VK_DELETE, VK_DOWN,
-    VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VK_V, VK_X,
+    VK_END, VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    VK_V, VK_X,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, GetCursorPos, GetQueueStatus, KillTimer, QS_KEY,
@@ -47,12 +47,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::capsule::config_store;
 use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
 use crate::capsule::hook::{self, Hook, HookEvent};
 use crate::capsule::theme::{self, Palette, Theme};
 use crate::capsule::util::{hwnd, lparam_point, primary_monitor, register_class, scale};
 use crate::capsule::windows_list as winlist;
+use crate::capsule::{clipboard, config_store};
 use index::{Action, Batch, Entry};
 
 /// A 202020 action offered as a command; `id` is posted as the wparam of
@@ -988,14 +988,14 @@ impl Launcher {
             v if v == VK_BACK.0 => edit(self, &|t| t.backspace(ctrl)),
             v if v == VK_DELETE.0 => edit(self, &|t| t.delete(ctrl)),
             v if ctrl && v == VK_A.0 => edit(self, &|t| t.select_all()),
-            v if ctrl && v == VK_C.0 => clipboard::set(self.hwnd, &self.input.selected_text()),
+            v if ctrl && (v == VK_C.0 || v == VK_INSERT.0) => clipboard::set(self.hwnd, &self.input.selected_text()),
             v if ctrl && v == VK_X.0 => {
                 clipboard::set(self.hwnd, &self.input.selected_text());
                 edit(self, &|t| {
                     t.delete_selection();
                 });
             }
-            v if ctrl && v == VK_V.0 => {
+            v if (ctrl && v == VK_V.0) || (shift && v == VK_INSERT.0) => {
                 let pasted = clipboard::get(self.hwnd).unwrap_or_default();
                 let line = pasted.lines().next().unwrap_or("").to_string();
                 edit(self, &|t| t.insert(&line));

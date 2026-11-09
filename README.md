@@ -1,9 +1,9 @@
 # 202020
 
-Windows tray app for the 20-20-20 rule: every 20 minutes, a fullscreen overlay on the primary monitor asks you to look away for 20 seconds. It can also replace the Windows 11 taskbar with the capsule bar, and comes with a Spotlight-style launcher on `Alt+Space`.
+Windows tray app for the 20-20-20 rule: every 20 minutes, a fullscreen overlay on the primary monitor asks you to look away for 20 seconds. It can also replace the Windows 11 taskbar with the capsule bar, comes with a Spotlight-style launcher on `Alt+Space`, and turns CapsLock into a hyper key.
 
 - Tray icon shows minutes left, a 10-second countdown before a break, or a pause symbol.
-- Click the tray icon for Capsule bar, Launcher, Pause/Resume, Break now, Reset timer, Edit config, Reload config, Quit.
+- Click the tray icon for Capsule bar, Launcher, CapsLock hyper, Pause/Resume, Break now, Reset timer, Edit config, Reload config, Quit.
 - `Win+Alt+C` toggles pause.
 - `Esc` or `Space` ends a break early.
 - The timer resets after the system sleeps.
@@ -70,6 +70,58 @@ Matching is fuzzy: the letters you type must appear in order, and matches at wor
 Each source can be turned off or weighted under `[launcher]` in the config, and the hotkey can be changed (applied by Reload config). If another program already uses the hotkey, the tray menu shows "Launcher (hotkey unavailable)". While the launcher is on, `Alt+Space` no longer opens a window's system menu.
 
 The launcher keeps nothing in memory until you first open it. Its index is rebuilt in the background each time it opens and freed after 10 minutes without use. Explorer opens what you pick, so programs start as they would from the Start menu, without administrator rights even when 202020 has them. Launch counts are kept in memory and written to `launcher_history.tsv` next to the exe only when 202020 quits or Windows shuts down.
+
+## CapsLock hyper
+
+Tap CapsLock for `Esc`. Hold it and press another key for the shortcuts below; add the left `Alt` for the second column. CapsLock itself never toggles. Turn it on or off with **CapsLock hyper** in the tray menu (on by default); its settings under `[hyper]` apply on Reload config or `CapsLock+F5`.
+
+| Key | CapsLock + key | CapsLock + Alt + key |
+|---|---|---|
+| `H` `J` `K` `L` | ← ↓ ↑ → | Select ← ↓ ↑ → |
+| `B` `E` | Word left / right | Select word left / right |
+| `;` `'` | Home / End | Select to Home / End |
+| `Enter` `Space` | End / → | |
+| `G` | End of document | Start of document |
+| `R` `Q` | Page up / down | Wheel up / down |
+| `N` `M` | Previous / next tab (Vim: `F2` / `F3`) | |
+| `O` | New line below | New line above |
+| `U` | Undo (terminals: `Ctrl+/`) | Redo |
+| `Z` | Save | Save all (`Ctrl+Shift+S`) |
+| `C` | `Alt+Tab` | |
+| `V` | Clipboard history (`Ctrl+Shift+V`) | Next / previous virtual desktop, alternating |
+| `/` | Find | |
+| `1` `2` `3` | Left / middle / right mouse button (hold to drag) | |
+| `,` `.` | Browser back / forward | |
+| `` ` `` | Context menu key | |
+| `W` | Delete word left (terminals, Vim: `Ctrl+W`) | Join with the next line |
+| `Backspace` | Delete the word under the caret | |
+| `D` | Delete line (terminals, Vim: `Ctrl+U`) | Clear line |
+| `X` | Cut (copy, then `Del`) | Copy, then `Backspace` |
+| `Y` | Copy the selection, or the line if nothing is selected | Same |
+| `P` | Paste | Paste as plain text |
+| `9` | Wrap the selection in `( )` | Wrap in `" "` |
+| `0` | Type `)` | Wrap in `' '` |
+| `[` | ` {` + new line + `}` at the end of the line | Wrap in `[ ]` |
+| `=` | Wrap in ` + "` … `" + ` | |
+| `Tab` | Expand the hotstring before the caret | |
+| `F` | | `Esc`; with the mouse at the screen's left edge, move the window: top → small, middle → large, bottom → bottom-right corner and always on top |
+| `T` | | Open the `[hyper.terminal]` command (`cmd.exe` in your profile folder) |
+| `F1` | Toggle always on top | Toggle the title bar |
+| `F2` `F3` | — / next track | Play-pause / previous track |
+| `F4` | Tap: toggle transparency. Hold and turn the wheel: adjust it | |
+| `F5` | Reload config | |
+| `F9` | Power Options | |
+
+- While CapsLock and the left `Alt` are held, the mouse moves at `slow_mouse_speed`.
+- With `Ctrl`, `Shift` or `Win` also held, keys go through unchanged.
+- "Terminals" are the programs listed in `terminals`; "Vim" is gvim and nvim-qt.
+- Hotstrings live under `[hyper.hotstrings]`: type a key such as `sig`, press `CapsLock+Tab`, and the key is replaced by its text.
+- Copying, wrapping, plain paste, hotstrings and line deletion go through the clipboard and put back what was there. What 202020 writes is kept out of clipboard history (Win+V, Ditto), but copies the program itself makes to read the selection may show up.
+
+Limitations:
+
+- Inside windows of programs running as administrator, CapsLock works as plain CapsLock unless 202020 also runs as administrator.
+- If CapsLock is released while such a window or the lock screen has focus, 202020 misses the release and keeps the layer on; tap CapsLock to clear it.
 
 ## Running
 

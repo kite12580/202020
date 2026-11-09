@@ -7,6 +7,7 @@ use toml_edit::{Array, DocumentMut, value};
 pub struct Config {
     pub capsule_bar: CapsuleBar,
     pub launcher: Launcher,
+    pub hyper: Hyper,
     pub logging: Logging,
 }
 
@@ -245,6 +246,35 @@ impl Default for FolderRoot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Hyper {
+    pub enabled: bool,
+    pub slow_mouse_speed: u32,
+    pub terminals: Vec<String>,
+    pub terminal: Program,
+    pub hotstrings: BTreeMap<String, String>,
+}
+
+impl Default for Hyper {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            slow_mouse_speed: 1,
+            terminals: vec!["WindowsTerminal.exe".into()],
+            terminal: Program { command: "cmd.exe".into(), args: "/k cd /d %USERPROFILE%".into() },
+            hotstrings: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[serde(default)]
+pub struct Program {
+    pub command: String,
+    pub args: String,
+}
+
 pub const DEFAULT_TEXT: &str = r#"# 202020 settings. Capsule bar changes apply on save while it is running.
 
 [capsule_bar]
@@ -339,6 +369,23 @@ max_items = 20000
 # exclude = []
 # include_dirs = false
 
+[hyper]
+# Hold CapsLock for the hyper layer, tap it for Esc. Toggle it from the tray menu. Applied by Reload config.
+enabled = true
+# Mouse speed (1 – 20) while CapsLock and left Alt are held.
+slow_mouse_speed = 1
+# Programs where CapsLock+W, D and U send Ctrl+W, Ctrl+U and Ctrl+/ for the shell.
+terminals = ["WindowsTerminal.exe"]
+
+[hyper.terminal]
+# Started by CapsLock+Alt+T. %VARIABLES% are expanded.
+command = "cmd.exe"
+args = "/k cd /d %USERPROFILE%"
+
+[hyper.hotstrings]
+# Type a key, then CapsLock+Tab replaces it with the text. Keys match the end of the line, ignoring case.
+# sig = "Best regards,\nMe"
+
 [logging]
 # Write logs to the logs folder next to the exe: "off", "error", "warn", "info", "debug" or "trace". Use "debug" when
 # reporting a problem; "trace" also logs why each window was shown on or left off the capsule bar. Read at startup.
@@ -357,6 +404,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
     let l = &mut config.launcher;
     l.max_results = l.max_results.clamp(1, 20);
     l.idle_unload_minutes = l.idle_unload_minutes.clamp(1, 24 * 60);
+    config.hyper.slow_mouse_speed = config.hyper.slow_mouse_speed.clamp(1, 20);
     for w in [&mut l.apps.weight, &mut l.windows.weight, &mut l.commands.weight, &mut l.folders.weight] {
         *w = w.clamp(0.0, 2.0);
     }
@@ -392,6 +440,10 @@ pub fn set_enabled(text: &str, enabled: bool) -> String {
 
 pub fn set_launcher_enabled(text: &str, enabled: bool) -> String {
     edit(text, |doc| doc["launcher"]["enabled"] = value(enabled))
+}
+
+pub fn set_hyper_enabled(text: &str, enabled: bool) -> String {
+    edit(text, |doc| doc["hyper"]["enabled"] = value(enabled))
 }
 
 #[cfg(test)]
@@ -450,6 +502,19 @@ mod tests {
         let t = set_launcher_enabled(DEFAULT_TEXT, false);
         assert!(t.contains("# Spotlight-style search"));
         assert!(!parse(&t).unwrap().launcher.enabled);
+    }
+
+    #[test]
+    fn hyper_section() {
+        let h = parse("[hyper]\nslow_mouse_speed = 50\n[hyper.hotstrings]\nsig = 'a\\nb'").unwrap().hyper;
+        assert!(h.enabled);
+        assert_eq!(h.slow_mouse_speed, 20);
+        assert_eq!(h.terminal.command, "cmd.exe");
+        assert_eq!(h.hotstrings["sig"], "a\\nb");
+        assert_eq!(parse("[hyper.hotstrings]\nsig = \"a\\nb\"").unwrap().hyper.hotstrings["sig"], "a\nb");
+        let t = set_hyper_enabled(DEFAULT_TEXT, false);
+        assert!(t.contains("# Hold CapsLock"));
+        assert!(!parse(&t).unwrap().hyper.enabled);
     }
 
     #[test]

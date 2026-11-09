@@ -1,9 +1,12 @@
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering::Relaxed};
 use std::thread::JoinHandle;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{
+    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
@@ -15,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_USER,
 };
 
+use crate::capsule::hyper;
 use crate::capsule::util::hwnd;
 
 static TARGET: AtomicIsize = AtomicIsize::new(0);
@@ -23,19 +27,22 @@ static INPUT_MSG: AtomicU32 = AtomicU32::new(0);
 static DIGITS: AtomicBool = AtomicBool::new(false);
 static SWALLOWED: AtomicU32 = AtomicU32::new(0);
 static INPUT_PENDING: AtomicBool = AtomicBool::new(false);
+static BAR: AtomicBool = AtomicBool::new(false);
+static HYPER: AtomicBool = AtomicBool::new(false);
+static THREAD: Mutex<Option<(u32, JoinHandle<()>)>> = Mutex::new(None);
+
+const WM_HYPER_RESET: u32 = WM_USER + 1;
 
 /// Tags our own `SendInput` events so the hook passes them through while
 /// still handling keys injected by remappers such as AutoHotkey.
-const OWN_INPUT: usize = 0x4342_4152;
+pub const OWN_INPUT: usize = 0x4342_4152;
 
-/// Low-level keyboard hook on its own thread. When enabled, swallows Win+0..9
-/// and posts `digit_msg(vk)` so the caller can replay it once explorer's
-/// hidden taskbar is able to handle it. Posts `input_msg` after keys that may
-/// switch the input language or IME mode.
-pub struct KeyHook {
-    thread: u32,
-    join: Option<JoinHandle<()>>,
-}
+/// The capsule bar's use of the shared low-level keyboard hook. While held,
+/// the hook swallows Win+0..9 when digits are on and posts `digit_msg(vk)` so
+/// the bar can replay it once explorer's hidden taskbar is able to handle it.
+/// It posts `input_msg` after keys that may switch the input language or IME
+/// mode.
+pub struct KeyHook;
 
 impl KeyHook {
     pub fn start(target: HWND, digit_msg: u32, input_msg: u32) -> Option<KeyHook> {
@@ -44,19 +51,13 @@ impl KeyHook {
         INPUT_MSG.store(input_msg, Relaxed);
         SWALLOWED.store(0, Relaxed);
         INPUT_PENDING.store(false, Relaxed);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let join = std::thread::spawn(move || unsafe {
-            let mut msg = MSG::default();
-            let _ = PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE);
-            let module = GetModuleHandleW(None).ok().map(Into::into);
-            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
-            let _ = tx.send(hook.is_ok().then(|| GetCurrentThreadId()));
-            let Ok(hook) = hook else { return };
-            while GetMessageW(&mut msg, None, 0, 0).0 > 0 {}
-            let _ = UnhookWindowsHookEx(hook);
-        });
-        let thread = rx.recv().ok().flatten()?;
-        Some(KeyHook { thread, join: Some(join) })
+        BAR.store(true, Relaxed);
+        if sync().is_some() {
+            Some(KeyHook)
+        } else {
+            BAR.store(false, Relaxed);
+            None
+        }
     }
 
     pub fn set_digits(&self, on: bool) {
@@ -66,11 +67,76 @@ impl KeyHook {
 
 impl Drop for KeyHook {
     fn drop(&mut self) {
+        BAR.store(false, Relaxed);
+        DIGITS.store(false, Relaxed);
+        sync();
+    }
+}
+
+/// Turns the CapsLock layer on or off. Returns false when the hook could not
+/// be installed.
+pub fn set_hyper(on: bool) -> bool {
+    HYPER.store(on, Relaxed);
+    let thread = sync();
+    if !on && let Some(tid) = thread {
         unsafe {
-            let _ = PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0));
+            let _ = PostThreadMessageW(tid, WM_HYPER_RESET, WPARAM(0), LPARAM(0));
         }
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
+    }
+    !on || thread.is_some()
+}
+
+pub fn hyper_on() -> bool {
+    HYPER.load(Relaxed)
+}
+
+/// Starts or ends the hook thread to match its users. Returns its thread id
+/// while it runs.
+fn sync() -> Option<u32> {
+    let mut thread = THREAD.lock().unwrap_or_else(|e| e.into_inner());
+    let wanted = BAR.load(Relaxed) || HYPER.load(Relaxed);
+    match (thread.is_some(), wanted) {
+        (false, true) => *thread = spawn(),
+        (true, false) => {
+            if let Some((tid, join)) = thread.take() {
+                unsafe {
+                    let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
+                let _ = join.join();
+            }
+        }
+        _ => {}
+    }
+    thread.as_ref().map(|(tid, _)| *tid)
+}
+
+fn spawn() -> Option<(u32, JoinHandle<()>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let join = std::thread::Builder::new()
+        .name("keyhook".into())
+        .stack_size(256 << 10)
+        .spawn(move || unsafe {
+            let mut msg = MSG::default();
+            let _ = PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE);
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+            let module = GetModuleHandleW(None).ok().map(Into::into);
+            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
+            let _ = tx.send(hook.is_ok().then(|| GetCurrentThreadId()));
+            let Ok(hook) = hook else { return };
+            while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+                if msg.message == WM_HYPER_RESET {
+                    hyper::reset();
+                }
+            }
+            hyper::reset();
+            let _ = UnhookWindowsHookEx(hook);
+        })
+        .ok()?;
+    match rx.recv().ok().flatten() {
+        Some(tid) => Some((tid, join)),
+        None => {
+            let _ = join.join();
+            None
         }
     }
 }
@@ -79,7 +145,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code == HC_ACTION as i32 {
         let k = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
         let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-        if k.dwExtraInfo != OWN_INPUT && on_key(k.vkCode, down) {
+        if k.dwExtraInfo != OWN_INPUT
+            && ((HYPER.load(Relaxed) && hyper::on_key(k.vkCode, down, k.time))
+                || (BAR.load(Relaxed) && on_key(k.vkCode, down)))
+        {
             return LRESULT(1);
         }
     }

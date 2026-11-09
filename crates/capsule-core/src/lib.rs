@@ -1,5 +1,6 @@
 pub mod clock;
 pub mod config;
+pub mod hyper;
 pub mod kbd;
 pub mod launcher;
 pub mod layout;

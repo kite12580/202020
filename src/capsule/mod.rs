@@ -1,7 +1,9 @@
 mod app;
+mod clipboard;
 mod config_store;
 mod gfx;
 mod hook;
+pub mod hyper;
 mod keyboard;
 mod keyhook;
 pub mod launcher;
@@ -25,7 +27,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub use app::Options;
-pub use config_store::{enabled, launcher as launcher_config, set_enabled, set_launcher_enabled};
+pub use config_store::{
+    enabled, hyper as hyper_config, launcher as launcher_config, set_enabled, set_hyper_enabled, set_launcher_enabled,
+};
 pub use util::register_class;
 
 /// The capsule bar running on its own thread.
