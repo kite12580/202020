@@ -200,7 +200,7 @@ pub fn file_entry(path: &str, name: String, dir: bool) -> Entry {
 
 fn scan_root(root: &FolderRoot, cancel: &AtomicBool) -> Vec<Entry> {
     let mut out = Vec::new();
-    let base = super::launch::env(&root.path);
+    let base = crate::capsule::util::env(&root.path);
     let base = base.trim_end_matches(['\\', '/']).to_string();
     let mut stack = vec![(base, 0)];
     'walk: while let Some((dir, depth)) = stack.pop() {

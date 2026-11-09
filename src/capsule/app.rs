@@ -53,6 +53,7 @@ use windows::core::{GUID, PCWSTR, w};
 use crate::capsule::config_store::ConfigStore;
 use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
 use crate::capsule::hook::{self, Hook, HookEvent, Rects, TrayShared};
+use crate::capsule::input;
 use crate::capsule::keyboard;
 use crate::capsule::keyhook::{self, KeyHook};
 use crate::capsule::launcher;
@@ -1432,7 +1433,7 @@ impl App {
             TIMER_WORK_AREA => self.fix_work_area(),
             TIMER_WIN_DIGIT => {
                 for vk in std::mem::take(&mut self.pending_win_digits) {
-                    keyhook::replay_win_key(vk);
+                    input::replay_win_key(vk);
                 }
             }
             TIMER_REVEAL => self.conceal_when_idle(),
@@ -1571,10 +1572,10 @@ impl App {
     }
 
     fn on_win_digit(&mut self, vk: u16) {
-        let Some(t) = &self.takeover else { return keyhook::replay_win_key(vk) };
+        let Some(t) = &self.takeover else { return input::replay_win_key(vk) };
         self.last_win_digit = Some(Instant::now());
         if t.revealed() && self.pending_win_digits.is_empty() {
-            keyhook::replay_win_key(vk);
+            input::replay_win_key(vk);
         } else {
             t.reveal();
             self.pending_win_digits.push(vk);
@@ -1589,7 +1590,7 @@ impl App {
 
     fn conceal_when_idle(&mut self) {
         let Some(t) = &self.takeover else { return };
-        if keyhook::win_held() || self.last_win_digit.is_some_and(|d| d.elapsed() < Duration::from_millis(800)) {
+        if input::win_held() || self.last_win_digit.is_some_and(|d| d.elapsed() < Duration::from_millis(800)) {
             unsafe {
                 SetTimer(Some(self.hwnd), TIMER_REVEAL, 300, None);
             }
@@ -1652,7 +1653,7 @@ impl App {
                     winlist::system_menu(h, p.x, p.y);
                 }
             }
-            (WM_RBUTTONUP, Hit::Start) => keyhook::press_win(b'X'),
+            (WM_RBUTTONUP, Hit::Start) => input::press_win(b'X'),
             (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(DeferredMenu::Keyboard),
             (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(DeferredMenu::App),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
@@ -1670,7 +1671,7 @@ impl App {
     /// A left click that did not turn into a drag.
     fn left_click(&mut self, hit: Hit, double: bool) {
         match hit {
-            Hit::Start => keyhook::press_start(),
+            Hit::Start => input::press_start(),
             Hit::Task(i) => match self.tasks[i] {
                 Task::Window(w) => winlist::activate_or_minimize(self.windows.items[w].hwnd, self.foreground_root()),
                 Task::Pin(p) => {
@@ -1679,8 +1680,8 @@ impl App {
             },
             Hit::Chevron => self.toggle_popup(),
             Hit::Keyboard => self.next_keyboard_layout(),
-            Hit::Volume => keyhook::press_win(b'A'),
-            Hit::Clock => keyhook::press_win(b'N'),
+            Hit::Volume => input::press_win(b'A'),
+            Hit::Clock => input::press_win(b'N'),
             Hit::Tray(i) => {
                 let icon = self.bar_tray[i];
                 self.tray_mouse(icon, if double { WM_LBUTTONDBLCLK } else { WM_LBUTTONDOWN });

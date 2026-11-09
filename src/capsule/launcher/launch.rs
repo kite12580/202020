@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 
-use capsule_core::launcher::folders::expand_env;
 use capsule_core::shell_proto::Request;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT};
@@ -16,13 +15,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Interface, PCSTR, PCWSTR};
 
 use crate::capsule::hook;
-use crate::capsule::util::{hwnd, wide};
+use crate::capsule::util::{env, hwnd, wide};
 
 const FIRST_ID: u32 = 1;
-
-pub fn env(s: &str) -> String {
-    expand_env(s, |n| std::env::var(n).ok())
-}
 
 /// Has explorer open a path, URI or shell parsing name like the Run dialog
 /// does. False when the hook in explorer did not take it.

@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard,
@@ -6,9 +8,9 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::core::w;
 
-use crate::capsule::util::wide;
-
+const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
+const CF_DIBV5: u32 = 17;
 const MAX_SAVED: usize = 64 << 20;
 
 /// Formats whose data isn't a plain HGLOBAL, or that Windows synthesizes
@@ -31,15 +33,24 @@ pub fn sequence() -> u32 {
     unsafe { GetClipboardSequenceNumber() }
 }
 
+fn decode(bytes: &[u8]) -> String {
+    let units = bytes.as_chunks::<2>().0.iter().map(|&c| u16::from_le_bytes(c)).take_while(|&u| u != 0);
+    char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
+}
+
+fn text_bytes(s: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(s.len() * 2 + 2);
+    for u in s.encode_utf16().chain(Some(0)) {
+        bytes.extend(u.to_le_bytes());
+    }
+    bytes
+}
+
 pub fn get(owner: HWND) -> Option<String> {
     if !open(owner) {
         return None;
     }
-    let text = read(CF_UNICODETEXT).map(|bytes| {
-        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|&c| u16::from_le_bytes(c)).collect();
-        let len = units.iter().position(|&c| c == 0).unwrap_or(units.len());
-        String::from_utf16_lossy(&units[..len])
-    });
+    let text = with_data(CF_UNICODETEXT, usize::MAX, decode);
     unsafe {
         let _ = CloseClipboard();
     }
@@ -48,51 +59,58 @@ pub fn get(owner: HWND) -> Option<String> {
 
 pub fn set(owner: HWND, s: &str) {
     if !s.is_empty() {
-        write(owner, &[(CF_UNICODETEXT, text_bytes(s))], false);
+        write(owner, [(CF_UNICODETEXT, text_bytes(s).as_slice())], false);
     }
 }
 
 /// Puts `s` on the clipboard without it entering clipboard history.
 pub fn set_private(owner: HWND, s: &str) {
-    write(owner, &[(CF_UNICODETEXT, text_bytes(s))], true);
-}
-
-fn text_bytes(s: &str) -> Vec<u8> {
-    wide(s).iter().flat_map(|u| u.to_le_bytes()).collect()
+    write(owner, [(CF_UNICODETEXT, text_bytes(s).as_slice())], true);
 }
 
 /// Must be called with the clipboard open.
-fn read(format: u32) -> Option<Vec<u8>> {
+fn with_data<T>(format: u32, max: usize, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
     unsafe {
         let mem = HGLOBAL(GetClipboardData(format).ok()?.0);
         let size = GlobalSize(mem);
+        if size > max {
+            return None;
+        }
         let p = GlobalLock(mem) as *const u8;
         if p.is_null() {
             return None;
         }
-        let bytes = std::slice::from_raw_parts(p, size).to_vec();
+        let out = f(std::slice::from_raw_parts(p, size));
         let _ = GlobalUnlock(mem);
-        Some(bytes)
+        Some(out)
     }
 }
 
-fn write(owner: HWND, formats: &[(u32, Vec<u8>)], private: bool) {
+fn private_formats() -> &'static [u32; 4] {
+    static IDS: OnceLock<[u32; 4]> = OnceLock::new();
+    IDS.get_or_init(|| {
+        [
+            w!("ExcludeClipboardContentFromMonitorProcessing"),
+            w!("Clipboard Viewer Ignore"),
+            w!("CanIncludeInClipboardHistory"),
+            w!("CanUploadToCloudClipboard"),
+        ]
+        .map(|name| unsafe { RegisterClipboardFormatW(name) })
+    })
+}
+
+fn write<'a>(owner: HWND, formats: impl IntoIterator<Item = (u32, &'a [u8])>, private: bool) {
     if !open(owner) {
         return;
     }
     unsafe {
         let _ = EmptyClipboard();
         for (format, bytes) in formats {
-            put(*format, bytes);
+            put(format, bytes);
         }
         if private {
-            for name in [
-                w!("ExcludeClipboardContentFromMonitorProcessing"),
-                w!("Clipboard Viewer Ignore"),
-                w!("CanIncludeInClipboardHistory"),
-                w!("CanUploadToCloudClipboard"),
-            ] {
-                put(RegisterClipboardFormatW(name), &0u32.to_le_bytes());
+            for &format in private_formats() {
+                put(format, &0u32.to_le_bytes());
             }
         }
         let _ = CloseClipboard();
@@ -115,10 +133,15 @@ fn put(format: u32, bytes: &[u8]) {
     }
 }
 
-/// A copy of the clipboard's memory-backed formats.
 pub struct Saved {
     sequence: u32,
     formats: Vec<(u32, Vec<u8>)>,
+}
+
+impl Saved {
+    pub fn text(&self) -> Option<String> {
+        self.formats.iter().find(|(f, _)| *f == CF_UNICODETEXT).map(|(_, bytes)| decode(bytes))
+    }
 }
 
 pub fn save(owner: HWND) -> Saved {
@@ -128,6 +151,7 @@ pub fn save(owner: HWND) -> Saved {
     }
     let mut total = 0;
     let mut format = 0;
+    let mut dib = false;
     loop {
         format = unsafe { EnumClipboardFormats(format) };
         if format == 0 {
@@ -136,7 +160,15 @@ pub fn save(owner: HWND) -> Saved {
         if skip_format(format) {
             continue;
         }
-        if let Some(bytes) = read(format).filter(|b| total + b.len() <= MAX_SAVED) {
+        // CF_DIB and CF_DIBV5 are synthesized from each other; reading the
+        // second would make Windows convert the image.
+        if matches!(format, CF_DIB | CF_DIBV5) {
+            if dib {
+                continue;
+            }
+            dib = true;
+        }
+        if let Some(bytes) = with_data(format, MAX_SAVED - total, <[u8]>::to_vec) {
             total += bytes.len();
             saved.formats.push((format, bytes));
         }
@@ -152,6 +184,6 @@ pub fn save(owner: HWND) -> Saved {
 pub fn restore(owner: HWND, saved: &Saved, expected: u32) {
     let now = sequence();
     if now == expected && now != saved.sequence {
-        write(owner, &saved.formats, true);
+        write(owner, saved.formats.iter().map(|(f, b)| (*f, b.as_slice())), true);
     }
 }

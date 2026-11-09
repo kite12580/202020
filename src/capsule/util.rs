@@ -1,3 +1,4 @@
+use capsule_core::launcher::folders::expand_env;
 use capsule_core::layout::PxRect;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, PROPERTYKEY, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
@@ -8,7 +9,7 @@ use windows::Win32::System::Threading::{
     QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WNDCLASSEXW,
+    GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WNDCLASSEXW,
 };
 use windows::core::PWSTR;
 
@@ -17,6 +18,10 @@ pub const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+
+pub fn env(s: &str) -> String {
+    expand_env(s, |n| std::env::var(n).ok())
 }
 
 pub fn from_wide(buf: &[u16]) -> String {
@@ -37,6 +42,11 @@ pub fn apps_folder(aumid: &str) -> String {
 
 pub fn hwnd(v: isize) -> HWND {
     HWND(v as *mut _)
+}
+
+pub fn foreground() -> Option<HWND> {
+    let h = unsafe { GetForegroundWindow() };
+    (!h.is_invalid()).then_some(h)
 }
 
 pub fn lparam_point(l: LPARAM) -> (i32, i32) {

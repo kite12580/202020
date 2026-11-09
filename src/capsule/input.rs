@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use capsule_core::hyper::{ALT, Button, CTRL, Chord, SHIFT, WIN, vk};
+use capsule_core::hyper::{ALT, Button, CTRL, Chord, SHIFT, WIN, k, vk};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN,
@@ -12,7 +12,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SPI_GETMOUSESPEED, SPI_SETMOUSESPEED, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WHEEL_DELTA,
 };
 
-use crate::capsule::keyhook::OWN_INPUT;
+/// Tags our own `SendInput` events so the hook passes them through while
+/// still handling keys injected by remappers such as AutoHotkey.
+pub const OWN_INPUT: usize = 0x4342_4152;
 
 const MODS: [(u8, u16); 4] = [(CTRL, vk::LCONTROL), (SHIFT, vk::LSHIFT), (ALT, vk::LMENU), (WIN, vk::LWIN)];
 
@@ -38,31 +40,6 @@ fn key(key: u16, up: bool) -> INPUT {
     }
 }
 
-fn send(inputs: &[INPUT]) {
-    unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
-}
-
-fn push(out: &mut Vec<INPUT>, c: Chord) {
-    let mods = MODS.iter().filter(|(bit, _)| c.mods & bit != 0);
-    out.extend(mods.clone().map(|&(_, m)| key(m, false)));
-    out.push(key(c.vk, false));
-    out.push(key(c.vk, true));
-    out.extend(mods.rev().map(|&(_, m)| key(m, true)));
-}
-
-pub fn keys(chords: &[Chord]) {
-    let mut inputs = Vec::with_capacity(chords.len() * 4);
-    for &c in chords {
-        push(&mut inputs, c);
-    }
-    send(&inputs);
-}
-
-pub fn repeat(vk: u16, n: usize) {
-    let inputs: Vec<INPUT> = (0..n).flat_map(|_| [key(vk, false), key(vk, true)]).collect();
-    send(&inputs);
-}
-
 fn mouse(flags: MOUSE_EVENT_FLAGS, data: i32) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
@@ -72,10 +49,73 @@ fn mouse(flags: MOUSE_EVENT_FLAGS, data: i32) -> INPUT {
     }
 }
 
+struct Batch {
+    inputs: [INPUT; 24],
+    len: usize,
+}
+
+impl Batch {
+    fn new() -> Batch {
+        Batch { inputs: [INPUT::default(); 24], len: 0 }
+    }
+
+    fn push(&mut self, input: INPUT) {
+        if self.len == self.inputs.len() {
+            self.flush();
+        }
+        self.inputs[self.len] = input;
+        self.len += 1;
+    }
+
+    fn chord(&mut self, c: Chord) {
+        for &(bit, m) in &MODS {
+            if c.mods & bit != 0 {
+                self.push(key(m, false));
+            }
+        }
+        self.push(key(c.vk, false));
+        self.push(key(c.vk, true));
+        for &(bit, m) in MODS.iter().rev() {
+            if c.mods & bit != 0 {
+                self.push(key(m, true));
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.len > 0 {
+            unsafe { SendInput(&self.inputs[..self.len], size_of::<INPUT>() as i32) };
+            self.len = 0;
+        }
+    }
+}
+
+impl Drop for Batch {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+pub fn keys(chords: &[Chord]) {
+    let mut batch = Batch::new();
+    for &c in chords {
+        batch.chord(c);
+    }
+}
+
+pub fn repeat(vk: u16, n: usize) {
+    let mut batch = Batch::new();
+    for _ in 0..n {
+        batch.chord(k(vk));
+    }
+}
+
 pub fn wheel(notches: i32) {
     let delta = if notches > 0 { WHEEL_DELTA as i32 } else { -(WHEEL_DELTA as i32) };
-    let inputs: Vec<INPUT> = (0..notches.unsigned_abs()).map(|_| mouse(MOUSEEVENTF_WHEEL, delta)).collect();
-    send(&inputs);
+    let mut batch = Batch::new();
+    for _ in 0..notches.unsigned_abs() {
+        batch.push(mouse(MOUSEEVENTF_WHEEL, delta));
+    }
 }
 
 pub fn button(b: Button, down: bool) {
@@ -87,23 +127,36 @@ pub fn button(b: Button, down: bool) {
         (Button::Right, true) => MOUSEEVENTF_RIGHTDOWN,
         (Button::Right, false) => MOUSEEVENTF_RIGHTUP,
     };
-    send(&[mouse(flags, 0)]);
+    unsafe { SendInput(&[mouse(flags, 0)], size_of::<INPUT>() as i32) };
 }
 
-fn held(vk: VIRTUAL_KEY) -> bool {
+/// Types `vk` with Win held, pressing Win only if the user has released it.
+pub fn replay_win_key(vk: u16) {
+    keys(&[Chord { mods: if win_held() { 0 } else { WIN }, vk }]);
+}
+
+pub fn press_start() {
+    keys(&[k(vk::LWIN)]);
+}
+
+/// Sends the shell shortcut Win+`letter`.
+pub fn press_win(letter: u8) {
+    keys(&[Chord { mods: WIN, vk: u16::from(letter) }]);
+}
+
+pub fn held(vk: VIRTUAL_KEY) -> bool {
     unsafe { GetAsyncKeyState(vk.0 as i32) < 0 }
+}
+
+pub fn win_held() -> bool {
+    held(VK_LWIN) || held(VK_RWIN)
 }
 
 /// Modifiers as the system sees them. Left Alt swallowed by the layer reads
 /// as released.
 pub fn held_mods() -> u8 {
     let mut mods = 0;
-    for (bit, down) in [
-        (CTRL, held(VK_CONTROL)),
-        (SHIFT, held(VK_SHIFT)),
-        (WIN, held(VK_LWIN) || held(VK_RWIN)),
-        (ALT, held(VK_LMENU)),
-    ] {
+    for (bit, down) in [(CTRL, held(VK_CONTROL)), (SHIFT, held(VK_SHIFT)), (WIN, win_held()), (ALT, held(VK_LMENU))] {
         if down {
             mods |= bit;
         }
@@ -113,7 +166,7 @@ pub fn held_mods() -> u8 {
 
 pub fn caps_lock_off() {
     if unsafe { GetKeyState(i32::from(vk::CAPITAL)) } & 1 != 0 {
-        send(&[key(vk::CAPITAL, false), key(vk::CAPITAL, true)]);
+        keys(&[k(vk::CAPITAL)]);
     }
 }
 

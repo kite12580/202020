@@ -1,6 +1,3 @@
-//! CapsLock as a hyper key: tap for Esc, hold for a layer of editing and
-//! window shortcuts, add left Alt for a second layer.
-
 use std::collections::BTreeMap;
 
 use crate::layout::PxRect;
@@ -24,6 +21,36 @@ pub mod vk {
     pub const DOWN: u16 = 0x28;
     pub const INSERT: u16 = 0x2D;
     pub const DELETE: u16 = 0x2E;
+    pub const D0: u16 = 0x30;
+    pub const D1: u16 = 0x31;
+    pub const D2: u16 = 0x32;
+    pub const D3: u16 = 0x33;
+    pub const D9: u16 = 0x39;
+    pub const A: u16 = 0x41;
+    pub const B: u16 = 0x42;
+    pub const C: u16 = 0x43;
+    pub const D: u16 = 0x44;
+    pub const E: u16 = 0x45;
+    pub const F: u16 = 0x46;
+    pub const G: u16 = 0x47;
+    pub const H: u16 = 0x48;
+    pub const J: u16 = 0x4A;
+    pub const K: u16 = 0x4B;
+    pub const L: u16 = 0x4C;
+    pub const M: u16 = 0x4D;
+    pub const N: u16 = 0x4E;
+    pub const O: u16 = 0x4F;
+    pub const P: u16 = 0x50;
+    pub const Q: u16 = 0x51;
+    pub const R: u16 = 0x52;
+    pub const S: u16 = 0x53;
+    pub const T: u16 = 0x54;
+    pub const U: u16 = 0x55;
+    pub const V: u16 = 0x56;
+    pub const W: u16 = 0x57;
+    pub const X: u16 = 0x58;
+    pub const Y: u16 = 0x59;
+    pub const Z: u16 = 0x5A;
     pub const LWIN: u16 = 0x5B;
     pub const RWIN: u16 = 0x5C;
     pub const APPS: u16 = 0x5D;
@@ -45,29 +72,17 @@ pub mod vk {
     pub const MEDIA_NEXT_TRACK: u16 = 0xB0;
     pub const MEDIA_PREV_TRACK: u16 = 0xB1;
     pub const MEDIA_PLAY_PAUSE: u16 = 0xB3;
-    /// `;`
-    pub const OEM_1: u16 = 0xBA;
-    /// `=`
-    pub const OEM_PLUS: u16 = 0xBB;
-    pub const OEM_COMMA: u16 = 0xBC;
-    pub const OEM_MINUS: u16 = 0xBD;
-    pub const OEM_PERIOD: u16 = 0xBE;
-    /// `/`
-    pub const OEM_2: u16 = 0xBF;
-    /// `` ` ``
-    pub const OEM_3: u16 = 0xC0;
-    /// `[`
-    pub const OEM_4: u16 = 0xDB;
-    /// `\`
-    pub const OEM_5: u16 = 0xDC;
-    /// `]`
-    pub const OEM_6: u16 = 0xDD;
-    /// `'`
-    pub const OEM_7: u16 = 0xDE;
-
-    pub const fn letter(c: u8) -> u16 {
-        c.to_ascii_uppercase() as u16
-    }
+    pub const SEMICOLON: u16 = 0xBA;
+    pub const EQUALS: u16 = 0xBB;
+    pub const COMMA: u16 = 0xBC;
+    pub const MINUS: u16 = 0xBD;
+    pub const PERIOD: u16 = 0xBE;
+    pub const SLASH: u16 = 0xBF;
+    pub const BACKTICK: u16 = 0xC0;
+    pub const LBRACKET: u16 = 0xDB;
+    pub const BACKSLASH: u16 = 0xDC;
+    pub const RBRACKET: u16 = 0xDD;
+    pub const QUOTE: u16 = 0xDE;
 }
 
 pub const CTRL: u8 = 1;
@@ -83,32 +98,26 @@ pub struct Chord {
     pub vk: u16,
 }
 
-const fn k(vk: u16) -> Chord {
+pub const fn k(vk: u16) -> Chord {
     Chord { mods: 0, vk }
 }
 
-const fn c(vk: u16) -> Chord {
+pub const fn c(vk: u16) -> Chord {
     Chord { mods: CTRL, vk }
 }
 
-const fn s(vk: u16) -> Chord {
+pub const fn s(vk: u16) -> Chord {
     Chord { mods: SHIFT, vk }
 }
 
-const fn cs(vk: u16) -> Chord {
+pub const fn cs(vk: u16) -> Chord {
     Chord { mods: CTRL | SHIFT, vk }
-}
-
-const fn l(ch: u8) -> u16 {
-    vk::letter(ch)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Other,
-    /// A program from the configured terminal list.
     Terminal,
-    /// gvim or nvim-qt.
     Vim,
 }
 
@@ -121,7 +130,6 @@ pub enum Button {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
-    /// Copy the selection, or the current line when nothing is selected.
     CopyOrLine,
     PastePlain,
     /// Surround the selection with `open` and `close`, or insert both with
@@ -143,7 +151,6 @@ pub enum Job {
     PowerOptions,
     Topmost,
     Caption,
-    Reload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +160,7 @@ pub enum Action {
     /// Wheel notches, positive is up.
     Wheel(i32),
     Job(Job),
+    Reload,
     Transparency,
     SwitchDesktop,
     Noop,
@@ -161,8 +169,8 @@ pub enum Action {
 macro_rules! keys {
     ($($c:expr),* $(,)?) => {
         Action::Keys({
-            const K: &[Chord] = &[$($c),*];
-            K
+            const CHORDS: &[Chord] = &[$($c),*];
+            CHORDS
         })
     };
 }
@@ -175,94 +183,94 @@ pub fn lookup(key: u16, alt: bool, target: impl FnOnce() -> Target) -> Action {
     use vk::*;
     if alt {
         return match key {
-            _ if key == l(b'h') => keys![s(LEFT)],
-            _ if key == l(b'j') => keys![s(DOWN)],
-            _ if key == l(b'k') => keys![s(UP)],
-            _ if key == l(b'l') => keys![s(RIGHT)],
-            _ if key == l(b'e') => keys![cs(RIGHT)],
-            _ if key == l(b'b') => keys![cs(LEFT)],
-            OEM_1 => keys![s(HOME)],
-            OEM_7 => keys![s(END)],
-            _ if key == l(b'g') => keys![c(HOME)],
-            _ if key == l(b'q') => Action::Wheel(-2),
-            _ if key == l(b'r') => Action::Wheel(2),
-            _ if key == l(b'o') => keys![k(HOME), k(RETURN), k(UP)],
-            _ if key == l(b'u') => keys![c(l(b'y'))],
-            _ if key == l(b'z') => keys![cs(l(b's'))],
-            _ if key == l(b'v') => Action::SwitchDesktop,
-            _ if key == l(b'w') => keys![k(END), s(DOWN), s(HOME), k(BACK)],
-            _ if key == l(b'd') => keys![k(END), s(HOME), k(DELETE)],
-            _ if key == l(b'x') => keys![c(INSERT), k(BACK)],
-            _ if key == l(b'y') => Action::Job(Job::CopyOrLine),
-            _ if key == l(b'p') => Action::Job(Job::PastePlain),
-            _ if key == u16::from(b'9') => wrap("\"", "\""),
-            _ if key == u16::from(b'0') => wrap("'", "'"),
-            OEM_4 => wrap("[", "]"),
-            _ if key == l(b'f') => Action::Job(Job::EscapeOrMove),
-            _ if key == l(b't') => Action::Job(Job::Terminal),
+            H => keys![s(LEFT)],
+            J => keys![s(DOWN)],
+            K => keys![s(UP)],
+            L => keys![s(RIGHT)],
+            E => keys![cs(RIGHT)],
+            B => keys![cs(LEFT)],
+            SEMICOLON => keys![s(HOME)],
+            QUOTE => keys![s(END)],
+            G => keys![c(HOME)],
+            Q => Action::Wheel(-2),
+            R => Action::Wheel(2),
+            O => keys![k(HOME), k(RETURN), k(UP)],
+            U => keys![c(Y)],
+            Z => keys![cs(S)],
+            V => Action::SwitchDesktop,
+            W => keys![k(END), s(DOWN), s(HOME), k(BACK)],
+            D => keys![k(END), s(HOME), k(DELETE)],
+            X => keys![c(INSERT), k(BACK)],
+            Y => Action::Job(Job::CopyOrLine),
+            P => Action::Job(Job::PastePlain),
+            D9 => wrap("\"", "\""),
+            D0 => wrap("'", "'"),
+            LBRACKET => wrap("[", "]"),
+            F => Action::Job(Job::EscapeOrMove),
+            T => Action::Job(Job::Terminal),
             F1 => Action::Job(Job::Caption),
             F2 => keys![k(MEDIA_PLAY_PAUSE)],
             F3 => keys![k(MEDIA_PREV_TRACK)],
             _ => Action::Noop,
         };
     }
+    if let Some(b) = button(key) {
+        return Action::Click(b);
+    }
     match key {
-        _ if key == l(b'h') => keys![k(LEFT)],
-        _ if key == l(b'j') => keys![k(DOWN)],
-        _ if key == l(b'k') => keys![k(UP)],
-        _ if key == l(b'l') => keys![k(RIGHT)],
-        _ if key == l(b'e') => keys![c(RIGHT)],
-        _ if key == l(b'b') => keys![c(LEFT)],
-        OEM_1 => keys![k(HOME)],
-        OEM_7 | RETURN => keys![k(END)],
+        H => keys![k(LEFT)],
+        J => keys![k(DOWN)],
+        K => keys![k(UP)],
+        L => keys![k(RIGHT)],
+        E => keys![c(RIGHT)],
+        B => keys![c(LEFT)],
+        SEMICOLON => keys![k(HOME)],
+        QUOTE | RETURN => keys![k(END)],
         SPACE => keys![k(RIGHT)],
-        _ if key == l(b'g') => keys![c(END)],
-        _ if key == l(b'q') => keys![k(NEXT)],
-        _ if key == l(b'r') => keys![k(PRIOR)],
-        _ if key == l(b'n') => match target() {
+        G => keys![c(END)],
+        Q => keys![k(NEXT)],
+        R => keys![k(PRIOR)],
+        N => match target() {
             Target::Vim => keys![k(F2)],
             _ => keys![cs(TAB)],
         },
-        _ if key == l(b'm') => match target() {
+        M => match target() {
             Target::Vim => keys![k(F3)],
             _ => keys![c(TAB)],
         },
-        _ if key == l(b'o') => keys![k(END), k(RETURN)],
-        _ if key == l(b'u') => match target() {
-            Target::Terminal => keys![c(OEM_2)],
-            _ => keys![c(l(b'z'))],
+        O => keys![k(END), k(RETURN)],
+        U => match target() {
+            Target::Terminal => keys![c(SLASH)],
+            _ => keys![c(Z)],
         },
-        _ if key == l(b'z') => keys![c(l(b's'))],
-        _ if key == l(b'c') => keys![Chord { mods: ALT, vk: TAB }],
-        _ if key == l(b'v') => keys![cs(l(b'v'))],
-        OEM_2 => keys![c(l(b'f'))],
-        _ if key == u16::from(b'1') => Action::Click(Button::Left),
-        _ if key == u16::from(b'2') => Action::Click(Button::Middle),
-        _ if key == u16::from(b'3') => Action::Click(Button::Right),
-        OEM_COMMA => keys![k(BROWSER_BACK)],
-        OEM_PERIOD => keys![k(BROWSER_FORWARD)],
-        OEM_3 => keys![k(APPS)],
-        _ if key == l(b'w') => match target() {
+        Z => keys![c(S)],
+        C => keys![Chord { mods: ALT, vk: TAB }],
+        V => keys![cs(V)],
+        SLASH => keys![c(F)],
+        COMMA => keys![k(BROWSER_BACK)],
+        PERIOD => keys![k(BROWSER_FORWARD)],
+        BACKTICK => keys![k(APPS)],
+        W => match target() {
             Target::Other => keys![cs(LEFT), k(BACK)],
-            _ => keys![c(l(b'w'))],
+            _ => keys![c(W)],
         },
         BACK => keys![c(LEFT), cs(RIGHT), k(BACK)],
-        _ if key == l(b'd') => match target() {
+        D => match target() {
             Target::Other => Action::Job(Job::DeleteLine),
-            _ => keys![c(l(b'u'))],
+            _ => keys![c(U)],
         },
-        _ if key == l(b'x') => keys![c(INSERT), k(DELETE)],
-        _ if key == l(b'y') => Action::Job(Job::CopyOrLine),
-        _ if key == l(b'p') => keys![s(INSERT)],
-        _ if key == u16::from(b'9') => wrap("(", ")"),
-        _ if key == u16::from(b'0') => Action::Job(Job::Paste(")")),
-        OEM_4 => Action::Job(Job::Wrap { open: " {", close: "}", at_end: true }),
-        OEM_PLUS => wrap(" + \"", "\" + "),
+        X => keys![c(INSERT), k(DELETE)],
+        Y => Action::Job(Job::CopyOrLine),
+        P => keys![s(INSERT)],
+        D9 => wrap("(", ")"),
+        D0 => Action::Job(Job::Paste(")")),
+        LBRACKET => Action::Job(Job::Wrap { open: " {", close: "}", at_end: true }),
+        EQUALS => wrap(" + \"", "\" + "),
         TAB => Action::Job(Job::Hotstring),
         F1 => Action::Job(Job::Topmost),
         F3 => keys![k(MEDIA_NEXT_TRACK)],
         F4 => Action::Transparency,
-        F5 => Action::Job(Job::Reload),
+        F5 => Action::Reload,
         F9 => Action::Job(Job::PowerOptions),
         _ => Action::Noop,
     }
@@ -271,27 +279,28 @@ pub fn lookup(key: u16, alt: bool, target: impl FnOnce() -> Target) -> Action {
 /// Keys the layer takes over while CapsLock is held, mapped or not.
 pub fn in_layer(key: u16) -> bool {
     use vk::*;
-    matches!(key, 0x30..=0x39 | 0x41..=0x5A)
-        || (F1..=F12).contains(&key)
-        || matches!(
-            key,
-            SPACE
-                | TAB
-                | RETURN
-                | ESCAPE
-                | BACK
-                | OEM_1
-                | OEM_PLUS
-                | OEM_COMMA
-                | OEM_MINUS
-                | OEM_PERIOD
-                | OEM_2
-                | OEM_3
-                | OEM_4
-                | OEM_5
-                | OEM_6
-                | OEM_7
-        )
+    matches!(
+        key,
+        D0..=D9
+            | A..=Z
+            | F1..=F12
+            | SPACE
+            | TAB
+            | RETURN
+            | ESCAPE
+            | BACK
+            | SEMICOLON
+            | EQUALS
+            | COMMA
+            | MINUS
+            | PERIOD
+            | SLASH
+            | BACKTICK
+            | LBRACKET
+            | BACKSLASH
+            | RBRACKET
+            | QUOTE
+    )
 }
 
 fn is_modifier(key: u16) -> bool {
@@ -299,8 +308,21 @@ fn is_modifier(key: u16) -> bool {
     matches!(key, SHIFT | CONTROL | LSHIFT | RSHIFT | LCONTROL | RCONTROL | LWIN | RWIN)
 }
 
+fn button(key: u16) -> Option<Button> {
+    match key {
+        vk::D1 => Some(Button::Left),
+        vk::D2 => Some(Button::Middle),
+        vk::D3 => Some(Button::Right),
+        _ => None,
+    }
+}
+
 fn button_bit(b: Button) -> u8 {
     1 << b as u8
+}
+
+fn slot(key: u16) -> (usize, u64) {
+    (usize::from(key >> 6) & 3, 1u64 << (key & 63))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,25 +331,26 @@ pub struct Event {
     pub down: bool,
     /// Milliseconds, as in `KBDLLHOOKSTRUCT::time`.
     pub time: u32,
-    /// `CTRL`, `SHIFT`, `WIN` and `ALT` (left Alt) as physically held.
-    pub mods: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
-    Esc,
-    Run(Action),
+    Keys(&'static [Chord]),
+    Wheel(i32),
+    Job(Job),
+    Reload,
     Button(Button, bool),
     SlowMouse(bool),
     AlphaBegin,
     AlphaEnd { tap: bool },
 }
 
-#[derive(Debug, Default)]
+const ESC: Effect = Effect::Keys(&[k(vk::ESCAPE)]);
+
+#[derive(Debug)]
 pub struct Layer {
     caps_at: Option<u32>,
     used: bool,
-    /// Left Alt was down before CapsLock, so the layer stays out of the way.
     passthrough: bool,
     alt: bool,
     swallowed: [u64; 4],
@@ -336,57 +359,72 @@ pub struct Layer {
     desktop_right: bool,
 }
 
-impl Layer {
-    /// Whether events other than CapsLock need `on_key`.
-    pub fn engaged(&self) -> bool {
-        self.caps_at.is_some() || self.swallowed != [0; 4]
+impl Default for Layer {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    pub fn held(&self) -> bool {
-        self.caps_at.is_some()
+impl Layer {
+    pub const fn new() -> Self {
+        Layer {
+            caps_at: None,
+            used: false,
+            passthrough: false,
+            alt: false,
+            swallowed: [0; 4],
+            buttons: 0,
+            alpha_at: None,
+            desktop_right: false,
+        }
     }
 
     /// Marks `key` as swallowed; returns whether it already was (auto-repeat).
     fn mark(&mut self, key: u16) -> bool {
-        let (i, bit) = (usize::from(key >> 6) & 3, 1u64 << (key & 63));
+        let (i, bit) = slot(key);
         let was = self.swallowed[i] & bit != 0;
         self.swallowed[i] |= bit;
         was
     }
 
     fn take(&mut self, key: u16) -> bool {
-        let (i, bit) = (usize::from(key >> 6) & 3, 1u64 << (key & 63));
+        let (i, bit) = slot(key);
         let was = self.swallowed[i] & bit != 0;
         self.swallowed[i] &= !bit;
         was
     }
 
-    /// Returns whether to swallow the event.
-    pub fn on_key(&mut self, ev: Event, target: impl FnOnce() -> Target, emit: &mut impl FnMut(Effect)) -> bool {
-        let Event { vk: key, down, time, mods } = ev;
+    /// Returns whether to swallow the event. `mods` reads `CTRL`, `SHIFT`,
+    /// `WIN` and `ALT` (left Alt) as the system sees them.
+    pub fn on_key(
+        &mut self,
+        ev: Event,
+        mods: impl FnOnce() -> u8,
+        target: impl FnOnce() -> Target,
+        emit: &mut impl FnMut(Effect),
+    ) -> bool {
+        let Event { vk: key, down, time } = ev;
         if !down {
             if !self.take(key) {
                 return false;
             }
             match key {
                 vk::CAPITAL => self.release_caps(time, emit),
-                vk::LMENU if self.alt => {
-                    self.alt = false;
-                    emit(Effect::SlowMouse(false));
-                }
+                vk::LMENU => self.end_alt(emit),
                 vk::F4 => self.end_alpha(time, emit),
                 _ => {}
             }
-            for (b, bkey) in [(Button::Left, b'1'), (Button::Middle, b'2'), (Button::Right, b'3')] {
-                if key == u16::from(bkey) && self.buttons & button_bit(b) != 0 {
-                    self.buttons &= !button_bit(b);
-                    emit(Effect::Button(b, false));
-                }
+            if let Some(b) = button(key)
+                && self.buttons & button_bit(b) != 0
+            {
+                self.buttons &= !button_bit(b);
+                emit(Effect::Button(b, false));
             }
             return true;
         }
         if key == vk::CAPITAL {
             if !self.mark(key) && self.caps_at.is_none() {
+                let mods = mods();
                 self.caps_at = Some(time);
                 self.used = mods != 0;
                 self.passthrough = mods & ALT != 0;
@@ -414,28 +452,30 @@ impl Layer {
             self.mark(key);
             return true;
         }
-        if self.passthrough || mods & (CTRL | SHIFT | WIN) != 0 || !in_layer(key) {
+        if self.passthrough || !in_layer(key) || mods() & (CTRL | SHIFT | WIN) != 0 {
             return false;
         }
         let repeat = self.mark(key);
         match lookup(key, self.alt, target) {
-            a @ (Action::Keys(_) | Action::Wheel(_)) => emit(Effect::Run(a)),
+            Action::Keys(keys) => emit(Effect::Keys(keys)),
+            Action::Wheel(n) => emit(Effect::Wheel(n)),
             _ if repeat => {}
             Action::Click(b) => {
                 self.buttons |= button_bit(b);
                 emit(Effect::Button(b, true));
             }
-            a @ Action::Job(_) => emit(Effect::Run(a)),
+            Action::Job(job) => emit(Effect::Job(job)),
+            Action::Reload => emit(Effect::Reload),
             Action::Transparency => {
                 self.alpha_at = Some(time);
                 emit(Effect::AlphaBegin);
             }
             Action::SwitchDesktop => {
                 self.desktop_right = !self.desktop_right;
-                emit(Effect::Run(if self.desktop_right {
-                    keys![Chord { mods: WIN | CTRL, vk: vk::RIGHT }]
+                emit(Effect::Keys(if self.desktop_right {
+                    &[Chord { mods: WIN | CTRL, vk: vk::RIGHT }]
                 } else {
-                    keys![Chord { mods: WIN | CTRL, vk: vk::LEFT }]
+                    &[Chord { mods: WIN | CTRL, vk: vk::LEFT }]
                 }));
             }
             Action::Noop => {}
@@ -445,15 +485,19 @@ impl Layer {
 
     fn release_caps(&mut self, time: u32, emit: &mut impl FnMut(Effect)) {
         let Some(at) = self.caps_at.take() else { return };
+        self.end_alt(emit);
+        self.end_alpha(time, emit);
+        if !self.used && time.wrapping_sub(at) < TAP_MS {
+            emit(ESC);
+        }
+        self.passthrough = false;
+    }
+
+    fn end_alt(&mut self, emit: &mut impl FnMut(Effect)) {
         if self.alt {
             self.alt = false;
             emit(Effect::SlowMouse(false));
         }
-        self.end_alpha(time, emit);
-        if !self.used && time.wrapping_sub(at) < TAP_MS {
-            emit(Effect::Esc);
-        }
-        self.passthrough = false;
     }
 
     fn end_alpha(&mut self, time: u32, emit: &mut impl FnMut(Effect)) {
@@ -538,22 +582,30 @@ mod tests {
     use super::*;
 
     fn ev(vk: u16, down: bool, time: u32) -> Event {
-        Event { vk, down, time, mods: 0 }
+        Event { vk, down, time }
+    }
+
+    fn engaged(layer: &Layer) -> bool {
+        layer.caps_at.is_some() || layer.swallowed != [0; 4]
+    }
+
+    fn run_with(layer: &mut Layer, e: Event, mods: u8) -> (bool, Vec<Effect>) {
+        let mut out = Vec::new();
+        let swallow = layer.on_key(e, || mods, || Target::Other, &mut |x| out.push(x));
+        (swallow, out)
     }
 
     fn run(layer: &mut Layer, e: Event) -> (bool, Vec<Effect>) {
-        let mut out = Vec::new();
-        let swallow = layer.on_key(e, || Target::Other, &mut |x| out.push(x));
-        (swallow, out)
+        run_with(layer, e, 0)
     }
 
     #[test]
     fn tap_sends_esc_only_when_quick_and_alone() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         assert_eq!(run(&mut layer, ev(CAPITAL, true, 1000)), (true, vec![]));
         assert_eq!(run(&mut layer, ev(CAPITAL, true, 1030)), (true, vec![]));
-        assert_eq!(run(&mut layer, ev(CAPITAL, false, 1100)), (true, vec![Effect::Esc]));
-        assert!(!layer.engaged());
+        assert_eq!(run(&mut layer, ev(CAPITAL, false, 1100)), (true, vec![ESC]));
+        assert!(!engaged(&layer));
 
         run(&mut layer, ev(CAPITAL, true, 2000));
         assert_eq!(run(&mut layer, ev(CAPITAL, false, 2400)), (true, vec![]));
@@ -563,87 +615,88 @@ mod tests {
         assert_eq!(run(&mut layer, ev(CAPITAL, false, 3020)), (true, vec![]));
 
         run(&mut layer, ev(CAPITAL, true, u32::MAX - 10));
-        assert_eq!(run(&mut layer, ev(CAPITAL, false, 20)).1, vec![Effect::Esc]);
+        assert_eq!(run(&mut layer, ev(CAPITAL, false, 20)).1, vec![ESC]);
     }
 
     #[test]
     fn layer_maps_and_swallows_the_release() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
-        let (swallow, fx) = run(&mut layer, ev(l(b'h'), true, 10));
+        let (swallow, fx) = run(&mut layer, ev(H, true, 10));
         assert!(swallow);
-        assert_eq!(fx, vec![Effect::Run(keys![k(LEFT)])]);
-        assert_eq!(run(&mut layer, ev(l(b'h'), true, 40)).1.len(), 1);
+        assert_eq!(fx, vec![Effect::Keys(const { &[k(LEFT)] })]);
+        assert_eq!(run(&mut layer, ev(H, true, 40)).1.len(), 1);
         assert_eq!(run(&mut layer, ev(CAPITAL, false, 50)), (true, vec![]));
-        assert!(layer.engaged());
-        assert_eq!(run(&mut layer, ev(l(b'h'), false, 60)), (true, vec![]));
-        assert!(!layer.engaged());
-        assert!(!run(&mut layer, ev(l(b'h'), true, 70)).0);
+        assert!(engaged(&layer));
+        assert_eq!(run(&mut layer, ev(H, false, 60)), (true, vec![]));
+        assert!(!engaged(&layer));
+        assert!(!run(&mut layer, ev(H, true, 70)).0);
     }
 
     #[test]
     fn unmapped_and_outside_keys() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
-        assert_eq!(run(&mut layer, ev(l(b'a'), true, 10)), (true, vec![]));
+        assert_eq!(run(&mut layer, ev(A, true, 10)), (true, vec![]));
         assert_eq!(run(&mut layer, ev(INSERT, true, 10)), (false, vec![]));
         assert!(run(&mut layer, ev(RMENU, true, 10)).0);
     }
 
     #[test]
     fn held_modifiers_pass_keys_through() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
         for mods in [CTRL, super::SHIFT, WIN] {
-            assert!(!run(&mut layer, Event { vk: l(b'h'), down: true, time: 10, mods }).0);
+            assert!(!run_with(&mut layer, ev(H, true, 10), mods).0);
         }
-        let mut layer = Layer::default();
-        run(&mut layer, Event { vk: CAPITAL, down: true, time: 0, mods: CTRL });
+        let mut layer = Layer::new();
+        run_with(&mut layer, ev(CAPITAL, true, 0), CTRL);
         assert_eq!(run(&mut layer, ev(CAPITAL, false, 10)), (true, vec![]));
-        run(&mut layer, Event { vk: CAPITAL, down: true, time: 0, mods: ALT });
+        run_with(&mut layer, ev(CAPITAL, true, 0), ALT);
         assert!(!run(&mut layer, ev(LMENU, true, 5)).0);
-        assert!(!run(&mut layer, Event { vk: l(b'h'), down: true, time: 10, mods: ALT }).0);
+        assert!(!run_with(&mut layer, ev(H, true, 10), ALT).0);
     }
 
     #[test]
     fn alt_layer_and_slow_mouse() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
         assert_eq!(run(&mut layer, ev(LMENU, true, 10)), (true, vec![Effect::SlowMouse(true)]));
         assert_eq!(run(&mut layer, ev(LMENU, true, 40)), (true, vec![]));
-        assert_eq!(run(&mut layer, ev(l(b'h'), true, 50)).1, vec![Effect::Run(keys![s(LEFT)])]);
+        assert_eq!(run(&mut layer, ev(H, true, 50)).1, vec![Effect::Keys(const { &[s(LEFT)] })]);
         assert_eq!(run(&mut layer, ev(CAPITAL, false, 60)).1, vec![Effect::SlowMouse(false)]);
         assert_eq!(run(&mut layer, ev(LMENU, false, 70)), (true, vec![]));
-        run(&mut layer, ev(l(b'h'), false, 80));
-        assert!(!layer.engaged());
+        run(&mut layer, ev(H, false, 80));
+        assert!(!engaged(&layer));
     }
 
     #[test]
     fn clicks_and_jobs_ignore_repeats() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
-        assert_eq!(run(&mut layer, ev(u16::from(b'1'), true, 10)).1, vec![Effect::Button(Button::Left, true)]);
-        assert_eq!(run(&mut layer, ev(u16::from(b'1'), true, 40)).1, vec![]);
-        assert_eq!(run(&mut layer, ev(u16::from(b'1'), false, 50)).1, vec![Effect::Button(Button::Left, false)]);
-        assert_eq!(run(&mut layer, ev(l(b'y'), true, 60)).1, vec![Effect::Run(Action::Job(Job::CopyOrLine))]);
-        assert_eq!(run(&mut layer, ev(l(b'y'), true, 90)).1, vec![]);
+        assert_eq!(run(&mut layer, ev(D1, true, 10)).1, vec![Effect::Button(Button::Left, true)]);
+        assert_eq!(run(&mut layer, ev(D1, true, 40)).1, vec![]);
+        assert_eq!(run(&mut layer, ev(D1, false, 50)).1, vec![Effect::Button(Button::Left, false)]);
+        assert_eq!(run(&mut layer, ev(Y, true, 60)).1, vec![Effect::Job(Job::CopyOrLine)]);
+        assert_eq!(run(&mut layer, ev(Y, true, 90)).1, vec![]);
+        assert_eq!(run(&mut layer, ev(F5, true, 100)).1, vec![Effect::Reload]);
     }
 
     #[test]
     fn desktop_toggles_direction() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
         run(&mut layer, ev(LMENU, true, 1));
-        let first = run(&mut layer, ev(l(b'v'), true, 10)).1;
-        run(&mut layer, ev(l(b'v'), false, 20));
-        let second = run(&mut layer, ev(l(b'v'), true, 30)).1;
-        assert_eq!(first, vec![Effect::Run(keys![Chord { mods: WIN | CTRL, vk: RIGHT }])]);
-        assert_eq!(second, vec![Effect::Run(keys![Chord { mods: WIN | CTRL, vk: LEFT }])]);
+        let first = run(&mut layer, ev(V, true, 10)).1;
+        run(&mut layer, ev(V, false, 20));
+        let second = run(&mut layer, ev(V, true, 30)).1;
+        assert_eq!(first, vec![Effect::Keys(&[Chord { mods: WIN | CTRL, vk: RIGHT }])]);
+        assert_eq!(second, vec![Effect::Keys(&[Chord { mods: WIN | CTRL, vk: LEFT }])]);
     }
 
     #[test]
     fn transparency_session() {
-        let mut layer = Layer::default();
+        let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
         assert_eq!(run(&mut layer, ev(F4, true, 10)).1, vec![Effect::AlphaBegin]);
         assert_eq!(run(&mut layer, ev(F4, false, 100)).1, vec![Effect::AlphaEnd { tap: true }]);
@@ -654,13 +707,14 @@ mod tests {
 
     #[test]
     fn targets() {
-        assert_eq!(lookup(l(b'w'), false, || Target::Terminal), keys![c(l(b'w'))]);
-        assert_eq!(lookup(l(b'd'), false, || Target::Vim), keys![c(l(b'u'))]);
-        assert_eq!(lookup(l(b'd'), false, || Target::Other), Action::Job(Job::DeleteLine));
-        assert_eq!(lookup(l(b'u'), false, || Target::Terminal), keys![c(OEM_2)]);
-        assert_eq!(lookup(l(b'u'), false, || Target::Vim), keys![c(l(b'z'))]);
-        assert_eq!(lookup(l(b'm'), false, || Target::Vim), keys![k(F3)]);
-        assert_eq!(lookup(l(b'h'), false, || unreachable!()), keys![k(LEFT)]);
+        assert_eq!(lookup(W, false, || Target::Terminal), keys![c(W)]);
+        assert_eq!(lookup(D, false, || Target::Vim), keys![c(U)]);
+        assert_eq!(lookup(D, false, || Target::Other), Action::Job(Job::DeleteLine));
+        assert_eq!(lookup(U, false, || Target::Terminal), keys![c(SLASH)]);
+        assert_eq!(lookup(U, false, || Target::Vim), keys![c(Z)]);
+        assert_eq!(lookup(M, false, || Target::Vim), keys![k(F3)]);
+        assert_eq!(lookup(H, false, || unreachable!()), keys![k(LEFT)]);
+        assert_eq!(lookup(D1, true, || unreachable!()), Action::Noop);
     }
 
     #[test]
@@ -698,7 +752,7 @@ mod tests {
 
     #[test]
     fn layer_keys() {
-        for key in [u16::from(b'A'), u16::from(b'0'), F1, F12, SPACE, OEM_7, ESCAPE] {
+        for key in [A, D0, F1, F12, SPACE, QUOTE, ESCAPE] {
             assert!(in_layer(key), "{key:#x}");
         }
         for key in [INSERT, LEFT, 0x60, F12 + 1, CAPITAL] {

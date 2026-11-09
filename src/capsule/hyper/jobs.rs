@@ -5,10 +5,9 @@ use std::time::{Duration, Instant};
 
 use capsule_core::config::Hyper;
 use capsule_core::hyper::{
-    CTRL, Chord, Job, SHIFT, alpha_step, alpha_toggle, copy_accept, hotstring, line_start_probe, vk, window_preset,
+    Chord, Job, alpha_step, alpha_toggle, c, copy_accept, hotstring, k, line_start_probe, s, vk, window_preset,
     wrap_text,
 };
-use capsule_core::launcher::folders::expand_env;
 use windows::Win32::Foundation::{COLORREF, CloseHandle, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME,
@@ -18,17 +17,16 @@ use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveCli
 use windows::Win32::System::Threading::{CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, CreateWindowExW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
-    GetCursorPos, GetForegroundWindow, GetLayeredWindowAttributes, GetWindowLongPtrW, HWND_MESSAGE, HWND_NOTOPMOST,
-    HWND_TOPMOST, IsZoomed, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, MSG, MsgWaitForMultipleObjects, PM_REMOVE,
-    PeekMessageW, QS_ALLINPUT, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION,
-    WS_EX_LAYERED, WS_EX_TOPMOST, WS_THICKFRAME,
+    GetCursorPos, GetLayeredWindowAttributes, GetWindowLongPtrW, HWND_MESSAGE, HWND_NOTOPMOST, HWND_TOPMOST, IsZoomed,
+    LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+    SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetLayeredWindowAttributes,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_EX_LAYERED,
+    WS_EX_TOPMOST, WS_THICKFRAME,
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
-use super::send;
-use crate::capsule::clipboard;
-use crate::capsule::util::{hwnd, px_rect, wide};
+use crate::capsule::util::{env, foreground, hwnd, px_rect, wide};
+use crate::capsule::{clipboard, input};
 
 const COPY_TIMEOUT: Duration = Duration::from_millis(100);
 const PASTE_DELAY: Duration = Duration::from_millis(150);
@@ -36,18 +34,9 @@ const FRAME: isize = (WS_CAPTION.0 | WS_THICKFRAME.0) as isize;
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 
-const fn k(vk: u16) -> Chord {
-    Chord { mods: 0, vk }
-}
-
-const fn s(vk: u16) -> Chord {
-    Chord { mods: SHIFT, vk }
-}
-
-const COPY: Chord = Chord { mods: CTRL, vk: vk::INSERT };
+const COPY: Chord = c(vk::INSERT);
 const PASTE: Chord = s(vk::INSERT);
 
-/// Runs `job` on its own thread unless another job is still running.
 pub fn spawn(job: Job, cfg: Arc<Hyper>) {
     if BUSY.swap(true, Relaxed) {
         return;
@@ -68,18 +57,17 @@ fn run(job: Job, cfg: &Hyper) {
         Job::EscapeOrMove => escape_or_move(),
         Job::Terminal => launch(&cfg.terminal.command, &cfg.terminal.args),
         Job::PowerOptions => launch("control.exe", "/name Microsoft.PowerOptions"),
-        Job::Reload => {}
+        Job::CopyOrLine => {
+            if let Some(clip) = Clip::new() {
+                clip.copy_or_line();
+            }
+        }
         _ => {
             if let Some(clip) = Clip::new() {
-                clip.run(job, cfg);
+                clip.edit(job, cfg);
             }
         }
     }
-}
-
-fn foreground() -> Option<HWND> {
-    let h = unsafe { GetForegroundWindow() };
-    (!h.is_invalid()).then_some(h)
 }
 
 fn toggle_topmost() {
@@ -109,7 +97,7 @@ fn escape_or_move() {
         let _ = GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mut info);
     }
     if pt.x > info.rcMonitor.left {
-        return send::keys(&[k(vk::ESCAPE)]);
+        return input::keys(&[k(vk::ESCAPE)]);
     }
     let Some(h) = foreground() else { return };
     let (r, topmost) = window_preset(px_rect(info.rcMonitor), px_rect(info.rcWork), pt.y);
@@ -124,7 +112,6 @@ fn escape_or_move() {
 }
 
 fn launch(command: &str, args: &str) {
-    let env = |s: &str| expand_env(s, |n| std::env::var(n).ok());
     let mut line = wide(&format!("\"{}\" {}", env(command), env(args)));
     let startup = STARTUPINFOW { cb: size_of::<STARTUPINFOW>() as u32, ..Default::default() };
     let mut info = PROCESS_INFORMATION::default();
@@ -157,7 +144,6 @@ pub enum AlphaMsg {
     End { tap: bool },
 }
 
-/// Adjusts `h`'s transparency from wheel notches until the session ends.
 pub fn alpha_session(h: HWND) -> Option<Sender<AlphaMsg>> {
     let (tx, rx) = mpsc::channel();
     let raw = h.0 as isize;
@@ -217,8 +203,6 @@ fn set_alpha(h: HWND, alpha: Option<u8>) {
     }
 }
 
-/// A message-only window that owns our clipboard writes and wakes on
-/// clipboard changes.
 struct Clip(HWND);
 
 impl Clip {
@@ -264,10 +248,9 @@ impl Clip {
         }
     }
 
-    /// Ctrl+Insert, and the copied text if the clipboard changed.
     fn copy(&self) -> Option<String> {
         let since = clipboard::sequence();
-        send::keys(&[COPY]);
+        input::keys(&[COPY]);
         if self.wait_change(since) { clipboard::get(self.0) } else { None }
     }
 
@@ -275,67 +258,66 @@ impl Clip {
     fn paste(&self, text: &str) -> u32 {
         clipboard::set_private(self.0, text);
         let written = clipboard::sequence();
-        send::keys(&[PASTE]);
+        input::keys(&[PASTE]);
         written
     }
 
-    fn run(&self, job: Job, cfg: &Hyper) {
-        if job == Job::CopyOrLine {
-            if !self.copy().is_some_and(|t| copy_accept(&t)) {
-                send::keys(&[k(vk::HOME), s(vk::END), COPY, k(vk::END)]);
-            }
-            return;
+    fn copy_or_line(&self) {
+        if !self.copy().is_some_and(|t| copy_accept(&t)) {
+            input::keys(&[k(vk::HOME), s(vk::END), COPY, k(vk::END)]);
         }
+    }
+
+    fn edit(&self, job: Job, cfg: &Hyper) {
         let saved = clipboard::save(self.0);
         let expected = match job {
-            Job::PastePlain => match clipboard::get(self.0) {
+            Job::PastePlain => match saved.text() {
                 Some(text) => self.paste(&text),
                 None => {
-                    send::keys(&[PASTE]);
+                    input::keys(&[PASTE]);
                     return;
                 }
             },
             Job::Paste(text) => self.paste(text),
             Job::Wrap { open, close, at_end } => {
                 let selection = if at_end {
-                    send::keys(&[k(vk::END)]);
+                    input::keys(&[k(vk::END)]);
                     None
                 } else {
                     self.copy().filter(|t| copy_accept(t))
                 };
                 let (text, back) = wrap_text(open, close, selection.as_deref());
                 let written = self.paste(&text);
-                send::repeat(vk::LEFT, back);
+                input::repeat(vk::LEFT, back);
                 if at_end {
-                    send::keys(&[k(vk::RETURN)]);
+                    input::keys(&[k(vk::RETURN)]);
                 }
                 written
             }
             Job::DeleteLine => {
-                send::keys(&[k(vk::HOME), s(vk::LEFT)]);
+                input::keys(&[k(vk::HOME), s(vk::LEFT)]);
                 let (at_start, selected) = line_start_probe(self.copy().as_deref());
                 let copied = clipboard::sequence();
                 if selected {
-                    send::keys(&[k(vk::RIGHT)]);
+                    input::keys(&[k(vk::RIGHT)]);
                 }
                 if !at_start {
-                    send::keys(&[k(vk::HOME)]);
+                    input::keys(&[k(vk::HOME)]);
                 }
-                send::keys(&[s(vk::END), s(vk::RIGHT), k(vk::DELETE), k(vk::END)]);
+                input::keys(&[s(vk::END), s(vk::RIGHT), k(vk::DELETE), k(vk::END)]);
                 copied
             }
             Job::Hotstring => {
-                send::keys(&[s(vk::HOME)]);
+                input::keys(&[s(vk::HOME)]);
                 let line = self.copy().filter(|t| copy_accept(t));
                 let copied = clipboard::sequence();
-                let Some(line) = line else {
+                if line.is_some() {
+                    input::keys(&[k(vk::RIGHT)]);
+                }
+                let Some((n, text)) = line.as_deref().and_then(|l| hotstring(l, &cfg.hotstrings)) else {
                     return clipboard::restore(self.0, &saved, copied);
                 };
-                send::keys(&[k(vk::RIGHT)]);
-                let Some((n, text)) = hotstring(&line, &cfg.hotstrings) else {
-                    return clipboard::restore(self.0, &saved, copied);
-                };
-                send::repeat(vk::BACK, n);
+                input::repeat(vk::BACK, n);
                 self.paste(text)
             }
             _ => return,

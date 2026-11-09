@@ -4,6 +4,7 @@ mod config_store;
 mod gfx;
 mod hook;
 pub mod hyper;
+mod input;
 mod keyboard;
 mod keyhook;
 pub mod launcher;

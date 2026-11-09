@@ -148,7 +148,6 @@ struct App {
     bar_opts: capsule::Options,
     bar: BarState,
     launcher: LauncherState,
-    hyper: bool,
     restarting: bool,
     quitting: bool,
 }
@@ -418,11 +417,11 @@ impl App {
     }
 
     fn apply_hyper(&mut self) {
-        self.hyper = capsule::hyper::apply(capsule::hyper_config());
+        capsule::hyper::apply(capsule::hyper_config());
     }
 
     fn toggle_hyper(&mut self) {
-        capsule::set_hyper_enabled(!self.hyper);
+        capsule::set_hyper_enabled(!capsule::hyper::on());
         self.apply_hyper();
     }
 
@@ -513,13 +512,13 @@ fn paint_overlay(hdc: HDC, overlay: &Overlay) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let Some((paused, bar_flags, launcher, hyper)) = with_app(|app| {
+    let Some((paused, bar_flags, launcher)) = with_app(|app| {
         let bar_flags = match app.bar {
             BarState::Off => MF_UNCHECKED,
             BarState::Running(_) => MF_CHECKED,
             BarState::Stopping(_) => MF_GRAYED,
         };
-        (app.paused, bar_flags, app.launcher, app.hyper)
+        (app.paused, bar_flags, app.launcher)
     }) else {
         return;
     };
@@ -532,7 +531,7 @@ fn show_menu(hwnd: HWND) {
                 LauncherState::On => (MF_STRING | MF_CHECKED, CMD_LAUNCHER, w!("Launcher")),
                 LauncherState::NoHotkey => (MF_STRING | MF_CHECKED, CMD_LAUNCHER, w!("Launcher (hotkey unavailable)")),
             },
-            (MF_STRING | if hyper { MF_CHECKED } else { MF_UNCHECKED }, CMD_HYPER, w!("CapsLock hyper")),
+            (MF_STRING | if capsule::hyper::on() { MF_CHECKED } else { MF_UNCHECKED }, CMD_HYPER, w!("CapsLock hyper")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
             (MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") }),
             (MF_STRING, CMD_BREAK, w!("Break now")),
@@ -734,7 +733,6 @@ fn main() {
             },
             bar: BarState::Off,
             launcher: LauncherState::Off,
-            hyper: false,
             restarting: false,
             quitting: false,
         };

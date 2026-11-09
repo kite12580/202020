@@ -8,9 +8,8 @@ use windows::Win32::System::Threading::{
     GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
-    VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE,
+    VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, PeekMessageW, PostMessageW,
@@ -19,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::capsule::hyper;
+use crate::capsule::input::{OWN_INPUT, held, win_held};
 use crate::capsule::util::hwnd;
 
 static TARGET: AtomicIsize = AtomicIsize::new(0);
@@ -32,10 +32,6 @@ static HYPER: AtomicBool = AtomicBool::new(false);
 static THREAD: Mutex<Option<(u32, JoinHandle<()>)>> = Mutex::new(None);
 
 const WM_HYPER_RESET: u32 = WM_USER + 1;
-
-/// Tags our own `SendInput` events so the hook passes them through while
-/// still handling keys injected by remappers such as AutoHotkey.
-pub const OWN_INPUT: usize = 0x4342_4152;
 
 /// The capsule bar's use of the shared low-level keyboard hook. While held,
 /// the hook swallows Win+0..9 when digits are on and posts `digit_msg(vk)` so
@@ -73,17 +69,15 @@ impl Drop for KeyHook {
     }
 }
 
-/// Turns the CapsLock layer on or off. Returns false when the hook could not
-/// be installed.
-pub fn set_hyper(on: bool) -> bool {
+pub fn set_hyper(on: bool) {
     HYPER.store(on, Relaxed);
-    let thread = sync();
-    if !on && let Some(tid) = thread {
-        unsafe {
+    match sync() {
+        None => HYPER.store(false, Relaxed),
+        Some(tid) if !on => unsafe {
             let _ = PostThreadMessageW(tid, WM_HYPER_RESET, WPARAM(0), LPARAM(0));
-        }
+        },
+        _ => {}
     }
-    !on || thread.is_some()
 }
 
 pub fn hyper_on() -> bool {
@@ -155,10 +149,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-fn held(vk: VIRTUAL_KEY) -> bool {
-    unsafe { GetAsyncKeyState(vk.0 as i32) < 0 }
-}
-
 fn post(msg: &AtomicU32, wparam: usize, lparam: isize) {
     unsafe {
         let _ = PostMessageW(Some(hwnd(TARGET.load(Relaxed))), msg.load(Relaxed), WPARAM(wparam), LPARAM(lparam));
@@ -200,48 +190,4 @@ fn on_key(vk: u32, down: bool) -> bool {
 
 pub fn input_handled() {
     INPUT_PENDING.store(false, Relaxed);
-}
-
-fn key(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: flags, dwExtraInfo: OWN_INPUT, ..Default::default() } },
-    }
-}
-
-/// Types `vk` with Win held, pressing Win only if the user has released it.
-pub fn replay_win_key(vk: u16) {
-    let vk = VIRTUAL_KEY(vk);
-    let press = [key(vk, KEYBD_EVENT_FLAGS(0)), key(vk, KEYEVENTF_KEYUP)];
-    let inputs: Vec<INPUT> = if held(VK_LWIN) || held(VK_RWIN) {
-        press.to_vec()
-    } else {
-        [key(VK_LWIN, KEYEVENTF_EXTENDEDKEY)]
-            .into_iter()
-            .chain(press)
-            .chain([key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP)])
-            .collect()
-    };
-    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-}
-
-pub fn win_held() -> bool {
-    held(VK_LWIN) || held(VK_RWIN)
-}
-
-pub fn press_start() {
-    let inputs = [key(VK_LWIN, KEYEVENTF_EXTENDEDKEY), key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP)];
-    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-}
-
-/// Sends the shell shortcut Win+`letter`.
-pub fn press_win(letter: u8) {
-    let vk = VIRTUAL_KEY(u16::from(letter));
-    let inputs = [
-        key(VK_LWIN, KEYEVENTF_EXTENDEDKEY),
-        key(vk, KEYBD_EVENT_FLAGS(0)),
-        key(vk, KEYEVENTF_KEYUP),
-        key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
-    ];
-    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
 }

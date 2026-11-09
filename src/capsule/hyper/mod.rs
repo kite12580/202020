@@ -3,24 +3,23 @@
 //! a short-lived job thread.
 
 mod jobs;
-mod send;
 
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use capsule_core::config::Hyper;
-use capsule_core::hyper::{Action, Chord, Effect, Event, Job, Layer, Target, vk};
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use capsule_core::hyper::{Effect, Event, Layer, Target};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, HC_ACTION, HHOOK, MSLLHOOKSTRUCT, PostMessageW, SetWindowsHookExW,
     UnhookWindowsHookEx, WH_MOUSE_LL, WM_MOUSEWHEEL,
 };
 
-use crate::capsule::keyhook;
-use crate::capsule::util::{class_name, hwnd, process_path, window_ids};
+use crate::capsule::util::{class_name, foreground, hwnd, process_path, window_ids};
+use crate::capsule::{input, keyhook};
 use jobs::AlphaMsg;
 
 pub struct Options {
@@ -29,9 +28,7 @@ pub struct Options {
     pub reload_command: u32,
 }
 
-static OWNER: AtomicIsize = AtomicIsize::new(0);
-static COMMAND_MSG: AtomicU32 = AtomicU32::new(0);
-static RELOAD_COMMAND: AtomicU32 = AtomicU32::new(0);
+static OPTIONS: OnceLock<Options> = OnceLock::new();
 static CONFIG: Mutex<Option<Arc<Hyper>>> = Mutex::new(None);
 static GENERATION: AtomicU32 = AtomicU32::new(0);
 
@@ -41,27 +38,28 @@ struct Alpha {
 }
 
 thread_local! {
-    static LAYER: RefCell<Layer> = RefCell::default();
+    static LAYER: RefCell<Layer> = const { RefCell::new(Layer::new()) };
     static TARGET: Cell<(isize, u32, Target)> = const { Cell::new((0, u32::MAX, Target::Other)) };
     static SAVED_SPEED: Cell<Option<u32>> = const { Cell::new(None) };
     static ALPHA: RefCell<Option<Alpha>> = const { RefCell::new(None) };
 }
 
 pub fn init(opts: Options) {
-    OWNER.store(opts.owner, Relaxed);
-    COMMAND_MSG.store(opts.command_msg, Relaxed);
-    RELOAD_COMMAND.store(opts.reload_command, Relaxed);
+    let _ = OPTIONS.set(opts);
 }
 
-/// Applies `cfg`. Returns whether the layer is on.
-pub fn apply(cfg: Hyper) -> bool {
+pub fn apply(cfg: Hyper) {
     let on = cfg.enabled;
-    *CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(cfg));
+    *CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = on.then(|| Arc::new(cfg));
     GENERATION.fetch_add(1, Relaxed);
-    if on && !keyhook::hyper_on() {
-        send::caps_lock_off();
+    if on {
+        input::caps_lock_off();
     }
-    keyhook::set_hyper(on) && on
+    keyhook::set_hyper(on);
+}
+
+pub fn on() -> bool {
+    keyhook::hyper_on()
 }
 
 pub fn stop() {
@@ -72,43 +70,34 @@ fn config() -> Arc<Hyper> {
     CONFIG.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
 }
 
-/// Called by the keyboard hook for input not injected by 202020. Returns
-/// whether to swallow the key.
+/// Returns whether to swallow the key.
 pub(super) fn on_key(vk_code: u32, down: bool, time: u32) -> bool {
-    let key = vk_code as u16;
     LAYER.with(|layer| {
         let Ok(mut layer) = layer.try_borrow_mut() else { return false };
-        if key != vk::CAPITAL && !layer.engaged() {
-            return false;
-        }
-        let mods = if layer.held() || key == vk::CAPITAL { send::held_mods() } else { 0 };
-        layer.on_key(Event { vk: key, down, time, mods }, target, &mut run)
+        layer.on_key(Event { vk: vk_code as u16, down, time }, input::held_mods, target, &mut run)
     })
 }
 
-/// Clears the layer when it is turned off or the hook thread ends.
 pub(super) fn reset() {
-    LAYER.with(|l| *l.borrow_mut() = Layer::default());
+    LAYER.with(|l| *l.borrow_mut() = Layer::new());
     slow_mouse(false);
     end_alpha(false);
 }
 
 fn run(effect: Effect) {
     match effect {
-        Effect::Esc => send::keys(&[Chord { mods: 0, vk: vk::ESCAPE }]),
-        Effect::Run(Action::Keys(keys)) => send::keys(keys),
-        Effect::Run(Action::Wheel(n)) => send::wheel(n),
-        Effect::Run(Action::Job(Job::Reload)) => unsafe {
-            let _ = PostMessageW(
-                Some(hwnd(OWNER.load(Relaxed))),
-                COMMAND_MSG.load(Relaxed),
-                WPARAM(RELOAD_COMMAND.load(Relaxed) as usize),
-                LPARAM(0),
-            );
-        },
-        Effect::Run(Action::Job(job)) => jobs::spawn(job, config()),
-        Effect::Run(_) => {}
-        Effect::Button(b, down) => send::button(b, down),
+        Effect::Keys(keys) => input::keys(keys),
+        Effect::Wheel(n) => input::wheel(n),
+        Effect::Job(job) => jobs::spawn(job, config()),
+        Effect::Reload => {
+            if let Some(o) = OPTIONS.get() {
+                unsafe {
+                    let _ =
+                        PostMessageW(Some(hwnd(o.owner)), o.command_msg, WPARAM(o.reload_command as usize), LPARAM(0));
+                }
+            }
+        }
+        Effect::Button(b, down) => input::button(b, down),
         Effect::SlowMouse(on) => slow_mouse(on),
         Effect::AlphaBegin => begin_alpha(),
         Effect::AlphaEnd { tap } => end_alpha(tap),
@@ -122,40 +111,40 @@ fn target() -> Target {
     if cached == fg.0 as isize && cached_gen == generation {
         return t;
     }
-    let t = if class_name(fg) == "Vim" {
-        Target::Vim
-    } else {
-        let path = process_path(window_ids(fg).1).unwrap_or_default();
-        let exe = path.rsplit('\\').next().unwrap_or_default();
-        if exe.eq_ignore_ascii_case("nvim-qt.exe") {
-            Target::Vim
-        } else if config().terminals.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
-            Target::Terminal
-        } else {
-            Target::Other
-        }
-    };
+    let t = classify(fg);
     TARGET.set((fg.0 as isize, generation, t));
     t
+}
+
+fn classify(h: HWND) -> Target {
+    if class_name(h) == "Vim" {
+        return Target::Vim;
+    }
+    let path = process_path(window_ids(h).1).unwrap_or_default();
+    let exe = path.rsplit('\\').next().unwrap_or_default();
+    if exe.eq_ignore_ascii_case("nvim-qt.exe") {
+        return Target::Vim;
+    }
+    if config().terminals.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
+        return Target::Terminal;
+    }
+    Target::Other
 }
 
 fn slow_mouse(on: bool) {
     if on {
         if SAVED_SPEED.get().is_none() {
-            SAVED_SPEED.set(Some(send::mouse_speed()));
-            send::set_mouse_speed(config().slow_mouse_speed);
+            SAVED_SPEED.set(Some(input::mouse_speed()));
+            input::set_mouse_speed(config().slow_mouse_speed);
         }
     } else if let Some(speed) = SAVED_SPEED.take() {
-        send::set_mouse_speed(speed);
+        input::set_mouse_speed(speed);
     }
 }
 
 fn begin_alpha() {
     end_alpha(false);
-    let fg = unsafe { GetForegroundWindow() };
-    if fg.is_invalid() {
-        return;
-    }
+    let Some(fg) = foreground() else { return };
     let Some(tx) = jobs::alpha_session(fg) else { return };
     let module = unsafe { GetModuleHandleW(None) }.ok().map(Into::into);
     let Ok(hook) = (unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) }) else { return };
