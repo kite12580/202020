@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use capsule_core::config::Hyper;
-use capsule_core::hyper::{Chord, Effect, Event, Layer, Target, WIN, vk};
+use capsule_core::hyper::{Chord, Effect, Event, Job, Layer, Target, WIN, vk};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_CONTROL};
@@ -53,7 +53,13 @@ pub fn init(opts: Options) {
 
 pub fn apply(cfg: Hyper) {
     let on = cfg.enabled;
-    *CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = on.then(|| Arc::new(cfg));
+    {
+        let mut current = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
+        if on == keyhook::hyper_on() && current.as_deref() == on.then_some(&cfg) {
+            return;
+        }
+        *current = on.then(|| Arc::new(cfg));
+    }
     GENERATION.fetch_add(1, Relaxed);
     if on {
         input::caps_lock_off();
@@ -105,6 +111,7 @@ fn run(effect: Effect, cfg: &Arc<Hyper>) {
             _ => input::keys_holding_win(keys),
         },
         Effect::Wheel(n) => input::wheel(n),
+        Effect::Job(Job::Hotstring) if cfg.hotstrings.is_empty() => {}
         Effect::Job(job) => jobs::spawn(job.clone(), cfg.clone()),
         Effect::Reload => {
             if let Some(o) = OPTIONS.get() {
@@ -206,8 +213,12 @@ fn block_wheel(on: bool) {
 }
 
 unsafe extern "system" fn wheel_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32 && wparam.0 as u32 == WM_MOUSEWHEEL && input::held(VK_CONTROL) {
-        return LRESULT(1);
+    if code == HC_ACTION as i32 {
+        if !input::held(VK_CONTROL) {
+            block_wheel(false);
+        } else if wparam.0 as u32 == WM_MOUSEWHEEL {
+            return LRESULT(1);
+        }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }

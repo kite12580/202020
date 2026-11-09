@@ -300,46 +300,30 @@ fn terminals() -> Vec<String> {
     vec!["WindowsTerminal.exe".into()]
 }
 
-fn default_keymaps() -> (Keymap, Keymap, Keymap) {
-    #[derive(Deserialize)]
-    struct Doc {
-        hyper: Keys,
-    }
-    #[derive(Deserialize)]
-    struct Keys {
-        keys: Keymap,
-        alt_keys: Keymap,
-        #[serde(deserialize_with = "parse_win_keys")]
-        win_keys: Keymap,
-    }
-    let Doc { hyper: Keys { keys, alt_keys, win_keys } } = toml::from_str(DEFAULT_KEYS).expect("DEFAULT_KEYS");
-    (keys, alt_keys, win_keys)
-}
-
 fn keys() -> Keymap {
-    default_keymaps().0
+    toml::from_str(DEFAULT_KEYS).expect("default keys")
 }
 
 fn alt_keys() -> Keymap {
-    default_keymaps().1
+    toml::from_str(DEFAULT_ALT_KEYS).expect("default alt_keys")
 }
 
 fn win_keys() -> Keymap {
-    default_keymaps().2
+    let table = toml::from_str(DEFAULT_WIN_KEYS).expect("default win_keys");
+    win_keymap(table, |e| log::warn!("hyper win_keys: {e}"))
 }
 
 impl Default for Hyper {
     fn default() -> Self {
-        let (keys, alt_keys, win_keys) = default_keymaps();
         Self {
             enabled: yes(),
             slow_mouse_speed: slow_mouse_speed(),
             block_ctrl_wheel: yes(),
             terminals: terminals(),
             hotstrings: BTreeMap::new(),
-            keys,
-            alt_keys,
-            win_keys,
+            keys: keys(),
+            alt_keys: alt_keys(),
+            win_keys: win_keys(),
         }
     }
 }
@@ -420,9 +404,8 @@ impl<'de> Deserialize<'de> for Keymap {
 }
 
 macro_rules! default_keys {
-    () => {
-        r#"[hyper.keys]
-# CapsLock + key. Without this table these defaults apply; with it, keys left out of it do nothing.
+    (keys) => {
+        r#"# CapsLock + key. Without this table these defaults apply; with it, keys left out of it do nothing.
 # A value is either keys to press, separated by spaces ("End Enter", "Ctrl+Shift+Left"), or one of the actions
 # copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, power_options, topmost, caption,
 # reload, transparency, switch_desktop, left_button, middle_button and right_button (held while the key is).
@@ -476,9 +459,10 @@ f3 = "MediaNext"
 f4 = "transparency"
 f5 = "reload"
 f9 = "power_options"
-
-[hyper.alt_keys]
-# CapsLock + left Alt + key, written as above.
+"#
+    };
+    (alt_keys) => {
+        r#"# CapsLock + left Alt + key, written as above.
 h = "Shift+Left"
 j = "Shift+Down"
 k = "Shift+Up"
@@ -505,9 +489,10 @@ p = "paste_plain"
 f1 = "caption"
 f2 = "MediaPlayPause"
 f3 = "MediaPrev"
-
-[hyper.win_keys]
-# Win + key with no other modifier, mapped to keys to press instead. Without this table these defaults apply;
+"#
+    };
+    (win_keys) => {
+        r#"# Win + key with no other modifier, mapped to keys to press instead. Without this table these defaults apply;
 # leave it empty to keep Windows' own shortcuts.
 e = "Win+2"
 t = "Ctrl+Shift+T"
@@ -515,7 +500,9 @@ t = "Ctrl+Shift+T"
     };
 }
 
-const DEFAULT_KEYS: &str = default_keys!();
+const DEFAULT_KEYS: &str = default_keys!(keys);
+const DEFAULT_ALT_KEYS: &str = default_keys!(alt_keys);
+const DEFAULT_WIN_KEYS: &str = default_keys!(win_keys);
 
 pub const DEFAULT_TEXT: &str = concat!(
     r#"# 202020 settings. Capsule bar changes apply on save while it is running.
@@ -620,7 +607,12 @@ terminals = ["WindowsTerminal.exe"]
 # sig = "Best regards,\nMe"
 
 "#,
-    default_keys!(),
+    "[hyper.keys]\n",
+    default_keys!(keys),
+    "\n[hyper.alt_keys]\n",
+    default_keys!(alt_keys),
+    "\n[hyper.win_keys]\n",
+    default_keys!(win_keys),
     r#"
 [logging]
 # Write logs to the logs folder next to the exe: "off", "error", "warn", "info", "debug" or "trace". Use "debug" when
@@ -759,13 +751,12 @@ mod tests {
         struct Doc {
             hyper: BTreeMap<String, BTreeMap<String, toml::Value>>,
         }
-        let mut doc: Doc = toml::from_str(DEFAULT_KEYS).unwrap();
-        for name in ["keys", "alt_keys"] {
-            let table = doc.hyper.remove(name).unwrap();
+        for text in [DEFAULT_KEYS, DEFAULT_ALT_KEYS] {
+            let table: BTreeMap<String, toml::Value> = toml::from_str(text).unwrap();
             let n = table.len();
             assert_eq!(keymap(table, |e| panic!("{e}")).len(), n);
         }
-        let table = doc.hyper.remove("win_keys").unwrap();
+        let table: BTreeMap<String, toml::Value> = toml::from_str(DEFAULT_WIN_KEYS).unwrap();
         let n = table.len();
         assert_eq!(win_keymap(table, |e| panic!("{e}")).len(), n);
         let mut skipped = Vec::new();

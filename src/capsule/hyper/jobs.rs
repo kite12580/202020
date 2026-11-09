@@ -268,7 +268,10 @@ impl Clip {
     }
 
     fn edit(&self, job: Job, cfg: &Hyper) {
-        let saved = clipboard::save(self.0);
+        if job == Job::PastePlain && clipboard::only_text(self.0) {
+            return input::keys(&[PASTE]);
+        }
+        let Some(saved) = clipboard::save(self.0) else { return };
         let expected = match job {
             Job::PastePlain => match saved.text() {
                 Some(text) => self.paste(&text),

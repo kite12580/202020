@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::config::Hyper;
+use crate::launcher::hotkey::{self, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
 use crate::layout::PxRect;
 
 pub mod vk {
@@ -86,10 +87,10 @@ pub mod vk {
     pub const QUOTE: u16 = 0xDE;
 }
 
-pub const CTRL: u8 = 1;
-pub const SHIFT: u8 = 2;
-pub const ALT: u8 = 4;
-pub const WIN: u8 = 8;
+pub const CTRL: u8 = MOD_CONTROL as u8;
+pub const SHIFT: u8 = MOD_SHIFT as u8;
+pub const ALT: u8 = MOD_ALT as u8;
+pub const WIN: u8 = MOD_WIN as u8;
 
 const TAP_MS: u32 = 300;
 
@@ -186,16 +187,11 @@ pub fn action(s: &str) -> Option<Action> {
     if let Some((_, a)) = NAMED.iter().find(|(name, _)| *name == s) {
         return Some(a.clone());
     }
-    let chords = s.split_whitespace().map(chord).collect::<Option<Box<[Chord]>>>()?;
+    let chords = s
+        .split_whitespace()
+        .map(|s| hotkey::parse(s).map(|(mods, vk)| Chord { mods: mods as u8, vk: vk as u16 }))
+        .collect::<Option<Box<[Chord]>>>()?;
     (!chords.is_empty()).then_some(Action::Keys(chords))
-}
-
-fn chord(s: &str) -> Option<Chord> {
-    use crate::launcher::hotkey::{self, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
-    let (mods, vk) = hotkey::parse(s)?;
-    let bit = |m, b| if mods & m != 0 { b } else { 0 };
-    let mods = bit(MOD_CONTROL, CTRL) | bit(MOD_SHIFT, SHIFT) | bit(MOD_ALT, ALT) | bit(MOD_WIN, WIN);
-    Some(Chord { mods, vk: vk as u16 })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 use capsule::launcher::{self, AppCommand};
+use capsule_core::config::Launcher;
 use capsule_core::launcher::hotkey;
 use render::{Digits, IconFace, Overlay};
 
@@ -387,16 +388,16 @@ impl App {
         if let BarState::Running(bar) = &self.bar {
             bar.reload_config();
         }
-        self.apply_launcher();
-        self.apply_hyper();
+        let cfg = capsule::config();
+        self.apply_launcher(cfg.launcher);
+        capsule::hyper::apply(cfg.hyper);
     }
 
     /// Registers the launcher hotkey from the config, or frees the launcher.
-    fn apply_launcher(&mut self) {
+    fn apply_launcher(&mut self, cfg: Launcher) {
         unsafe {
             let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_LAUNCHER);
         }
-        let cfg = capsule::launcher_config();
         if !cfg.enabled {
             self.launcher = LauncherState::Off;
             launcher::unload();
@@ -413,16 +414,12 @@ impl App {
 
     fn toggle_launcher(&mut self) {
         capsule::set_launcher_enabled(self.launcher == LauncherState::Off);
-        self.apply_launcher();
-    }
-
-    fn apply_hyper(&mut self) {
-        capsule::hyper::apply(capsule::hyper_config());
+        self.apply_launcher(capsule::launcher_config());
     }
 
     fn toggle_hyper(&mut self) {
         capsule::set_hyper_enabled(!capsule::hyper::on());
-        self.apply_hyper();
+        capsule::hyper::apply(capsule::config().hyper);
     }
 
     fn on_bar_exited(&mut self) {
@@ -739,7 +736,8 @@ fn main() {
         app.refresh_icon();
         app.notify(NIM_ADD);
         APP.with(|cell| *cell.borrow_mut() = Some(app));
-        if capsule::enabled() {
+        let cfg = capsule::config();
+        if cfg.capsule_bar.enabled {
             with_app(App::start_bar);
         }
         launcher::init(launcher::Options {
@@ -747,13 +745,13 @@ fn main() {
             command_msg: WM_LAUNCHER_CMD,
             commands: LAUNCHER_COMMANDS,
         });
-        with_app(App::apply_launcher);
+        with_app(|app| app.apply_launcher(cfg.launcher));
         capsule::hyper::init(capsule::hyper::Options {
             owner: hwnd.0 as isize,
             command_msg: WM_LAUNCHER_CMD,
             reload_command: CMD_RELOAD_CONFIG as u32,
         });
-        with_app(App::apply_hyper);
+        capsule::hyper::apply(cfg.hyper);
 
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);
         let _ = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);

@@ -8,8 +8,11 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::core::w;
 
+const CF_TEXT: u32 = 1;
+const CF_OEMTEXT: u32 = 7;
 const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
+const CF_LOCALE: u32 = 16;
 const CF_DIBV5: u32 = 17;
 const MAX_SAVED: usize = 64 << 20;
 
@@ -19,14 +22,26 @@ fn skip_format(f: u32) -> bool {
     matches!(f, 1..=3 | 7 | 9 | 14 | 0x80..=0x8E | 0x200..=0x3FF)
 }
 
-fn open(owner: HWND) -> bool {
-    for _ in 0..10 {
-        if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
-            return true;
+struct Open;
+
+impl Open {
+    fn new(owner: HWND) -> Option<Open> {
+        for _ in 0..10 {
+            if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
+                return Some(Open);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        None
     }
-    false
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseClipboard();
+        }
+    }
 }
 
 pub fn sequence() -> u32 {
@@ -47,14 +62,8 @@ fn text_bytes(s: &str) -> Vec<u8> {
 }
 
 pub fn get(owner: HWND) -> Option<String> {
-    if !open(owner) {
-        return None;
-    }
-    let text = with_data(CF_UNICODETEXT, usize::MAX, decode);
-    unsafe {
-        let _ = CloseClipboard();
-    }
-    text
+    let open = Open::new(owner)?;
+    with_data(&open, CF_UNICODETEXT, usize::MAX, decode)
 }
 
 pub fn set(owner: HWND, s: &str) {
@@ -68,8 +77,7 @@ pub fn set_private(owner: HWND, s: &str) {
     write(owner, [(CF_UNICODETEXT, text_bytes(s).as_slice())], true);
 }
 
-/// Must be called with the clipboard open.
-fn with_data<T>(format: u32, max: usize, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
+fn with_data<T>(_: &Open, format: u32, max: usize, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
     unsafe {
         let mem = HGLOBAL(GetClipboardData(format).ok()?.0);
         let size = GlobalSize(mem);
@@ -100,20 +108,17 @@ fn private_formats() -> &'static [u32; 4] {
 }
 
 fn write<'a>(owner: HWND, formats: impl IntoIterator<Item = (u32, &'a [u8])>, private: bool) {
-    if !open(owner) {
-        return;
-    }
+    let Some(_open) = Open::new(owner) else { return };
     unsafe {
         let _ = EmptyClipboard();
-        for (format, bytes) in formats {
-            put(format, bytes);
+    }
+    for (format, bytes) in formats {
+        put(format, bytes);
+    }
+    if private {
+        for &format in private_formats() {
+            put(format, &0u32.to_le_bytes());
         }
-        if private {
-            for &format in private_formats() {
-                put(format, &0u32.to_le_bytes());
-            }
-        }
-        let _ = CloseClipboard();
     }
 }
 
@@ -144,19 +149,22 @@ impl Saved {
     }
 }
 
-pub fn save(owner: HWND) -> Saved {
+fn formats(_: &Open) -> impl Iterator<Item = u32> {
+    std::iter::successors(Some(0), |&f| Some(unsafe { EnumClipboardFormats(f) }).filter(|&f| f != 0)).skip(1)
+}
+
+pub fn only_text(owner: HWND) -> bool {
+    let Some(open) = Open::new(owner) else { return false };
+    formats(&open)
+        .all(|f| matches!(f, CF_TEXT | CF_OEMTEXT | CF_UNICODETEXT | CF_LOCALE) || private_formats().contains(&f))
+}
+
+pub fn save(owner: HWND) -> Option<Saved> {
     let mut saved = Saved { sequence: sequence(), formats: Vec::new() };
-    if !open(owner) {
-        return saved;
-    }
+    let open = Open::new(owner)?;
     let mut total = 0;
-    let mut format = 0;
     let mut dib = false;
-    loop {
-        format = unsafe { EnumClipboardFormats(format) };
-        if format == 0 {
-            break;
-        }
+    for format in formats(&open) {
         if skip_format(format) {
             continue;
         }
@@ -168,15 +176,12 @@ pub fn save(owner: HWND) -> Saved {
             }
             dib = true;
         }
-        if let Some(bytes) = with_data(format, MAX_SAVED - total, <[u8]>::to_vec) {
+        if let Some(bytes) = with_data(&open, format, MAX_SAVED - total, <[u8]>::to_vec) {
             total += bytes.len();
             saved.formats.push((format, bytes));
         }
     }
-    unsafe {
-        let _ = CloseClipboard();
-    }
-    saved
+    Some(saved)
 }
 
 /// Puts `saved` back unless the clipboard changed since `expected`, or never

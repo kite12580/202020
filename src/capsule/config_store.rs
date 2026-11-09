@@ -1,4 +1,4 @@
-use capsule_core::config::{self, CapsuleBar, Config, Hyper, Launcher};
+use capsule_core::config::{self, CapsuleBar, Config, Launcher};
 use std::path::PathBuf;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
@@ -42,8 +42,8 @@ fn read() -> (PathBuf, String, Config) {
     (path, text, config)
 }
 
-pub fn enabled() -> bool {
-    read().2.capsule_bar.enabled
+pub fn config() -> Config {
+    read().2
 }
 
 pub fn log_level() -> log::LevelFilter {
@@ -67,10 +67,6 @@ pub fn launcher() -> Launcher {
 
 pub fn set_launcher_enabled(enabled: bool) {
     edit_file(|t| config::set_launcher_enabled(t, enabled));
-}
-
-pub fn hyper() -> Hyper {
-    read().2.hyper
 }
 
 pub fn set_hyper_enabled(enabled: bool) {
