@@ -2,8 +2,11 @@
 //! launch history is freed after `idle_unload_minutes` without an open.
 
 mod index;
+mod interact;
 mod launch;
+mod search;
 mod sources;
+mod view;
 
 pub(crate) use launch::open;
 
@@ -12,48 +15,38 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use capsule_core::config::{Backdrop, FolderRoot, Launcher as Config};
-use capsule_core::launcher::history::{History, split_key};
+use capsule_core::launcher::Source;
+use capsule_core::launcher::history::History;
 use capsule_core::launcher::input::TextInput;
-use capsule_core::launcher::rank::{Match, Searcher, rank, top};
-use capsule_core::launcher::{Source, query};
-use capsule_core::layout::Rect;
-use capsule_core::shell_proto::{Answer, AppInfo, Bitmap, Request};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect, ValidateRect};
+use capsule_core::launcher::rank::{Match, Searcher};
+use capsule_core::shell_proto::Answer;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcess, INFINITE, SetProcessWorkingSetSize};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::Ime::{
-    CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext,
-    ImmSetCandidateWindow, ImmSetCompositionWindow,
-};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_A, VK_BACK, VK_C, VK_CONTROL, VK_DELETE, VK_DOWN,
-    VK_END, VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
-    VK_V, VK_X,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, GetCursorPos, GetQueueStatus, KillTimer, QS_KEY,
-    QS_MOUSEBUTTON, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow, USER_TIMER_MINIMUM, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, KillTimer, SW_HIDE, SW_SHOW,
+    SetForegroundWindow, SetTimer, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
-use crate::capsule::gfx::{Color, Font, Gfx, Image, Surface, Text};
-use crate::capsule::hook::{self, Hook, HookEvent};
-use crate::capsule::theme::{self, Palette, Theme};
-use crate::capsule::util::{hwnd, lparam_point, primary_monitor, register_class, scale};
+use crate::capsule::config_store;
+use crate::capsule::gfx::{Font, Gfx, Image, Surface, Text};
+use crate::capsule::hook::{Hook, HookEvent};
+use crate::capsule::theme::{self, Theme};
+use crate::capsule::util::{hwnd, register_class, scale};
 use crate::capsule::windows_list as winlist;
-use crate::capsule::{clipboard, config_store};
 use index::{Action, Batch, Entry};
+use search::Row;
 
 /// A 202020 action offered as a command; `id` is posted as the wparam of
 /// `Options::command_msg`.
@@ -76,21 +69,11 @@ const WM_HOOK: u32 = WM_APP + 2;
 const TIMER_IDLE: usize = 1;
 const TIMER_CARET: usize = 2;
 const TIMER_MATCH: usize = 3;
-/// Entries scored between checks for pending input.
-const MATCH_CHUNK: u32 = 512;
 
-const WIDTH: f32 = 640.0;
-const PAD: f32 = 8.0;
-const SEARCH_H: f32 = 56.0;
-const TEXT_X: f32 = 52.0;
-const ROW_H: f32 = 44.0;
-const ICON: f32 = 24.0;
-const NAME_X: f32 = PAD + 48.0;
-const TAG_W: f32 = 72.0;
-const LIST_TOP: f32 = SEARCH_H + 1.0 + PAD / 2.0;
 const RESCAN_AFTER: Duration = Duration::from_secs(60);
 
 const SOURCES: [Source; 4] = [Source::App, Source::Window, Source::Command, Source::Folder];
+
 /// Index into `Launcher::lists`.
 const RECENT: usize = SOURCES.len();
 
@@ -165,17 +148,6 @@ pub fn flush_history() {
     });
 }
 
-struct Row {
-    list: usize,
-    index: usize,
-    marks: Vec<u32>,
-    icon: Option<String>,
-    name: Option<Text>,
-    sub: Option<Text>,
-    tag: Option<Text>,
-    glyph: Option<Text>,
-}
-
 enum Deferred {
     Activate(usize),
     Menu(usize, i32, i32),
@@ -230,23 +202,6 @@ struct Launcher {
 struct Scan {
     rx: Receiver<Batch>,
     cancel: Arc<AtomicBool>,
-}
-
-fn row_rect(i: usize) -> Rect {
-    Rect { x: PAD, y: LIST_TOP + i as f32 * ROW_H, w: WIDTH - 2.0 * PAD, h: ROW_H }
-}
-
-/// An entry for a history key whose source hasn't been scanned yet.
-fn remembered(key: &str, name: &str) -> Option<Entry> {
-    let (source, id) = split_key(key)?;
-    match source {
-        Source::App => Some(index::app_entry(name.to_string(), id)),
-        Source::Folder => {
-            let (path, dir) = index::split_dir(id);
-            Some(index::file_entry(path, name.to_string(), dir))
-        }
-        Source::Window | Source::Command => None,
-    }
 }
 
 impl Launcher {
@@ -426,386 +381,9 @@ impl Launcher {
         }
     }
 
-    fn start_scan(&mut self) {
-        if self.scan.is_some() {
-            return;
-        }
-        let roots = if self.cfg.folders.enabled { self.cfg.folders.roots.len() } else { 0 };
-        if roots < self.root_lens.len() {
-            self.root_lens.truncate(roots);
-            self.lists[list_of(Source::Folder)].truncate(self.root_lens.iter().sum());
-            self.list_changed(list_of(Source::Folder));
-        }
-        self.root_lens.resize(roots, 0);
-        let (tx, rx) = channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        index::spawn_scan(self.cfg.clone(), tx, self.hwnd.0 as isize, WM_SCAN, cancel.clone());
-        self.scan = Some(Scan { rx, cancel });
-        self.scan_started = Some(Instant::now());
-        self.apps_pending = self.cfg.apps.enabled;
-        if self.apps_pending {
-            self.request_apps();
-        } else {
-            self.apply(vec![Batch { source: Source::App, root: 0, entries: Vec::new(), last: true }]);
-        }
-    }
-
-    fn request_apps(&self) {
-        hook::request(self.hwnd, &Request::Apps);
-    }
-
-    fn on_scan(&mut self) {
-        let Some(scan) = &self.scan else { return };
-        let batches: Vec<Batch> = scan.rx.try_iter().collect();
-        if batches.iter().any(|b| b.last) {
-            self.scan = None;
-        }
-        self.apply(batches);
-    }
-
-    fn on_apps(&mut self, apps: Vec<AppInfo>) {
-        if !std::mem::take(&mut self.apps_pending) {
-            return;
-        }
-        let entries = apps.into_iter().map(|a| index::app_entry(a.name, &a.id)).collect();
-        self.apply(vec![Batch { source: Source::App, root: 0, entries, last: true }]);
-    }
-
-    fn apply(&mut self, batches: Vec<Batch>) {
-        if batches.is_empty() {
-            return;
-        }
-        let keep = self.rows.get(self.selected).map(|r| self.entry(r).key.clone());
-        let mut changed = [false; RECENT];
-        for b in batches {
-            let list = list_of(b.source);
-            if b.source == Source::Folder {
-                self.set_root(b.root, b.entries);
-            } else {
-                self.lists[list] = b.entries;
-            }
-            if b.last {
-                self.scanned[list] = true;
-            }
-            changed[list] = true;
-        }
-        for list in (0..RECENT).filter(|&l| changed[l]) {
-            self.list_changed(list);
-        }
-        if self.visible {
-            self.refresh();
-            if let Some(k) = keep.filter(|k| !k.is_empty())
-                && let Some(i) = self.rows.iter().position(|r| self.entry(r).key == k)
-            {
-                self.selected = i;
-            }
-        }
-    }
-
-    fn set_root(&mut self, root: usize, entries: Vec<Entry>) {
-        let Some(&len) = self.root_lens.get(root) else { return };
-        let start: usize = self.root_lens[..root].iter().sum();
-        self.root_lens[root] = entries.len();
-        self.lists[list_of(Source::Folder)].splice(start..start + len, entries);
-    }
-
-    /// Drops what refers to positions in `list`.
-    fn list_changed(&mut self, list: usize) {
-        self.stop_matching();
-        let rows = self.rows.len();
-        self.rows.retain(|r| r.list != list);
-        if self.rows.len() != rows {
-            self.selected = self.selected.min(self.rows.len().saturating_sub(1));
-            self.hover = None;
-            if self.visible {
-                self.place();
-                self.invalidate();
-            }
-        }
-        self.by_key.retain(|_, &mut (l, _)| l != list);
-        let (entries, by_key) = (&self.lists[list], &mut self.by_key);
-        with_history(|h| {
-            for (i, e) in entries.iter().enumerate() {
-                if h.contains(&e.key) {
-                    by_key.insert(e.key.clone(), (list, i));
-                }
-            }
-        });
-    }
-
-    fn row(&self, list: usize, index: usize, marks: Vec<u32>) -> Row {
-        let e = &self.lists[list][index];
-        let room = WIDTH - NAME_X - TAG_W - PAD * 2.0;
-        Row {
-            list,
-            index,
-            marks,
-            icon: e.icon_key(),
-            name: self.gfx.text_fit(&e.name, Font::Title, room),
-            sub: Some(e.subtitle()).filter(|s| !s.is_empty()).and_then(|s| self.gfx.text_fit(&s, Font::Small, room)),
-            tag: self.gfx.text(e.source.label(), Font::Small),
-            glyph: e.glyph.and_then(|g| self.gfx.text(g.encode_utf8(&mut [0; 4]), Font::Glyph)),
-        }
-    }
-
-    /// Re-runs the query and resizes the window to fit the results. A search
-    /// through many entries yields to pending input and finishes on
-    /// `TIMER_MATCH`.
-    fn refresh(&mut self) {
-        let text = self.input.text();
-        self.search = self.gfx.text(&text, Font::Search);
-        let (only, q) = query::split(&text, &self.cfg.prefixes);
-        self.searcher.set_query(q);
-        if self.searcher.is_empty() {
-            self.stop_matching();
-            self.rows.clear();
-            self.lists[RECENT].clear();
-            self.list_recent(only);
-            self.rows_changed();
-            return;
-        }
-        let narrow = self
-            .found_query
-            .as_ref()
-            .is_some_and(|(o, prev)| *o == only && q.starts_with(prev.as_str()) && !prev.ends_with('\\'));
-        if narrow {
-            self.recheck.extend(self.found.drain(..).map(|(l, i, _)| (l, i)));
-        } else {
-            self.stop_matching();
-            self.next = (0, 0);
-        }
-        self.found_query = Some((only, q.to_string()));
-        self.resume_matching();
-        if self.matching() {
-            self.repaint_search();
-        }
-    }
-
-    fn list_recent(&mut self, only: Option<Source>) {
-        let wanted = |s: Source| only.is_none_or(|o| o == s);
-        let k = self.cfg.max_results;
-        let recent: Vec<(String, String)> =
-            with_history(|h| h.top(now()).into_iter().map(|(key, e)| (key.to_string(), e.name.clone())).collect());
-        for (key, name) in recent {
-            if self.rows.len() >= k {
-                break;
-            }
-            let Some((source, _)) = split_key(&key) else { continue };
-            if !wanted(source) || !self.enabled(source) {
-                continue;
-            }
-            if let Some(&(list, index)) = self.by_key.get(&key) {
-                let row = self.row(list, index, Vec::new());
-                self.rows.push(row);
-            } else if !self.scanned[list_of(source)]
-                && let Some(e) = remembered(&key, &name)
-            {
-                self.lists[RECENT].push(e);
-                let row = self.row(RECENT, self.lists[RECENT].len() - 1, Vec::new());
-                self.rows.push(row);
-            }
-        }
-        if let Some(source) = only {
-            let list = list_of(source);
-            for index in 0..self.lists[list].len() {
-                if self.rows.len() >= k {
-                    break;
-                }
-                if !self.rows.iter().any(|r| r.list == list && r.index == index) {
-                    let row = self.row(list, index, Vec::new());
-                    self.rows.push(row);
-                }
-            }
-        }
-    }
-
-    fn matching(&self) -> bool {
-        self.found_query.is_some() && (!self.recheck.is_empty() || self.next.0 < RECENT)
-    }
-
-    fn kill_match_timer(&self) {
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_MATCH);
-        }
-    }
-
-    fn stop_matching(&mut self) {
-        self.kill_match_timer();
-        self.found_query = None;
-        self.found.clear();
-        self.recheck.clear();
-    }
-
-    fn resume_matching(&mut self) {
-        if self.score_entries(true) {
-            self.show_matches();
-        } else {
-            unsafe {
-                SetTimer(Some(self.hwnd), TIMER_MATCH, USER_TIMER_MINIMUM, None);
-            }
-        }
-    }
-
-    /// Completes a search that yielded, so keys act on its results.
-    fn settle(&mut self) {
-        if self.matching() {
-            self.kill_match_timer();
-            self.score_entries(false);
-            self.show_matches();
-        }
-    }
-
-    /// Scores entries for `found_query`. Returns false if it stopped for
-    /// pending key or mouse button input.
-    fn score_entries(&mut self, yield_to_input: bool) -> bool {
-        let only = self.found_query.as_ref().and_then(|(o, _)| *o);
-        let wanted = SOURCES.map(|s| only.is_none_or(|o| o == s) && self.enabled(s));
-        let (lists, searcher, found) = (&self.lists, &mut self.searcher, &mut self.found);
-        let mut consider = |l: usize, i: usize| {
-            if wanted[l]
-                && let Some(m) = searcher.score(&lists[l][i].keys)
-            {
-                found.push((l, i, m));
-            }
-        };
-        let mut budget = MATCH_CHUNK;
-        loop {
-            budget -= 1;
-            if budget == 0 {
-                budget = MATCH_CHUNK;
-                if yield_to_input && unsafe { GetQueueStatus(QS_KEY | QS_MOUSEBUTTON) } >> 16 != 0 {
-                    return false;
-                }
-            }
-            if let Some((l, i)) = self.recheck.pop() {
-                consider(l, i);
-                continue;
-            }
-            let (l, i) = self.next;
-            if l >= RECENT {
-                return true;
-            }
-            if !wanted[l] || i >= lists[l].len() {
-                self.next = (l + 1, 0);
-                continue;
-            }
-            consider(l, i);
-            self.next.1 += 1;
-        }
-    }
-
-    fn show_matches(&mut self) {
-        let now = now();
-        let weights = SOURCES.map(|s| self.weight(s));
-        let (lists, found) = (&self.lists, &self.found);
-        let mut ranked: Vec<(f64, usize, usize)> = with_history(|h| {
-            found
-                .iter()
-                .enumerate()
-                .map(|(n, &(l, i, m))| {
-                    let e = &lists[l][i];
-                    let boost = if e.key.is_empty() { 1.0 } else { h.boost(&e.key, now) };
-                    (rank(m.score, weights[l], boost), e.name.len(), n)
-                })
-                .collect()
-        });
-        self.rows.clear();
-        self.lists[RECENT].clear();
-        for f in top(&mut ranked, self.cfg.max_results) {
-            let (list, index, m) = self.found[f];
-            let marks = self.searcher.highlight(&self.lists[list][index].keys, m);
-            let row = self.row(list, index, marks);
-            self.rows.push(row);
-        }
-        self.rows_changed();
-    }
-
-    fn rows_changed(&mut self) {
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
-        self.request_icons();
-        self.place();
-        self.invalidate();
-    }
-
-    fn height(&self) -> f32 {
-        if self.rows.is_empty() { SEARCH_H } else { LIST_TOP + self.rows.len() as f32 * ROW_H + PAD }
-    }
-
-    fn place(&mut self) {
-        let mon = primary_monitor();
-        let (w, h) = (self.px(WIDTH), self.px(self.height()));
-        let x = (mon.left + mon.right - w) / 2;
-        let y = mon.top + (mon.bottom - mon.top) * 22 / 100;
-        if self.bounds == (x, y, w, h) {
-            return;
-        }
-        self.bounds = (x, y, w, h);
-        unsafe {
-            let _ = SetWindowPos(self.hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
-        }
-        if let Some(s) = &mut self.surface {
-            s.resize(w as u32, h as u32);
-        }
-    }
-
     fn invalidate(&self) {
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
-        }
-    }
-
-    fn edited(&mut self) {
-        self.selected = 0;
-        self.caret_on = true;
-        self.refresh();
-        self.place_ime();
-    }
-
-    fn caret_offset(&self) -> f32 {
-        self.search.as_ref().map_or(0.0, |t| t.x_at(self.input.caret))
-    }
-
-    /// Left edge of the search text, shifted so the caret stays in view.
-    fn text_origin(&self) -> f32 {
-        let room = WIDTH - TEXT_X - PAD * 2.0;
-        TEXT_X - (self.caret_offset() - room).max(0.0)
-    }
-
-    fn place_ime(&self) {
-        let pt = POINT { x: self.px(self.text_origin() + self.caret_offset()), y: self.px(SEARCH_H / 2.0 - 12.0) };
-        unsafe {
-            let imc = ImmGetContext(self.hwnd);
-            if imc.is_invalid() {
-                return;
-            }
-            let comp = COMPOSITIONFORM { dwStyle: CFS_POINT, ptCurrentPos: pt, ..Default::default() };
-            let _ = ImmSetCompositionWindow(imc, &comp);
-            let below = POINT { x: pt.x, y: self.px(SEARCH_H / 2.0 + 14.0) };
-            let cand =
-                CANDIDATEFORM { dwIndex: 0, dwStyle: CFS_CANDIDATEPOS, ptCurrentPos: below, ..Default::default() };
-            let _ = ImmSetCandidateWindow(imc, &cand);
-            let _ = ImmReleaseContext(self.hwnd, imc);
-        }
-    }
-
-    fn row_at(&self, y: f32) -> Option<usize> {
-        (0..self.rows.len()).find(|&i| {
-            let r = row_rect(i);
-            y >= r.y && y < r.y + r.h
-        })
-    }
-
-    fn request_icons(&mut self) {
-        let px = self.px(ICON) as u32;
-        for row in &self.rows {
-            let Some(key) = row.icon.as_ref().filter(|k| !self.images.contains_key(*k)) else { continue };
-            let Some(name) = self.lists[row.list][row.index].icon() else { continue };
-            let id = self.next_icon;
-            self.next_icon += 1;
-            if hook::request(self.hwnd, &Request::Icon { id, px, name }) {
-                self.images.insert(key.clone(), None);
-                self.pending.insert(id, key.clone());
-            }
         }
     }
 
@@ -825,219 +403,6 @@ impl Launcher {
                 HookEvent::Answer(Answer::Pins(_)) => {}
             }
         }
-    }
-
-    fn on_icon(&mut self, id: u64, bitmap: Option<Bitmap>) {
-        let image = bitmap.and_then(|b| self.gfx.image_from_bitmap(b, self.px(ICON) as u32));
-        if let Some(key) = self.pending.remove(&id) {
-            self.images.insert(key, image);
-            self.invalidate();
-        }
-    }
-
-    fn paint_search(&self, s: &mut Surface, pal: &Palette) {
-        let origin = self.text_origin();
-        let (selection, caret) = (self.input.selection(), self.input.caret);
-        s.fill(Rect { x: 0.0, y: 0.0, w: WIDTH, h: SEARCH_H }, pal.tint, 0.0);
-        let cy = SEARCH_H / 2.0;
-        if let Some(t) = &self.lens {
-            s.text(t, 20.0, cy - t.height / 2.0, pal.text.alpha(0.6));
-        }
-        match &self.search {
-            Some(t) if self.input.end() > 0 => {
-                let ty = cy - t.height / 2.0;
-                if selection.0 != selection.1 {
-                    let (a, b) = (origin + t.x_at(selection.0), origin + t.x_at(selection.1));
-                    s.fill(Rect { x: a, y: cy - 13.0, w: b - a, h: 26.0 }, pal.accent.alpha(0.35), 2.0);
-                }
-                s.text_colored(t, origin, ty, |i| {
-                    if origin + t.x_at(i) < TEXT_X - 2.0 { Color(0.0, 0.0, 0.0, 0.0) } else { pal.text }
-                });
-                if self.caret_on {
-                    s.fill(Rect { x: origin + t.x_at(caret), y: cy - 12.0, w: 1.5, h: 24.0 }, pal.text, 0.0);
-                }
-            }
-            _ => {
-                if let Some(p) = &self.placeholder {
-                    s.text(p, TEXT_X, cy - p.height / 2.0, pal.text.alpha(0.4));
-                }
-                if self.caret_on {
-                    s.fill(Rect { x: TEXT_X, y: cy - 12.0, w: 1.5, h: 24.0 }, pal.text, 0.0);
-                }
-            }
-        }
-    }
-
-    fn blink(&mut self) {
-        self.caret_on = !self.caret_on;
-        self.repaint_search();
-    }
-
-    fn repaint_search(&mut self) {
-        let Some(theme) = self.theme.filter(|_| self.visible) else { return };
-        let Some(mut s) = self.surface.take() else { return };
-        s.begin_band(0.0, SEARCH_H);
-        self.paint_search(&mut s, &theme.palette(1.0));
-        s.end_band(0.0, SEARCH_H);
-        self.surface = Some(s);
-    }
-
-    fn paint(&mut self) {
-        unsafe {
-            let _ = ValidateRect(Some(self.hwnd), None);
-        }
-        if !self.visible {
-            return;
-        }
-        let (w, h) = (self.px(WIDTH) as u32, self.px(self.height()) as u32);
-        if self.surface.is_none() {
-            self.surface = Surface::new(self.hwnd, w, h, self.dpi);
-        }
-        let Some(theme) = self.theme else { return };
-        let pal = theme.palette(1.0);
-        let dim = pal.text.alpha(0.6);
-        let accent = if theme.high_contrast { pal.text } else { pal.accent };
-        let height = self.to_dip(h as i32);
-        let Some(mut s) = self.surface.take() else { return };
-        s.resize(w, h);
-        s.begin();
-        s.fill(Rect { x: 0.0, y: SEARCH_H, w: WIDTH, h: height - SEARCH_H }, pal.tint, 0.0);
-        if !self.rows.is_empty() {
-            s.fill(Rect { x: 0.0, y: SEARCH_H, w: WIDTH, h: 1.0 }, pal.text.alpha(0.08), 0.0);
-        }
-        for (i, row) in self.rows.iter().enumerate() {
-            let r = row_rect(i);
-            if i == self.selected {
-                s.fill(r, pal.active, 6.0);
-            } else if self.hover == Some(i) {
-                s.fill(r, pal.hover, 6.0);
-            }
-            let rcy = r.y + r.h / 2.0;
-            let icx = r.x + 12.0 + ICON / 2.0;
-            if let Some(Some(img)) = row.icon.as_ref().and_then(|k| self.images.get(k)) {
-                s.image(img, icx, rcy);
-            } else if let Some(g) = &row.glyph {
-                s.text(g, icx - g.width / 2.0, rcy - g.height / 2.0, dim);
-            }
-            let paint_name = |s: &mut Surface, t: &Text, y: f32| {
-                s.text_colored(t, NAME_X, y, |c| {
-                    if row.marks.binary_search(&(c as u32)).is_ok() { accent } else { pal.text }
-                });
-            };
-            match (&row.name, &row.sub) {
-                (Some(n), Some(st)) => {
-                    let top = rcy - (n.height + st.height) / 2.0;
-                    paint_name(&mut s, n, top);
-                    s.text(st, NAME_X, top + n.height, dim);
-                }
-                (Some(n), None) => paint_name(&mut s, n, rcy - n.height / 2.0),
-                _ => {}
-            }
-            if let Some(t) = &row.tag {
-                s.text(t, r.x + r.w - 12.0 - t.width, rcy - t.height / 2.0, pal.text.alpha(0.45));
-            }
-        }
-        self.paint_search(&mut s, &pal);
-        s.end();
-        self.surface = Some(s);
-    }
-
-    fn select(&mut self, i: usize) {
-        if i != self.selected && i < self.rows.len() {
-            self.selected = i;
-            self.invalidate();
-        }
-    }
-
-    fn step(&mut self, delta: isize) {
-        let n = self.rows.len() as isize;
-        if n > 0 {
-            self.select((self.selected as isize + delta).rem_euclid(n) as usize);
-        }
-    }
-
-    fn on_key(&mut self, vk: u16) -> bool {
-        let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
-        let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
-        let edit = |l: &mut Launcher, f: &dyn Fn(&mut TextInput)| {
-            let before = l.input.text();
-            f(&mut l.input);
-            l.caret_on = true;
-            if l.input.text() != before {
-                l.edited();
-            } else {
-                l.place_ime();
-                l.repaint_search();
-            }
-        };
-        if [VK_RETURN, VK_UP, VK_DOWN, VK_TAB, VK_PRIOR, VK_NEXT].iter().any(|k| k.0 == vk) {
-            self.settle();
-        }
-        match vk {
-            v if v == VK_ESCAPE.0 => self.hide(),
-            v if v == VK_RETURN.0 => self.deferred = Some(Deferred::Activate(self.selected)),
-            v if v == VK_UP.0 => self.step(-1),
-            v if v == VK_DOWN.0 => self.step(1),
-            v if v == VK_TAB.0 => self.step(if shift { -1 } else { 1 }),
-            v if v == VK_PRIOR.0 => self.select(0),
-            v if v == VK_NEXT.0 => self.select(self.rows.len().saturating_sub(1)),
-            v if v == VK_LEFT.0 => edit(self, &|t| t.left(ctrl, shift)),
-            v if v == VK_RIGHT.0 => edit(self, &|t| t.right(ctrl, shift)),
-            v if v == VK_HOME.0 => edit(self, &|t| t.move_to(0, shift)),
-            v if v == VK_END.0 => edit(self, &|t| t.move_to(t.end(), shift)),
-            v if v == VK_BACK.0 => edit(self, &|t| t.backspace(ctrl)),
-            v if v == VK_DELETE.0 => edit(self, &|t| t.delete(ctrl)),
-            v if ctrl && v == VK_A.0 => edit(self, &|t| t.select_all()),
-            v if ctrl && (v == VK_C.0 || v == VK_INSERT.0) => clipboard::set(self.hwnd, &self.input.selected_text()),
-            v if ctrl && v == VK_X.0 => {
-                clipboard::set(self.hwnd, &self.input.selected_text());
-                edit(self, &|t| {
-                    t.delete_selection();
-                });
-            }
-            v if (ctrl && v == VK_V.0) || (shift && v == VK_INSERT.0) => {
-                let pasted = clipboard::get(self.hwnd).unwrap_or_default();
-                let line = pasted.lines().next().unwrap_or("").to_string();
-                edit(self, &|t| t.insert(&line));
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn on_char(&mut self, unit: u16) {
-        let c = match (self.high_surrogate.take(), unit) {
-            (_, 0xD800..=0xDBFF) => {
-                self.high_surrogate = Some(unit);
-                return;
-            }
-            (Some(hi), 0xDC00..=0xDFFF) => char::decode_utf16([hi, unit]).next().and_then(Result::ok),
-            (_, u) => char::from_u32(u32::from(u)),
-        };
-        let Some(c) = c.filter(|c| !c.is_control()) else { return };
-        self.input.insert(&c.to_string());
-        self.edited();
-    }
-
-    fn caret_from_x(&mut self, x: f32, extend: bool) {
-        let origin = self.text_origin();
-        let Some(t) = &self.search else { return };
-        let i = (0..=t.len())
-            .min_by(|&a, &b| (origin + t.x_at(a) - x).abs().total_cmp(&(origin + t.x_at(b) - x).abs()))
-            .unwrap_or(0);
-        self.input.move_to(i, extend);
-        self.caret_on = true;
-        self.place_ime();
-        self.repaint_search();
-    }
-
-    fn menu_point(&self, i: usize) -> (i32, i32) {
-        let r = row_rect(i);
-        let mut pt = POINT { x: self.px(NAME_X), y: self.px(r.y + r.h) };
-        unsafe {
-            let _ = ClientToScreen(self.hwnd, &mut pt);
-        }
-        (pt.x, pt.y)
     }
 
     fn message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
@@ -1064,76 +429,16 @@ impl Launcher {
             }
             WM_SCAN => self.on_scan(),
             WM_HOOK => self.on_hook_events(),
-            WM_DPICHANGED => {
-                self.dpi = (wparam.0 & 0xFFFF) as u32;
-                if let Some(s) = &mut self.surface {
-                    s.set_dpi(self.dpi);
-                }
-                self.images.clear();
-                self.pending.clear();
-                self.request_icons();
-                self.place();
-                self.invalidate();
-            }
-            WM_MOUSEMOVE => {
-                let (_, y) = lparam_point(lparam);
-                let row = self.row_at(self.to_dip(y));
-                if row != self.hover {
-                    self.hover = row;
-                    let mut tme = TRACKMOUSEEVENT {
-                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                        dwFlags: TME_LEAVE,
-                        hwndTrack: self.hwnd,
-                        dwHoverTime: 0,
-                    };
-                    unsafe {
-                        let _ = TrackMouseEvent(&mut tme);
-                    }
-                    self.invalidate();
-                }
-            }
+            WM_DPICHANGED => self.on_dpi((wparam.0 & 0xFFFF) as u32),
+            WM_MOUSEMOVE => self.on_mouse_move(lparam),
             WM_MOUSELEAVE => {
                 self.hover = None;
                 self.invalidate();
             }
-            WM_LBUTTONDOWN => {
-                let (x, y) = lparam_point(lparam);
-                let (x, y) = (self.to_dip(x), self.to_dip(y));
-                if y < SEARCH_H {
-                    let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
-                    self.caret_from_x(x, shift);
-                } else {
-                    self.pressed = self.row_at(y);
-                    if let Some(i) = self.pressed {
-                        self.select(i);
-                    }
-                }
-            }
-            WM_LBUTTONUP => {
-                let (_, y) = lparam_point(lparam);
-                let row = self.row_at(self.to_dip(y));
-                if let Some(i) = row.filter(|&i| self.pressed.take() == Some(i)) {
-                    self.deferred = Some(Deferred::Activate(i));
-                }
-            }
-            WM_RBUTTONUP => {
-                let (_, y) = lparam_point(lparam);
-                if let Some(i) = self.row_at(self.to_dip(y)) {
-                    self.select(i);
-                    let mut pt = POINT::default();
-                    unsafe {
-                        let _ = GetCursorPos(&mut pt);
-                    }
-                    self.deferred = Some(Deferred::Menu(i, pt.x, pt.y));
-                }
-            }
-            WM_CONTEXTMENU if lparam.0 == -1 => {
-                self.settle();
-                if self.selected < self.rows.len() {
-                    let (x, y) = self.menu_point(self.selected);
-                    self.deferred = Some(Deferred::Menu(self.selected, x, y));
-                }
-            }
+            WM_LBUTTONDOWN => self.on_left_down(lparam),
+            WM_LBUTTONUP => self.on_left_up(lparam),
+            WM_RBUTTONUP => self.on_right_up(lparam),
+            WM_CONTEXTMENU if lparam.0 == -1 => self.on_menu_key(),
             WM_MOUSEWHEEL => {
                 self.settle();
                 let delta = (wparam.0 >> 16) as i16;
