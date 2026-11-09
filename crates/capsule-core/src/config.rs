@@ -111,10 +111,16 @@ pub struct Keyboard {
     pub labels: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Tray {
     pub pinned: Vec<String>,
+}
+
+impl Default for Tray {
+    fn default() -> Self {
+        Self { pinned: vec!["202020.exe|1".into()] }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -470,7 +476,7 @@ step = 2
 
 [capsule_bar.tray]
 # Tray icons shown on the capsule. Right-click an icon in the ^ popup to pin or unpin it.
-pinned = []
+pinned = ["202020.exe|1"]
 
 [launcher]
 # Spotlight-style search, opened with the hotkey. Toggle it from the tray menu.

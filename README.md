@@ -27,7 +27,7 @@ Hold the left button anywhere on the capsule and drag to move it (the position i
 | Window icons | Programs pinned to the native taskbar come first, in its pin order, and always show: one icon per open window, or the program's icon when none is open. Other windows follow in the order they were opened. A short bar under an icon marks an open window; a longer accent-colored bar marks the active one. Left: activate, or minimize if already in front (on a closed pinned program: launch it); middle: close; right: system menu; hover: title |
 | `Win+1` … `Win+0` | Same as the native taskbar (its order, pinned programs included). The bar briefly wakes the hidden native taskbar and hands it the keystroke |
 | `^` | Shows all tray icons. Right-click an icon in the popup to pin it to the capsule or unpin it |
-| Pinned tray icons | Click, double-click and right-click behave as on the native taskbar |
+| Pinned tray icons | 202020's own icon is pinned by default. Click, double-click and right-click behave as on the native taskbar |
 | Keyboard layout | Shows the current layout (中 / EN …); shows 英 when a Chinese IME is in English mode. Left: next layout; right: list all layouts |
 | Volume | Wheel adjusts volume; click opens Quick Settings (like `Win+A`); hover shows the percentage |
 | Clock | Time on top, date (month/day/year) below. Click opens notifications and calendar (like `Win+N`); hover shows the full date and weekday |
