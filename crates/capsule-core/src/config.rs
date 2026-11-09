@@ -5,11 +5,14 @@ use toml_edit::{Array, DocumentMut, value};
 use crate::hyper::{self, Action, Binding, Job, Keymap};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
-#[serde(default)]
 pub struct Config {
+    #[serde(default)]
     pub capsule_bar: CapsuleBar,
+    #[serde(default)]
     pub launcher: Launcher,
+    #[serde(default)]
     pub hyper: Hyper,
+    #[serde(default)]
     pub logging: Logging,
 }
 
@@ -266,32 +269,62 @@ impl Default for FolderRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
 pub struct Hyper {
+    #[serde(default = "yes")]
     pub enabled: bool,
+    #[serde(default = "slow_mouse_speed")]
     pub slow_mouse_speed: u32,
+    #[serde(default = "terminals")]
     pub terminals: Vec<String>,
+    #[serde(default)]
     pub hotstrings: BTreeMap<String, String>,
+    #[serde(default = "keys")]
     pub keys: Keymap,
+    #[serde(default = "alt_keys")]
     pub alt_keys: Keymap,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn slow_mouse_speed() -> u32 {
+    1
+}
+
+fn terminals() -> Vec<String> {
+    vec!["WindowsTerminal.exe".into()]
+}
+
+fn default_keymaps() -> (Keymap, Keymap) {
+    #[derive(Deserialize)]
+    struct Doc {
+        hyper: Keys,
+    }
+    #[derive(Deserialize)]
+    struct Keys {
+        keys: Keymap,
+        alt_keys: Keymap,
+    }
+    let Doc { hyper: Keys { keys, alt_keys } } = toml::from_str(DEFAULT_KEYS).expect("DEFAULT_KEYS");
+    (keys, alt_keys)
+}
+
+fn keys() -> Keymap {
+    default_keymaps().0
+}
+
+fn alt_keys() -> Keymap {
+    default_keymaps().1
 }
 
 impl Default for Hyper {
     fn default() -> Self {
-        #[derive(Deserialize)]
-        struct Doc {
-            hyper: Keys,
-        }
-        #[derive(Deserialize)]
-        struct Keys {
-            keys: Keymap,
-            alt_keys: Keymap,
-        }
-        let Doc { hyper: Keys { keys, alt_keys } } = toml::from_str(DEFAULT_KEYS).expect("DEFAULT_KEYS");
+        let (keys, alt_keys) = default_keymaps();
         Self {
-            enabled: true,
-            slow_mouse_speed: 1,
-            terminals: vec!["WindowsTerminal.exe".into()],
+            enabled: yes(),
+            slow_mouse_speed: slow_mouse_speed(),
+            terminals: terminals(),
             hotstrings: BTreeMap::new(),
             keys,
             alt_keys,

@@ -204,11 +204,14 @@ pub struct Binding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Keymap(BTreeMap<u16, Binding>);
+pub struct Keymap(Box<[(u16, Binding)]>);
 
 impl FromIterator<(u16, Binding)> for Keymap {
     fn from_iter<I: IntoIterator<Item = (u16, Binding)>>(iter: I) -> Self {
-        Keymap(iter.into_iter().collect())
+        let mut bindings: Vec<_> = iter.into_iter().collect();
+        bindings.sort_by_key(|&(key, _)| key);
+        bindings.dedup_by_key(|&mut (key, _)| key);
+        Keymap(bindings.into_boxed_slice())
     }
 }
 
@@ -222,7 +225,8 @@ impl Keymap {
     }
 
     pub fn get(&self, key: u16, target: impl FnOnce() -> Target) -> Option<&Action> {
-        let b = self.0.get(&key)?;
+        let i = self.0.binary_search_by_key(&key, |&(k, _)| k).ok()?;
+        let b = &self.0[i].1;
         Some(match &b.terminal {
             Some(t) if target() == Target::Terminal => t,
             _ => &b.action,

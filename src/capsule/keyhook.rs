@@ -176,13 +176,15 @@ fn on_key(vk: u32, down: bool) -> bool {
         post(&DIGIT_MSG, vk as usize, 0);
         return true;
     }
-    let vk = VIRTUAL_KEY(vk as u16);
-    let switches = match vk {
+    if down {
+        return false;
+    }
+    let switches = match VIRTUAL_KEY(vk as u16) {
         VK_LSHIFT | VK_RSHIFT | VK_LCONTROL | VK_RCONTROL | VK_LWIN | VK_RWIN | VK_CAPITAL => true,
         VK_SPACE => win_held() || held(VK_CONTROL) || held(VK_SHIFT),
         _ => false,
     };
-    if !down && switches && !INPUT_PENDING.swap(true, Relaxed) {
+    if switches && !INPUT_PENDING.swap(true, Relaxed) {
         post(&INPUT_MSG, 0, 0);
     }
     false

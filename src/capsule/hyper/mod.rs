@@ -67,10 +67,6 @@ pub fn stop() {
     keyhook::set_hyper(false);
 }
 
-fn config() -> Arc<Hyper> {
-    CONFIG.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
-}
-
 /// Returns whether to swallow the key.
 pub(super) fn on_key(vk_code: u32, down: bool, time: u32) -> bool {
     LAYER.with(|layer| {
@@ -79,11 +75,11 @@ pub(super) fn on_key(vk_code: u32, down: bool, time: u32) -> bool {
             let mut cached = cached.borrow_mut();
             let generation = GENERATION.load(Relaxed);
             if cached.as_ref().is_none_or(|(g, _)| *g != generation) {
-                *cached = Some((generation, config()));
+                *cached = CONFIG.lock().unwrap_or_else(|e| e.into_inner()).clone().map(|cfg| (generation, cfg));
             }
             let Some((_, cfg)) = cached.as_ref() else { return false };
             let ev = Event { vk: vk_code as u16, down, time };
-            layer.on_key(ev, &cfg.keys, &cfg.alt_keys, input::held_mods, target, &mut |e| run(e, cfg))
+            layer.on_key(ev, &cfg.keys, &cfg.alt_keys, input::held_mods, || target(cfg), &mut |e| run(e, cfg))
         })
     })
 }
@@ -91,7 +87,7 @@ pub(super) fn on_key(vk_code: u32, down: bool, time: u32) -> bool {
 pub(super) fn reset() {
     LAYER.with(|l| *l.borrow_mut() = Layer::new());
     KEYMAPS.with(|k| k.borrow_mut().take());
-    slow_mouse(false);
+    slow_mouse(None);
     end_alpha(false);
 }
 
@@ -109,41 +105,46 @@ fn run(effect: Effect, cfg: &Arc<Hyper>) {
             }
         }
         Effect::Button(b, down) => input::button(b, down),
-        Effect::SlowMouse(on) => slow_mouse(on),
+        Effect::SlowMouse(on) => slow_mouse(on.then_some(cfg.slow_mouse_speed)),
         Effect::AlphaBegin => begin_alpha(),
         Effect::AlphaEnd { tap } => end_alpha(tap),
     }
 }
 
-fn target() -> Target {
+fn target(cfg: &Hyper) -> Target {
     let fg = unsafe { GetForegroundWindow() };
     let generation = GENERATION.load(Relaxed);
     let (cached, cached_gen, t) = TARGET.get();
     if cached == fg.0 as isize && cached_gen == generation {
         return t;
     }
-    let t = classify(fg);
+    let t = classify(fg, cfg);
     TARGET.set((fg.0 as isize, generation, t));
     t
 }
 
-fn classify(h: HWND) -> Target {
+fn classify(h: HWND, cfg: &Hyper) -> Target {
     let path = process_path(window_ids(h).1).unwrap_or_default();
     let exe = path.rsplit('\\').next().unwrap_or_default();
-    if config().terminals.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
+    if cfg.terminals.iter().any(|t| t.eq_ignore_ascii_case(exe)) {
         return Target::Terminal;
     }
     Target::Other
 }
 
-fn slow_mouse(on: bool) {
-    if on {
-        if SAVED_SPEED.get().is_none() {
-            SAVED_SPEED.set(Some(input::mouse_speed()));
-            input::set_mouse_speed(config().slow_mouse_speed);
+fn slow_mouse(speed: Option<u32>) {
+    match speed {
+        Some(speed) => {
+            if SAVED_SPEED.get().is_none() {
+                SAVED_SPEED.set(Some(input::mouse_speed()));
+                input::set_mouse_speed(speed);
+            }
         }
-    } else if let Some(speed) = SAVED_SPEED.take() {
-        input::set_mouse_speed(speed);
+        None => {
+            if let Some(saved) = SAVED_SPEED.take() {
+                input::set_mouse_speed(saved);
+            }
+        }
     }
 }
 
