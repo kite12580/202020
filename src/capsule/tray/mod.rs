@@ -140,54 +140,7 @@ impl Tray {
         let pos = self.icons.iter().position(|i| i.key.same(&key));
         log::debug!("tray msg {} {:?} flags {:#x} pos {:?} tip {:?}", ev.msg.message, key, d.flags, pos, d.tip);
         match ev.msg.message {
-            NIM_ADD | NIM_MODIFY => {
-                let idx = pos.unwrap_or_else(|| {
-                    let exe = process_path(window_ids(hwnd(handle(d.hwnd))).1);
-                    self.icons.push(Icon {
-                        key,
-                        pin: pin_key(exe.as_deref().unwrap_or_default(), d.uid, d.guid.as_ref()),
-                        callback: 0,
-                        version: 0,
-                        show_tip: false,
-                        hidden: false,
-                        tip: String::new(),
-                        exe,
-                        hicon: 0,
-                        image: None,
-                        fallback_requested: false,
-                    });
-                    self.icons.len() - 1
-                });
-                let icon = &mut self.icons[idx];
-                let was_hidden = icon.hidden;
-                if d.flags & NIF_MESSAGE != 0 {
-                    icon.callback = d.callback_message;
-                }
-                if d.flags & NIF_ICON != 0 {
-                    destroy_icon(icon.hicon);
-                    icon.hicon = ev.icon;
-                    icon.image = None;
-                }
-                if d.flags & NIF_TIP != 0 {
-                    icon.tip = d.tip.clone();
-                }
-                if d.flags & NIF_STATE != 0 && d.state_mask & NIS_HIDDEN != 0 {
-                    icon.hidden = d.state & NIS_HIDDEN != 0;
-                }
-                if ev.msg.message == NIM_ADD || d.flags & NIF_SHOWTIP != 0 {
-                    icon.show_tip = d.flags & NIF_SHOWTIP != 0;
-                }
-                if icon.key.guid.is_none() && d.guid.is_some() {
-                    icon.key.guid = d.guid;
-                }
-                if pos.is_none() || icon.hidden != was_hidden {
-                    Change::Relayout
-                } else if d.flags & NIF_ICON != 0 {
-                    Change::Redraw(idx)
-                } else {
-                    Change::None
-                }
-            }
+            NIM_ADD | NIM_MODIFY => self.upsert(&ev, key, pos),
             NIM_DELETE => {
                 destroy_icon(ev.icon);
                 match pos {
@@ -208,6 +161,56 @@ impl Tray {
                 destroy_icon(ev.icon);
                 Change::None
             }
+        }
+    }
+
+    fn upsert(&mut self, ev: &TrayEvent, key: TrayKey, pos: Option<usize>) -> Change {
+        let d = &ev.msg.data;
+        let idx = pos.unwrap_or_else(|| {
+            let exe = process_path(window_ids(hwnd(handle(d.hwnd))).1);
+            self.icons.push(Icon {
+                key,
+                pin: pin_key(exe.as_deref().unwrap_or_default(), d.uid, d.guid.as_ref()),
+                callback: 0,
+                version: 0,
+                show_tip: false,
+                hidden: false,
+                tip: String::new(),
+                exe,
+                hicon: 0,
+                image: None,
+                fallback_requested: false,
+            });
+            self.icons.len() - 1
+        });
+        let icon = &mut self.icons[idx];
+        let was_hidden = icon.hidden;
+        if d.flags & NIF_MESSAGE != 0 {
+            icon.callback = d.callback_message;
+        }
+        if d.flags & NIF_ICON != 0 {
+            destroy_icon(icon.hicon);
+            icon.hicon = ev.icon;
+            icon.image = None;
+        }
+        if d.flags & NIF_TIP != 0 {
+            icon.tip = d.tip.clone();
+        }
+        if d.flags & NIF_STATE != 0 && d.state_mask & NIS_HIDDEN != 0 {
+            icon.hidden = d.state & NIS_HIDDEN != 0;
+        }
+        if ev.msg.message == NIM_ADD || d.flags & NIF_SHOWTIP != 0 {
+            icon.show_tip = d.flags & NIF_SHOWTIP != 0;
+        }
+        if icon.key.guid.is_none() && d.guid.is_some() {
+            icon.key.guid = d.guid;
+        }
+        if pos.is_none() || icon.hidden != was_hidden {
+            Change::Relayout
+        } else if d.flags & NIF_ICON != 0 {
+            Change::Redraw(idx)
+        } else {
+            Change::None
         }
     }
 

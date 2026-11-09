@@ -473,37 +473,39 @@ fn answer(to: isize, a: Answer) {
     }
 }
 
+fn on_copydata(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+    let bytes: &[u8] = if cds.lpData.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) }
+    };
+    match cds.dwData {
+        COPYDATA_NOTIFYICON => {
+            match tray_proto::parse_notify_icon(bytes) {
+                Some(m) => record(m),
+                None => log::debug!("tray msg unparsed ({} bytes)", bytes.len()),
+            }
+            LRESULT(1)
+        }
+        COPYDATA_ICON_RECT => match tray_proto::parse_icon_rect_query(bytes) {
+            Some(q) => icon_rect(&q),
+            None => LRESULT(0),
+        },
+        shell_proto::COPYDATA_ANSWER => {
+            match Answer::decode(bytes) {
+                Some(a) => answer(wparam.0 as isize, a),
+                None => log::debug!("hook answer unparsed ({} bytes)", bytes.len()),
+            }
+            LRESULT(1)
+        }
+        _ => LRESULT(0),
+    }
+}
+
 unsafe extern "system" fn wndproc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        WM_COPYDATA => {
-            let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
-            let bytes: &[u8] = if cds.lpData.is_null() {
-                &[]
-            } else {
-                unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) }
-            };
-            match cds.dwData {
-                COPYDATA_NOTIFYICON => {
-                    match tray_proto::parse_notify_icon(bytes) {
-                        Some(m) => record(m),
-                        None => log::debug!("tray msg unparsed ({} bytes)", bytes.len()),
-                    }
-                    LRESULT(1)
-                }
-                COPYDATA_ICON_RECT => match tray_proto::parse_icon_rect_query(bytes) {
-                    Some(q) => icon_rect(&q),
-                    None => LRESULT(0),
-                },
-                shell_proto::COPYDATA_ANSWER => {
-                    match Answer::decode(bytes) {
-                        Some(a) => answer(wparam.0 as isize, a),
-                        None => log::debug!("hook answer unparsed ({} bytes)", bytes.len()),
-                    }
-                    LRESULT(1)
-                }
-                _ => LRESULT(0),
-            }
-        }
+        WM_COPYDATA => on_copydata(wparam, lparam),
         RELAY_ATTACH => {
             attach(h);
             LRESULT(0)

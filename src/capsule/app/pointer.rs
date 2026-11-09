@@ -104,28 +104,8 @@ impl App {
 
     pub(super) fn on_bar_mouse(&mut self, msg: u32, lparam: LPARAM) {
         let hit = self.layout.hit(self.to_dip(lparam_point(lparam).0));
-        if let Some(d) = &mut self.drag {
-            match msg {
-                WM_MOUSEMOVE => {
-                    let p = cursor();
-                    let (dx, dy) = (p.x - d.cursor.x, p.y - d.cursor.y);
-                    let threshold = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
-                    d.moved |= dx.abs() > threshold.0 || dy.abs() > threshold.1;
-                    if d.moved {
-                        let origin = d.origin;
-                        self.drag_to(origin.x + dx, origin.y + dy);
-                    }
-                }
-                WM_LBUTTONUP => {
-                    let (moved, down_hit, double) = (d.moved, d.hit, d.double);
-                    self.end_drag();
-                    if let Some(h) = down_hit.filter(|&h| !moved && Some(h) == hit) {
-                        self.left_click(h, double);
-                    }
-                }
-                _ => {}
-            }
-            return;
+        if self.drag.is_some() {
+            return self.on_drag_mouse(msg, hit);
         }
         if msg == WM_MOUSEMOVE {
             self.set_hover(hit);
@@ -160,6 +140,30 @@ impl App {
             (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(DeferredMenu::Keyboard),
             (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(DeferredMenu::App),
             (_, Hit::Tray(i)) => self.tray_mouse(self.bar_tray[i], msg),
+            _ => {}
+        }
+    }
+
+    fn on_drag_mouse(&mut self, msg: u32, hit: Option<Hit>) {
+        let Some(d) = &mut self.drag else { return };
+        match msg {
+            WM_MOUSEMOVE => {
+                let p = cursor();
+                let (dx, dy) = (p.x - d.cursor.x, p.y - d.cursor.y);
+                let threshold = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+                d.moved |= dx.abs() > threshold.0 || dy.abs() > threshold.1;
+                if d.moved {
+                    let origin = d.origin;
+                    self.drag_to(origin.x + dx, origin.y + dy);
+                }
+            }
+            WM_LBUTTONUP => {
+                let (moved, down_hit, double) = (d.moved, d.hit, d.double);
+                self.end_drag();
+                if let Some(h) = down_hit.filter(|&h| !moved && Some(h) == hit) {
+                    self.left_click(h, double);
+                }
+            }
             _ => {}
         }
     }

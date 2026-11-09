@@ -275,40 +275,11 @@ impl Clip {
         let expected = match job {
             Job::PastePlain => match saved.text() {
                 Some(text) => self.paste(&text),
-                None => {
-                    input::keys(&[PASTE]);
-                    return;
-                }
+                None => return input::keys(&[PASTE]),
             },
             Job::Paste(text) => self.paste(&text),
-            Job::Wrap { open, close, at_end } => {
-                let selection = if at_end {
-                    input::keys(&[k(vk::END)]);
-                    None
-                } else {
-                    self.copy().filter(|t| copy_accept(t))
-                };
-                let (text, back) = wrap_text(&open, &close, selection.as_deref());
-                let written = self.paste(&text);
-                input::repeat(vk::LEFT, back);
-                if at_end {
-                    input::keys(&[k(vk::RETURN)]);
-                }
-                written
-            }
-            Job::DeleteLine => {
-                input::keys(&[k(vk::HOME), s(vk::LEFT)]);
-                let (at_start, selected) = line_start_probe(self.copy().as_deref());
-                let copied = clipboard::sequence();
-                if selected {
-                    input::keys(&[k(vk::RIGHT)]);
-                }
-                if !at_start {
-                    input::keys(&[k(vk::HOME)]);
-                }
-                input::keys(&[s(vk::END), s(vk::RIGHT), k(vk::DELETE), k(vk::END)]);
-                copied
-            }
+            Job::Wrap { open, close, at_end } => self.wrap(&open, &close, at_end),
+            Job::DeleteLine => self.delete_line(),
             Job::Hotstring => {
                 input::keys(&[s(vk::HOME)]);
                 let line = self.copy().filter(|t| copy_accept(t));
@@ -326,6 +297,36 @@ impl Clip {
         };
         std::thread::sleep(PASTE_DELAY);
         clipboard::restore(self.0, &saved, expected);
+    }
+
+    fn wrap(&self, open: &str, close: &str, at_end: bool) -> u32 {
+        let selection = if at_end {
+            input::keys(&[k(vk::END)]);
+            None
+        } else {
+            self.copy().filter(|t| copy_accept(t))
+        };
+        let (text, back) = wrap_text(open, close, selection.as_deref());
+        let written = self.paste(&text);
+        input::repeat(vk::LEFT, back);
+        if at_end {
+            input::keys(&[k(vk::RETURN)]);
+        }
+        written
+    }
+
+    fn delete_line(&self) -> u32 {
+        input::keys(&[k(vk::HOME), s(vk::LEFT)]);
+        let (at_start, selected) = line_start_probe(self.copy().as_deref());
+        let copied = clipboard::sequence();
+        if selected {
+            input::keys(&[k(vk::RIGHT)]);
+        }
+        if !at_start {
+            input::keys(&[k(vk::HOME)]);
+        }
+        input::keys(&[s(vk::END), s(vk::RIGHT), k(vk::DELETE), k(vk::END)]);
+        copied
     }
 }
 
