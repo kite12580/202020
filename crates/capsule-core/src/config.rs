@@ -169,7 +169,7 @@ pub struct AppsSource {
 
 impl Default for AppsSource {
     fn default() -> Self {
-        Self { enabled: true, weight: 1.0 }
+        Self { enabled: false, weight: 1.0 }
     }
 }
 
@@ -182,7 +182,7 @@ pub struct WindowsSource {
 
 impl Default for WindowsSource {
     fn default() -> Self {
-        Self { enabled: true, weight: 0.9 }
+        Self { enabled: false, weight: 0.9 }
     }
 }
 
@@ -218,7 +218,18 @@ pub struct FoldersSource {
 
 impl Default for FoldersSource {
     fn default() -> Self {
-        Self { enabled: true, weight: 1.0, roots: vec![FolderRoot::default()] }
+        Self {
+            enabled: true,
+            weight: 1.0,
+            roots: vec![FolderRoot {
+                path: r"C:\Games".into(),
+                depth: 1,
+                extensions: vec!["exe".into(), "lnk".into()],
+                exclude: Vec::new(),
+                include_dirs: false,
+                max_items: 20_000,
+            }],
+        }
     }
 }
 
@@ -326,11 +337,11 @@ windows = "@"
 
 # Each source can be turned off; its weight scales its results' ranking (0.0 – 2.0).
 [launcher.apps]
-enabled = true
+enabled = false
 weight = 1.0
 
 [launcher.windows]
-enabled = true
+enabled = false
 weight = 0.9
 
 [launcher.commands]
@@ -350,15 +361,15 @@ weight = 1.0
 # Folders whose files and subfolders are searchable by name. Repeat the table for more roots.
 [[launcher.folders.roots]]
 # %VARIABLES% are expanded.
-path = "%USERPROFILE%\\Documents"
+path = "C:\\Games"
 # Subfolder levels to descend; 0 searches only the folder itself.
-depth = 3
+depth = 1
 # Only files with these extensions, e.g. ["pdf", "docx"]; [] means all.
-extensions = []
+extensions = ["exe", "lnk"]
 # File or folder names to skip; * and ? are wildcards.
-exclude = ["node_modules", ".git", "target"]
+exclude = []
 # Also list folders themselves.
-include_dirs = true
+include_dirs = false
 # Stop scanning this root after this many entries.
 max_items = 20000
 # Shortcuts (.lnk, .url) open their target:
@@ -491,10 +502,10 @@ mod tests {
 
     #[test]
     fn launcher_section() {
-        let l = parse("[launcher.windows]\nenabled = false\n[launcher.folders]\nweight = 9").unwrap().launcher;
+        let l = parse("[launcher.apps]\nenabled = true\n[launcher.folders]\nweight = 9").unwrap().launcher;
         assert!(l.enabled && l.apps.enabled && !l.windows.enabled);
         assert_eq!((l.windows.weight, l.folders.weight), (0.9, 2.0));
-        assert_eq!(l.folders.roots, [FolderRoot::default()]);
+        assert_eq!(l.folders.roots, FoldersSource::default().roots);
         let l = parse("[[launcher.folders.roots]]\npath = 'D:\\x'\n[launcher]\nmax_results = 0").unwrap().launcher;
         assert_eq!(l.folders.roots.len(), 1);
         assert_eq!((l.folders.roots[0].path.as_str(), l.folders.roots[0].depth), (r"D:\x", 3));

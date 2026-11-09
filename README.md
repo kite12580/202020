@@ -54,10 +54,10 @@ While the bar is running, a `--watchdog` child process restores the taskbar's au
 
 | Source | What | Prefix |
 |---|---|---|
-| Apps | Everything in the Start menu's All apps list, including Store apps | |
-| Windows | Open windows, by title or program name | `@` |
+| Apps | Everything in the Start menu's All apps list, including Store apps (off by default) | |
+| Windows | Open windows, by title or program name (off by default) | `@` |
 | Commands | 202020 actions (pause, break now, capsule bar, config), Empty Recycle Bin, Settings, Task Manager, Control Panel, and your own commands | `>` |
-| Files | Files and folders under the folders listed in the config (Documents by default) | `/` |
+| Files | Files and folders under the folders listed in the config (`.exe` and `.lnk` files in `C:\Games` by default) | `/` |
 
 Matching is fuzzy: the letters you type must appear in order, and matches at word starts rank higher. Chinese names also match by 拼音, by 拼音首字母, or by a mix of both, with every reading of a 多音字 tried: `wx`, `weixin` and `wxin` all find 微信. Apps also match by their program name (`calc` finds 计算器). Things you open often rank higher. With nothing typed, the most-used entries are shown. Start with a prefix to search a single source.
 
