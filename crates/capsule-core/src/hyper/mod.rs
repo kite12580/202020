@@ -81,6 +81,7 @@ pub enum Action {
     Reload,
     Transparency,
     SwitchDesktop,
+    VirgoDesktop,
 }
 
 const NAMED: &[(&str, Action)] = &[
@@ -95,6 +96,7 @@ const NAMED: &[(&str, Action)] = &[
     ("reload", Action::Reload),
     ("transparency", Action::Transparency),
     ("switch_desktop", Action::SwitchDesktop),
+    ("virgo_desktop", Action::VirgoDesktop),
     ("left_button", Action::Click(Button::Left)),
     ("middle_button", Action::Click(Button::Middle)),
     ("right_button", Action::Click(Button::Right)),
@@ -137,6 +139,10 @@ impl Keymap {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    pub fn binds(&self, action: &Action) -> bool {
+        self.0.iter().any(|(_, b)| b.action == *action || b.terminal.as_ref() == Some(action))
     }
 
     pub fn get(&self, key: u16, target: impl FnOnce() -> Target) -> Option<&Action> {

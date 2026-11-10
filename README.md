@@ -14,6 +14,10 @@ The capsule bar replaces the Windows 11 taskbar with a floating capsule you can 
 
 Tap CapsLock for `Esc`, or hold it with another key for navigation, editing and window shortcuts, which are listed under `[hyper]` in `config.toml`.
 
+## Desktops
+
+Tap ``Win+` `` to switch between two desktops, or hold it to send the active window to the other one. Hidden windows come back when 202020 quits, crashes or is killed.
+
 ## Running
 
 `202020.exe` is portable: `config.toml` and logs live next to it, so put it in a writable folder with `capsule_hook.dll`. To start at login, put a shortcut in `shell:startup`. `--safe` keeps the native taskbar visible.

@@ -2,8 +2,8 @@ macro_rules! default_keys {
     (keys) => {
         r#"# CapsLock + key. Without this table these defaults apply; with it, keys left out of it do nothing.
 # A value is either keys to press, separated by spaces ("End Enter", "Ctrl+Shift+Left"), or one of the actions
-# copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, power_options, topmost, caption,
-# reload, transparency, switch_desktop, left_button, middle_button and right_button (held while the key is).
+# copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, power_options, topmost, caption, reload,
+# transparency, switch_desktop, virgo_desktop, left_button, middle_button and right_button (held while the key is).
 # A table instead holds one of:
 #   do = keys or an action
 #   wrap = [open, close]   wraps the selection, or inserts both; with at_end = true, at the end of the line, then Enter
@@ -87,10 +87,12 @@ f3 = "MediaPrev"
 "#
     };
     (win_keys) => {
-        r#"# Win + key with no other modifier, mapped to keys to press instead. Without this table these defaults apply;
+        r#"# Win + key with no other modifier, mapped to keys to press instead, or to virgo_desktop: tap it to switch
+# between two desktops, hold it to send the active window to the other one. Without this table these defaults apply;
 # leave it empty to keep Windows' own shortcuts.
 e = "Win+2"
 t = "Ctrl+Shift+T"
+"`" = "virgo_desktop"
 "#
     };
 }

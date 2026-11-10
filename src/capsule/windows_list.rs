@@ -265,7 +265,7 @@ pub fn activate_or_minimize(h: HWND, foreground: HWND) {
     }
 }
 
-fn force_foreground(h: HWND) {
+pub fn force_foreground(h: HWND) {
     let fg = window_ids(unsafe { GetForegroundWindow() }).0;
     let me = unsafe { GetCurrentThreadId() };
     if fg == 0 || fg == me || !unsafe { AttachThreadInput(me, fg, true) }.as_bool() {

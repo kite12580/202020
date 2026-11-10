@@ -8,9 +8,7 @@ use windows::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_ROUTINE_FLAGS, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
-};
+use windows::Win32::System::Registry::{RRF_RT_REG_BINARY, RRF_RT_REG_DWORD};
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -19,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR, s, w};
 
 use crate::capsule::gfx::Color;
+use crate::capsule::util::reg_value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
@@ -35,16 +34,6 @@ pub struct Palette {
     pub active: Color,
     pub running: Color,
     pub accent: Color,
-}
-
-fn reg_value(key: PCWSTR, name: PCWSTR, kind: REG_ROUTINE_FLAGS, buf: &mut [u8]) -> Option<usize> {
-    let mut size = buf.len() as u32;
-    unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, key, name, kind, None, Some(buf.as_mut_ptr() as *mut c_void), Some(&mut size))
-            .ok()
-            .ok()?;
-    }
-    Some(size as usize)
 }
 
 fn personalize_dword(name: PCWSTR) -> Option<u32> {

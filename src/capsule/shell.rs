@@ -1,12 +1,8 @@
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
-use windows::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, GetCurrentProcessId, INFINITE, OpenEventW, PROCESS_SYNCHRONIZE,
-    SYNCHRONIZATION_SYNCHRONIZE, SetEvent, SetProcessWorkingSetSize, WaitForMultipleObjects, WaitForSingleObject,
-};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Shell::{ABM_GETSTATE, ABM_SETSTATE, APPBARDATA, SHAppBarMessage};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -15,8 +11,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::capsule::hook;
-use crate::capsule::util::{OwnedHandle, hwnd, open_process, primary_monitor_rect, process_path, wide, window_ids};
+use crate::capsule::util::{hwnd, primary_monitor_rect, process_path, window_ids};
+use crate::capsule::watchdog;
 
 const ABS_AUTOHIDE: u32 = 1;
 const ABS_ALWAYSONTOP: u32 = 2;
@@ -126,37 +122,16 @@ unsafe fn erase(tray: HWND) {
 
 pub struct Takeover {
     saved: Saved,
-    exit_event: OwnedHandle,
     show_hook: HWINEVENTHOOK,
-}
-
-/// Numbers each takeover so a restarted bar never reuses the previous
-/// watchdog's already-signaled exit event.
-static TAKEOVERS: AtomicU32 = AtomicU32::new(0);
-
-fn exit_event_name(pid: u32, seq: u32) -> Vec<u16> {
-    wide(&format!("Local\\202020-exit-{pid}-{seq}"))
 }
 
 impl Takeover {
     pub fn start(tray: HWND) -> Option<Takeover> {
         let saved = Saved { ab_state: ab_state(tray), work_area: work_area() };
-        let pid = unsafe { GetCurrentProcessId() };
-        let seq = TAKEOVERS.fetch_add(1, Ordering::Relaxed);
-        let name = exit_event_name(pid, seq);
-        let exit_event = OwnedHandle(unsafe { CreateEventW(None, true, false, PCWSTR(name.as_ptr())) }.ok()?);
-        let r = saved.work_area;
-        let exe = std::env::current_exe().ok()?;
-        let spawned = std::process::Command::new(exe)
-            .arg("--watchdog")
-            .args([pid, seq, saved.ab_state].map(|v| v.to_string()))
-            .args([r.left, r.top, r.right, r.bottom].map(|v| v.to_string()))
-            .spawn();
-        if let Err(e) = spawned {
-            log::error!("watchdog: {e}");
+        if !watchdog::set_takeover(Some(saved)) {
             return None;
         }
-        let mut t = Takeover { saved, exit_event, show_hook: HWINEVENTHOOK::default() };
+        let mut t = Takeover { saved, show_hook: HWINEVENTHOOK::default() };
         t.apply(tray);
         Some(t)
     }
@@ -228,41 +203,8 @@ impl Takeover {
         REVEALED.store(false, Ordering::Relaxed);
         unsafe {
             let _ = UnhookWinEvent(self.show_hook);
-            let _ = SetEvent(self.exit_event.0);
         }
         restore(&self.saved);
+        watchdog::set_takeover(None);
     }
-}
-
-/// `--watchdog <pid> <seq> <ab_state> <left> <top> <right> <bottom>`
-pub fn run_watchdog(args: &[String]) -> i32 {
-    let nums: Vec<i64> = args.iter().filter_map(|a| a.parse().ok()).collect();
-    let [pid, seq, ab_state, left, top, right, bottom] = nums[..] else {
-        return 2;
-    };
-    let saved = Saved {
-        ab_state: ab_state as u32,
-        work_area: RECT { left: left as i32, top: top as i32, right: right as i32, bottom: bottom as i32 },
-    };
-    let pid = pid as u32;
-    let Some(process) = open_process(PROCESS_SYNCHRONIZE, pid) else {
-        return 1;
-    };
-    let name = exit_event_name(pid, seq as u32);
-    let Ok(event) = (unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) }) else {
-        return 1;
-    };
-    let event = OwnedHandle(event);
-    unsafe {
-        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
-    }
-    let r = unsafe { WaitForMultipleObjects(&[process.0, event.0], false, INFINITE) };
-    if r == WAIT_OBJECT_0 && unsafe { WaitForSingleObject(event.0, 0) } != WAIT_OBJECT_0 {
-        log::warn!("202020 {pid} exited without cleanup");
-        if let Some(tray) = find_real_tray() {
-            hook::detach(tray, pid);
-        }
-        restore(&saved);
-    }
-    0
 }

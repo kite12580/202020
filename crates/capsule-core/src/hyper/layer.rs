@@ -2,6 +2,7 @@ use super::{ALT, Action, Button, CTRL, Chord, Job, SHIFT, Target, WIN, in_layer,
 use crate::config::Hyper;
 
 const TAP_MS: u32 = 300;
+const HOLD_MS: u32 = 400;
 
 fn is_modifier(key: u16) -> bool {
     use vk::*;
@@ -31,6 +32,10 @@ pub enum Effect<'a> {
     SlowMouse(bool),
     AlphaBegin,
     AlphaEnd { tap: bool },
+    SwitchDesktop,
+    MaskWin,
+    VirgoToggle,
+    VirgoMove,
 }
 
 const ESC: Effect = Effect::Keys(&[k(vk::ESCAPE)]);
@@ -49,7 +54,9 @@ pub struct Layer {
     buttons: [u16; 3],
     /// The key that began the transparency session, and when.
     alpha: Option<(u16, u32)>,
-    desktop_right: bool,
+    /// The key pressed for `VirgoDesktop`, when, and whether holding it
+    /// already moved the window.
+    virgo: Option<(u16, u32, bool)>,
 }
 
 impl Default for Layer {
@@ -69,7 +76,7 @@ impl Layer {
             swallowed: [0; 4],
             buttons: [0; 3],
             alpha: None,
-            desktop_right: false,
+            virgo: None,
         }
     }
 
@@ -106,7 +113,7 @@ impl Layer {
             return self.on_caps_down(time, mods);
         }
         if self.caps_at.is_none() {
-            return self.on_win_key(key, cfg, mods, target, emit);
+            return self.on_win_key(key, time, cfg, mods, target, emit);
         }
         self.used = true;
         match key {
@@ -131,6 +138,7 @@ impl Layer {
             vk::CAPITAL => self.release_caps(time, emit),
             vk::LMENU => self.end_alt(emit),
             _ if self.alpha.is_some_and(|(k, _)| k == key) => self.end_alpha(time, emit),
+            _ if self.virgo.is_some_and(|(k, ..)| k == key) => self.end_virgo(emit),
             _ => {}
         }
         for (b, held) in BUTTONS.into_iter().zip(&mut self.buttons) {
@@ -163,18 +171,43 @@ impl Layer {
     fn on_win_key<'a>(
         &mut self,
         key: u16,
+        time: u32,
         cfg: &'a Hyper,
         mods: impl FnOnce() -> u8,
         target: impl FnOnce() -> Target,
         emit: &mut impl FnMut(Effect<'a>),
     ) -> bool {
-        let Some(Action::Keys(chords)) = cfg.win_keys.get(key, target) else { return false };
-        if mods() != WIN {
+        let action = cfg.win_keys.get(key, target);
+        if !matches!(action, Some(Action::Keys(_) | Action::VirgoDesktop)) || mods() != WIN {
             return false;
         }
         self.mark(key);
-        emit(Effect::WinKeys(chords));
+        match action {
+            Some(Action::Keys(chords)) => emit(Effect::WinKeys(chords)),
+            _ => self.press_virgo(key, time, emit),
+        }
         true
+    }
+
+    fn press_virgo<'a>(&mut self, key: u16, time: u32, emit: &mut impl FnMut(Effect<'a>)) {
+        match &mut self.virgo {
+            Some((k, at, moved)) if *k == key => {
+                if !*moved && time.wrapping_sub(*at) >= HOLD_MS {
+                    *moved = true;
+                    emit(Effect::VirgoMove);
+                }
+            }
+            _ => {
+                self.virgo = Some((key, time, false));
+                emit(Effect::MaskWin);
+            }
+        }
+    }
+
+    fn end_virgo<'a>(&mut self, emit: &mut impl FnMut(Effect<'a>)) {
+        if let Some((_, _, false)) = self.virgo.take() {
+            emit(Effect::VirgoToggle);
+        }
     }
 
     fn on_alt_down<'a>(&mut self, emit: &mut impl FnMut(Effect<'a>)) -> bool {
@@ -209,6 +242,7 @@ impl Layer {
             None => {}
             Some(Action::Keys(keys)) => emit(Effect::Keys(keys)),
             Some(&Action::Wheel(n)) => emit(Effect::Wheel(n)),
+            Some(Action::VirgoDesktop) => self.press_virgo(key, time, emit),
             _ if repeat => {}
             Some(&Action::Click(b)) => {
                 let held = &mut self.buttons[b as usize];
@@ -225,14 +259,7 @@ impl Layer {
                     emit(Effect::AlphaBegin);
                 }
             }
-            Some(Action::SwitchDesktop) => {
-                self.desktop_right = !self.desktop_right;
-                emit(Effect::Keys(if self.desktop_right {
-                    &[Chord { mods: WIN | CTRL, vk: vk::RIGHT }]
-                } else {
-                    &[Chord { mods: WIN | CTRL, vk: vk::LEFT }]
-                }));
-            }
+            Some(Action::SwitchDesktop) => emit(Effect::SwitchDesktop),
         }
         true
     }
@@ -384,15 +411,32 @@ mod tests {
     }
 
     #[test]
-    fn desktop_toggles_direction() {
+    fn switch_desktop_on_each_press() {
         let mut layer = Layer::new();
         run(&mut layer, ev(CAPITAL, true, 0));
         run(&mut layer, ev(LMENU, true, 1));
-        let first = run(&mut layer, ev(V, true, 10)).1;
-        run(&mut layer, ev(V, false, 20));
-        let second = run(&mut layer, ev(V, true, 30)).1;
-        assert_eq!(first, vec![Effect::Keys(&[Chord { mods: WIN | CTRL, vk: RIGHT }])]);
-        assert_eq!(second, vec![Effect::Keys(&[Chord { mods: WIN | CTRL, vk: LEFT }])]);
+        assert_eq!(run(&mut layer, ev(V, true, 10)).1, vec![Effect::SwitchDesktop]);
+        assert_eq!(run(&mut layer, ev(V, true, 40)).1, vec![]);
+        run(&mut layer, ev(V, false, 50));
+        assert_eq!(run(&mut layer, ev(V, true, 60)).1, vec![Effect::SwitchDesktop]);
+    }
+
+    #[test]
+    fn virgo_tap_toggles_and_hold_moves() {
+        let mut layer = Layer::new();
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, true, 0), WIN), (true, vec![Effect::MaskWin]));
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, false, 100), WIN), (true, vec![Effect::VirgoToggle]));
+        assert!(!engaged(&layer));
+
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, true, 1000), WIN).1, vec![Effect::MaskWin]);
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, true, 1300), WIN), (true, vec![]));
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, true, 1420), WIN).1, vec![Effect::VirgoMove]);
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, true, 1450), WIN).1, vec![]);
+        assert_eq!(run_with(&mut layer, ev(BACKTICK, false, 1500), WIN), (true, vec![]));
+        assert!(!engaged(&layer));
+
+        assert!(!run_with(&mut layer, ev(BACKTICK, true, 2000), WIN | super::SHIFT).0);
+        assert!(!run(&mut layer, ev(BACKTICK, true, 2100)).0);
     }
 
     #[test]

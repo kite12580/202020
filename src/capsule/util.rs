@@ -1,9 +1,12 @@
+use std::ffi::c_void;
+
 use capsule_core::launcher::folders::expand_env;
 use capsule_core::layout::PxRect;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, PROPERTYKEY, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, REG_ROUTINE_FLAGS, RegGetValueW};
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
@@ -11,7 +14,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WNDCLASSEXW,
 };
-use windows::core::PWSTR;
+use windows::core::{PCWSTR, PWSTR};
 
 pub const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
     PROPERTYKEY { fmtid: windows::core::GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3), pid: 5 };
@@ -132,4 +135,15 @@ pub fn register_class(class: WNDCLASSEXW) {
             ..class
         });
     }
+}
+
+/// Reads an HKCU value into `buf`, returning its size.
+pub fn reg_value(key: PCWSTR, name: PCWSTR, kind: REG_ROUTINE_FLAGS, buf: &mut [u8]) -> Option<usize> {
+    let mut size = buf.len() as u32;
+    unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, key, name, kind, None, Some(buf.as_mut_ptr() as *mut c_void), Some(&mut size))
+            .ok()
+            .ok()?;
+    }
+    Some(size as usize)
 }

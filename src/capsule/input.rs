@@ -157,6 +157,13 @@ pub fn keys_holding_win(chords: &[Chord]) {
     }
 }
 
+/// Keeps the held Win key from opening Start when it is released.
+pub fn mask_win() {
+    if win_held() {
+        keys(&[k(MASK)]);
+    }
+}
+
 /// Types `vk` with Win held, pressing Win only if the user has released it.
 pub fn replay_win_key(vk: u16) {
     keys(&[Chord { mods: if win_held() { 0 } else { WIN }, vk }]);

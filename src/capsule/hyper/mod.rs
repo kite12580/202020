@@ -10,16 +10,18 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use capsule_core::config::Hyper;
-use capsule_core::hyper::{Chord, Effect, Event, Job, Layer, Target, WIN, vk};
+use capsule_core::hyper::{CTRL, Chord, Effect, Event, Job, Layer, Target, WIN, vk};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_CONTROL};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, HC_ACTION, HHOOK, MSLLHOOKSTRUCT, PostMessageW, SetWindowsHookExW,
     UnhookWindowsHookEx, WH_MOUSE_LL, WM_MOUSEWHEEL,
 };
+use windows::core::w;
 
-use crate::capsule::util::{foreground, hwnd, process_path, window_ids};
+use crate::capsule::util::{foreground, hwnd, process_path, reg_value, window_ids};
 use crate::capsule::{input, keyhook};
 use jobs::AlphaMsg;
 
@@ -27,6 +29,9 @@ pub struct Options {
     pub owner: isize,
     pub command_msg: u32,
     pub reload_command: u32,
+    /// Posted to `owner` with wParam 0 to switch desktops, 1 to move the
+    /// active window to the other one.
+    pub desktop_msg: u32,
 }
 
 static OPTIONS: OnceLock<Options> = OnceLock::new();
@@ -113,19 +118,39 @@ fn run(effect: Effect, cfg: &Arc<Hyper>) {
         Effect::Wheel(n) => input::wheel(n),
         Effect::Job(Job::Hotstring) if cfg.hotstrings.is_empty() => {}
         Effect::Job(job) => jobs::spawn(job.clone(), cfg.clone()),
-        Effect::Reload => {
-            if let Some(o) = OPTIONS.get() {
-                unsafe {
-                    let _ =
-                        PostMessageW(Some(hwnd(o.owner)), o.command_msg, WPARAM(o.reload_command as usize), LPARAM(0));
-                }
-            }
+        Effect::Reload => post(|o| (o.command_msg, o.reload_command as usize)),
+        Effect::SwitchDesktop => {
+            let vk = if on_first_desktop() { vk::RIGHT } else { vk::LEFT };
+            input::keys(&[Chord { mods: WIN | CTRL, vk }]);
         }
+        Effect::MaskWin => input::mask_win(),
+        Effect::VirgoToggle => post(|o| (o.desktop_msg, 0)),
+        Effect::VirgoMove => post(|o| (o.desktop_msg, 1)),
         Effect::Button(b, down) => input::button(b, down),
         Effect::SlowMouse(on) => slow_mouse(on.then_some(cfg.slow_mouse_speed)),
         Effect::AlphaBegin => begin_alpha(),
         Effect::AlphaEnd { tap } => end_alpha(tap),
     }
+}
+
+fn post(msg: impl FnOnce(&Options) -> (u32, usize)) {
+    if let Some(o) = OPTIONS.get() {
+        let (msg, wparam) = msg(o);
+        unsafe {
+            let _ = PostMessageW(Some(hwnd(o.owner)), msg, WPARAM(wparam), LPARAM(0));
+        }
+    }
+}
+
+/// Whether explorer's current virtual desktop is its first, or it hasn't
+/// said.
+fn on_first_desktop() -> bool {
+    let key = w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops");
+    let mut current = [0u8; 16];
+    let mut ids = [0u8; 16 * 64];
+    reg_value(key, w!("CurrentVirtualDesktop"), RRF_RT_REG_BINARY, &mut current) != Some(16)
+        || reg_value(key, w!("VirtualDesktopIDs"), RRF_RT_REG_BINARY, &mut ids).is_none_or(|n| n < 16)
+        || current == ids[..16]
 }
 
 fn target(cfg: &Hyper) -> Target {

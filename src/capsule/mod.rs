@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod config_store;
+pub mod desktops;
 mod gfx;
 mod hook;
 pub mod hyper;
@@ -18,6 +19,7 @@ mod tooltip;
 mod tray;
 mod util;
 mod volume;
+mod watchdog;
 mod windows_list;
 
 use std::sync::atomic::Ordering;
@@ -103,7 +105,7 @@ pub fn init_logging(name: &str) {
 }
 
 pub fn run_watchdog(args: &[String]) -> i32 {
-    shell::run_watchdog(args)
+    watchdog::run(args)
 }
 
 pub fn restore_taskbar() {

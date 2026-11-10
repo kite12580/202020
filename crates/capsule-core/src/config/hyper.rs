@@ -49,6 +49,12 @@ fn win_keys() -> Keymap {
     win_keymap(table, |e| log::warn!("hyper win_keys: {e}"))
 }
 
+impl Hyper {
+    pub fn binds(&self, action: &Action) -> bool {
+        [&self.keys, &self.alt_keys, &self.win_keys].into_iter().any(|map| map.binds(action))
+    }
+}
+
 impl Default for Hyper {
     fn default() -> Self {
         Self {
@@ -116,13 +122,15 @@ fn win_keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(Stri
     table
         .into_iter()
         .filter_map(|(name, v)| match (crate::launcher::hotkey::key(&name), v.as_str().and_then(hyper::action)) {
-            (Some(key), Some(action @ Action::Keys(_))) => Some((key as u16, Binding { action, terminal: None })),
+            (Some(key), Some(action @ (Action::Keys(_) | Action::VirgoDesktop))) => {
+                Some((key as u16, Binding { action, terminal: None }))
+            }
             (None, _) => {
                 skipped(format!("{name:?}: unknown key"));
                 None
             }
             _ => {
-                skipped(format!("{name:?}: needs keys to press"));
+                skipped(format!("{name:?}: needs keys to press or virgo_desktop"));
                 None
             }
         })
@@ -159,11 +167,13 @@ mod tests {
         let n = table.len();
         assert_eq!(win_keymap(table, |e| panic!("{e}")).len(), n);
         let mut skipped = Vec::new();
-        let table = toml::from_str("x = 'Win+1'\nbogus = 'End'\ny = 'reload'\nz = { do = 'End' }").unwrap();
-        assert_eq!(win_keymap(table, |e| skipped.push(e)).len(), 1);
+        let table = toml::from_str("x = 'Win+1'\nbogus = 'End'\ny = 'reload'\nz = { do = 'End' }\nv = 'virgo_desktop'")
+            .unwrap();
+        assert_eq!(win_keymap(table, |e| skipped.push(e)).len(), 2);
         assert_eq!(skipped.len(), 3, "{skipped:?}");
         let h = parse("[hyper]\nblock_ctrl_wheel = false\n[hyper.win_keys]").unwrap().hyper;
         assert!(!h.block_ctrl_wheel && h.win_keys.is_empty());
+        assert!(!h.binds(&Action::VirgoDesktop) && Hyper::default().binds(&Action::VirgoDesktop));
         assert_eq!(parse("").unwrap().hyper.win_keys, Hyper::default().win_keys);
 
         let text = "[hyper.keys]\nh = 'Home'\nbogus = 'End'\nj = { do = 'End', wheel = 1 }\nk = { wrap = ['a'] }\n\
