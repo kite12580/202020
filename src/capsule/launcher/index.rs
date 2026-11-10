@@ -19,7 +19,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::core::PCWSTR;
 
-use crate::capsule::util::{apps_folder, from_wide, hwnd, wide};
+use crate::capsule::util::{apps_folder, from_wide, hwnd, post, wide};
 use crate::capsule::windows_list as winlist;
 
 #[derive(Clone)]
@@ -143,7 +143,7 @@ impl Outbox {
         if self.cancel.load(Ordering::Relaxed) || self.tx.send(batch).is_err() {
             return false;
         }
-        super::launch::post(self.notify, self.msg, 0);
+        post(self.notify, self.msg, 0);
         true
     }
 }

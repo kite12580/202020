@@ -2,17 +2,19 @@ use std::ffi::c_void;
 
 use capsule_core::launcher::folders::expand_env;
 use capsule_core::layout::PxRect;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, PROPERTYKEY, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, PROPERTYKEY, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::{MEMORY_MAPPED_VIEW_ADDRESS, UnmapViewOfFile};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, REG_ROUTINE_FLAGS, RegGetValueW};
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WNDCLASSEXW,
+    GA_ROOTOWNER, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW,
+    PostMessageW, RegisterClassExW, WNDCLASSEXW,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -45,6 +47,17 @@ pub fn apps_folder(aumid: &str) -> String {
 
 pub fn hwnd(v: isize) -> HWND {
     HWND(v as *mut _)
+}
+
+pub fn root_owner(h: HWND) -> HWND {
+    let r = unsafe { GetAncestor(h, GA_ROOTOWNER) };
+    if r.is_invalid() { h } else { r }
+}
+
+pub fn post(owner: isize, msg: u32, wparam: usize) {
+    unsafe {
+        let _ = PostMessageW(Some(hwnd(owner)), msg, WPARAM(wparam), LPARAM(0));
+    }
 }
 
 pub fn foreground() -> Option<HWND> {
@@ -137,7 +150,6 @@ pub fn register_class(class: WNDCLASSEXW) {
     }
 }
 
-/// Reads an HKCU value into `buf`, returning its size.
 pub fn reg_value(key: PCWSTR, name: PCWSTR, kind: REG_ROUTINE_FLAGS, buf: &mut [u8]) -> Option<usize> {
     let mut size = buf.len() as u32;
     unsafe {
@@ -146,4 +158,14 @@ pub fn reg_value(key: PCWSTR, name: PCWSTR, kind: REG_ROUTINE_FLAGS, buf: &mut [
             .ok()?;
     }
     Some(size as usize)
+}
+
+pub struct View(pub MEMORY_MAPPED_VIEW_ADDRESS);
+
+impl Drop for View {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = UnmapViewOfFile(self.0);
+        }
+    }
 }

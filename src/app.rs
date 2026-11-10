@@ -1,7 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use capsule_core::config::{Hyper, Launcher};
-use capsule_core::hyper::Action;
+use capsule_core::config::Launcher;
 use capsule_core::launcher::hotkey;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -365,7 +364,7 @@ impl App {
         }
         let cfg = capsule::config();
         self.apply_launcher(cfg.launcher);
-        apply_hyper(cfg.hyper);
+        capsule::hyper::apply(cfg.hyper);
     }
 
     /// Registers the launcher hotkey from the config, or frees the launcher.
@@ -394,7 +393,7 @@ impl App {
 
     pub(super) fn toggle_hyper(&mut self) {
         capsule::set_hyper_enabled(!capsule::hyper::on());
-        apply_hyper(capsule::config().hyper);
+        capsule::hyper::apply(capsule::config().hyper);
     }
 
     pub(super) fn on_bar_exited(&mut self) {
@@ -422,13 +421,5 @@ impl App {
         unsafe {
             let _ = DestroyWindow(self.hwnd);
         }
-    }
-}
-
-fn apply_hyper(cfg: Hyper) {
-    let switchable = cfg.enabled && cfg.binds(&Action::VirgoDesktop);
-    capsule::hyper::apply(cfg);
-    if !switchable {
-        capsule::desktops::restore_all();
     }
 }

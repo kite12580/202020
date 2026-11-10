@@ -259,13 +259,14 @@ pub fn activate_or_minimize(h: HWND, foreground: HWND) {
         if iconic {
             let _ = ShowWindowAsync(h, SW_RESTORE);
         }
-        if !SetForegroundWindow(h).as_bool() {
-            force_foreground(h);
-        }
     }
+    force_foreground(h);
 }
 
 pub fn force_foreground(h: HWND) {
+    if unsafe { SetForegroundWindow(h) }.as_bool() {
+        return;
+    }
     let fg = window_ids(unsafe { GetForegroundWindow() }).0;
     let me = unsafe { GetCurrentThreadId() };
     if fg == 0 || fg == me || !unsafe { AttachThreadInput(me, fg, true) }.as_bool() {

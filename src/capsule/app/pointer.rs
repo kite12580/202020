@@ -19,7 +19,7 @@ use super::{App, cursor};
 use crate::capsule::input;
 use crate::capsule::keyboard;
 use crate::capsule::launcher;
-use crate::capsule::util::{from_wide, lparam_point, own_window, primary_monitor};
+use crate::capsule::util::{from_wide, lparam_point, own_window, primary_monitor, root_owner};
 use crate::capsule::windows_list::{self as winlist};
 
 const SNAP: f32 = 12.0;
@@ -98,7 +98,7 @@ impl App {
     }
 
     fn foreground_root(&self) -> HWND {
-        let fg = self.root(unsafe { GetForegroundWindow() });
+        let fg = root_owner(unsafe { GetForegroundWindow() });
         if fg.is_invalid() || own_window(fg) { self.foreground } else { fg }
     }
 

@@ -35,16 +35,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::Shell::{ABM_NEW, ABM_REMOVE, APPBARDATA, SHAppBarMessage};
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, ChangeWindowMessageFilterEx, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
-    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EndMenu, GA_ROOTOWNER, GetAncestor, GetCursorPos,
-    GetForegroundWindow, KillTimer, MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
-    PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterShellHookWindow,
-    RegisterWindowMessageW, SW_SHOWNOACTIVATE, SendMessageW, SetCoalescableTimer, SetTimer, ShowWindow,
-    TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP,
-    WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
-    WM_TIMECHANGE, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EndMenu, GetCursorPos, GetForegroundWindow, KillTimer,
+    MA_NOACTIVATE, MSG, MSGFLT_ALLOW, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
+    PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterShellHookWindow, RegisterWindowMessageW, SW_SHOWNOACTIVATE,
+    SendMessageW, SetCoalescableTimer, SetTimer, ShowWindow, TranslateMessage, WA_INACTIVE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ENDSESSION, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_PAINT, WM_POWERBROADCAST, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMECHANGE, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{GUID, w};
 
@@ -60,7 +59,7 @@ use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
 use crate::capsule::tooltip::Tooltip;
 use crate::capsule::tray::{self, Tray, TrayKey};
-use crate::capsule::util::{hwnd, register_class, scale};
+use crate::capsule::util::{hwnd, register_class, root_owner, scale};
 use crate::capsule::volume::Volume;
 use crate::capsule::windows_list::WindowList;
 use icons::IconRequests;
@@ -413,7 +412,7 @@ impl App {
         }
 
         self.windows.enumerate();
-        self.foreground = self.root(unsafe { GetForegroundWindow() });
+        self.foreground = root_owner(unsafe { GetForegroundWindow() });
         for i in 0..self.windows.items.len() {
             self.request_icon(self.windows.items[i].hwnd);
         }
@@ -512,14 +511,6 @@ impl App {
             ..Default::default()
         };
         unsafe { SHAppBarMessage(ABM_NEW, &mut d) };
-    }
-
-    fn root(&self, h: HWND) -> HWND {
-        if h.is_invalid() {
-            return h;
-        }
-        let r = unsafe { GetAncestor(h, GA_ROOTOWNER) };
-        if r.is_invalid() { h } else { r }
     }
 
     fn set_timer(&self, id: usize, ms: u32) {

@@ -43,7 +43,7 @@ use crate::capsule::config_store;
 use crate::capsule::gfx::{Font, Gfx, Image, Surface, Text};
 use crate::capsule::hook::{Hook, HookEvent};
 use crate::capsule::theme::{self, Theme};
-use crate::capsule::util::{hwnd, register_class, scale};
+use crate::capsule::util::{hwnd, post, register_class, scale};
 use crate::capsule::windows_list as winlist;
 use index::{Action, Batch, Entry};
 use search::Row;
@@ -508,7 +508,7 @@ fn run_deferred() {
             true
         }
         (None, Action::App(id), None) => {
-            launch::post(p.owner, p.command_msg, *id);
+            post(p.owner, p.command_msg, *id as usize);
             true
         }
         (None, Action::EmptyRecycleBin, None) => {

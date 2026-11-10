@@ -13,7 +13,7 @@ use super::{
 };
 use crate::capsule::hook::{self, Hook, HookEvent};
 use crate::capsule::pinned::PinnedApp;
-use crate::capsule::util::{hwnd, own_window};
+use crate::capsule::util::{hwnd, own_window, root_owner};
 
 pub(super) unsafe extern "system" fn on_winevent(
     _hook: HWINEVENTHOOK,
@@ -78,7 +78,7 @@ impl App {
         if h.is_invalid() || own_window(h) {
             return;
         }
-        let root = self.root(h);
+        let root = root_owner(h);
         if shell_flyout(root) {
             return;
         }

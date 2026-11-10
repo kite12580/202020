@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Interface, PCSTR, PCWSTR};
 
 use crate::capsule::hook;
-use crate::capsule::util::{env, hwnd, wide};
+use crate::capsule::util::{env, wide};
 
 const FIRST_ID: u32 = 1;
 
@@ -44,12 +44,6 @@ fn fs_parent(path: &str) -> Option<&str> {
 pub fn empty_recycle_bin(owner: HWND) {
     unsafe {
         let _ = SHEmptyRecycleBinW(Some(owner), PCWSTR::null(), 0);
-    }
-}
-
-pub fn post(owner: isize, msg: u32, id: u32) {
-    unsafe {
-        let _ = PostMessageW(Some(hwnd(owner)), msg, WPARAM(id as usize), LPARAM(0));
     }
 }
 

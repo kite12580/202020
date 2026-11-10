@@ -5,7 +5,7 @@
 
 use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering::Relaxed};
 
 use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE, RECT, WAIT_OBJECT_0};
 use windows::Win32::System::Memory::{
@@ -16,14 +16,13 @@ use windows::Win32::System::Threading::{
     PROCESS_SYNCHRONIZE, SYNCHRONIZATION_SYNCHRONIZE, SetEvent, SetProcessWorkingSetSize, WaitForMultipleObjects,
     WaitForSingleObject,
 };
-use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWNA, ShowWindowAsync};
 use windows::core::PCWSTR;
 
-use crate::capsule::hook;
 use crate::capsule::shell::{self, Saved};
-use crate::capsule::util::{OwnedHandle, hwnd, open_process, wide, window_ids};
+use crate::capsule::util::{OwnedHandle, View, hwnd, open_process, wide};
+use crate::capsule::{desktops, hook};
 
-pub const CAPACITY: usize = 1024;
+const CAPACITY: usize = 1024;
 const READY_TIMEOUT_MS: u32 = 1000;
 
 #[repr(C)]
@@ -34,75 +33,65 @@ struct Slot {
 
 #[repr(C)]
 struct Shared {
-    takeover: AtomicU32,
+    takeover: AtomicBool,
     ab_state: AtomicU32,
     work_area: [AtomicI32; 4],
     count: AtomicU32,
     hidden: [Slot; CAPACITY],
 }
 
+impl Shared {
+    fn outstanding(&self) -> bool {
+        self.takeover.load(Relaxed) || self.count.load(Relaxed) != 0
+    }
+}
+
 struct Guard {
     shared: &'static Shared,
+    _view: View,
     _mapping: OwnedHandle,
-    exit: Option<OwnedHandle>,
-    seq: u32,
+    exit: OwnedHandle,
 }
 
 unsafe impl Send for Guard {}
 
-static GUARD: Mutex<Option<Guard>> = Mutex::new(None);
-
-fn mapping_name(pid: u32) -> Vec<u16> {
-    wide(&format!("Local\\202020-guard-{pid}"))
+impl Drop for Guard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SetEvent(self.exit.0);
+        }
+    }
 }
 
-fn event_name(kind: &str, pid: u32, seq: u32) -> Vec<u16> {
+static GUARD: Mutex<Option<Guard>> = Mutex::new(None);
+/// Numbers each watchdog so a new one never opens a previous one's objects.
+static SPAWNS: AtomicU32 = AtomicU32::new(0);
+
+fn object_name(kind: &str, pid: u32, seq: u32) -> Vec<u16> {
     wide(&format!("Local\\202020-{kind}-{pid}-{seq}"))
 }
 
-fn map(mapping: HANDLE, access: FILE_MAP) -> Option<&'static Shared> {
-    let view = unsafe { MapViewOfFile(mapping, access, 0, 0, size_of::<Shared>()) };
-    (!view.Value.is_null()).then(|| unsafe { &*(view.Value as *const Shared) })
+fn map(mapping: HANDLE, access: FILE_MAP) -> Option<(View, &'static Shared)> {
+    let view = View(unsafe { MapViewOfFile(mapping, access, 0, 0, size_of::<Shared>()) });
+    let shared = view.0.Value as *const Shared;
+    (!shared.is_null()).then(|| (view, unsafe { &*shared }))
 }
 
 impl Guard {
-    fn create() -> Option<Guard> {
-        let name = mapping_name(unsafe { GetCurrentProcessId() });
+    fn spawn() -> Option<Guard> {
+        let pid = unsafe { GetCurrentProcessId() };
+        let seq = SPAWNS.fetch_add(1, Relaxed);
+        let name = object_name("guard", pid, seq);
         let size = size_of::<Shared>() as u32;
         let mapping =
             unsafe { CreateFileMappingW(INVALID_HANDLE_VALUE, None, PAGE_READWRITE, 0, size, PCWSTR(name.as_ptr())) }
                 .map_err(|e| log::error!("watchdog mapping: {e}"))
                 .ok()?;
         let mapping = OwnedHandle(mapping);
-        let shared = map(mapping.0, FILE_MAP_ALL_ACCESS)?;
-        Some(Guard { shared, _mapping: mapping, exit: None, seq: 0 })
-    }
-
-    fn sync(&mut self) -> bool {
-        let s = self.shared;
-        let outstanding = s.takeover.load(Relaxed) != 0 || s.count.load(Relaxed) != 0;
-        match (&self.exit, outstanding) {
-            (None, true) => {
-                self.exit = self.spawn();
-                self.exit.is_some()
-            }
-            (Some(exit), false) => {
-                unsafe {
-                    let _ = SetEvent(exit.0);
-                }
-                self.exit = None;
-                true
-            }
-            _ => true,
-        }
-    }
-
-    fn spawn(&mut self) -> Option<OwnedHandle> {
-        let pid = unsafe { GetCurrentProcessId() };
-        let seq = self.seq;
-        self.seq += 1;
-        let event = |kind| unsafe { CreateEventW(None, true, false, PCWSTR(event_name(kind, pid, seq).as_ptr())) };
+        let (view, shared) = map(mapping.0, FILE_MAP_ALL_ACCESS)?;
+        let event = |kind| unsafe { CreateEventW(None, true, false, PCWSTR(object_name(kind, pid, seq).as_ptr())) };
         let exit = OwnedHandle(event("exit").ok()?);
+        let guard = Guard { shared, _view: view, _mapping: mapping, exit };
         let ready = OwnedHandle(event("ready").ok()?);
         let exe = std::env::current_exe().ok()?;
         let child = std::process::Command::new(exe)
@@ -114,28 +103,28 @@ impl Guard {
         let process = HANDLE(child.as_raw_handle());
         if unsafe { WaitForMultipleObjects(&[ready.0, process], false, READY_TIMEOUT_MS) } != WAIT_OBJECT_0 {
             log::error!("watchdog did not start");
-            unsafe {
-                let _ = SetEvent(exit.0);
-            }
             return None;
         }
-        Some(exit)
+        Some(guard)
     }
 }
 
 /// Writes to the shared state, then starts or ends the watchdog to match.
 /// Returns false if the watchdog is needed but could not start.
 fn update(needed: bool, write: impl FnOnce(&Shared)) -> bool {
-    let mut guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_none() {
+    let mut slot = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
         if !needed {
             return true;
         }
-        *guard = Guard::create();
+        *slot = Guard::spawn();
     }
-    let Some(guard) = guard.as_mut() else { return false };
+    let Some(guard) = slot.as_ref() else { return false };
     write(guard.shared);
-    guard.sync()
+    if !guard.shared.outstanding() {
+        *slot = None;
+    }
+    true
 }
 
 pub fn set_takeover(saved: Option<Saved>) -> bool {
@@ -147,7 +136,7 @@ pub fn set_takeover(saved: Option<Saved>) -> bool {
                 slot.store(v, Relaxed);
             }
         }
-        s.takeover.store(u32::from(saved.is_some()), Relaxed);
+        s.takeover.store(saved.is_some(), Relaxed);
     })
 }
 
@@ -167,18 +156,16 @@ pub fn set_hidden(windows: &[(HWND, u32)]) -> bool {
 
 fn restore(s: &Shared, pid: u32) {
     let n = (s.count.load(Relaxed) as usize).min(CAPACITY);
-    for slot in &s.hidden[..n] {
-        let h = hwnd(slot.hwnd.load(Relaxed));
-        if window_ids(h).1 == slot.pid.load(Relaxed) {
-            unsafe {
-                let _ = ShowWindowAsync(h, SW_SHOWNA);
-            }
-        }
-    }
+    desktops::show(
+        s.hidden[..n]
+            .iter()
+            .map(|slot| (hwnd(slot.hwnd.load(Relaxed)), slot.pid.load(Relaxed)))
+            .filter(desktops::alive),
+    );
     if n > 0 {
         log::info!("{n} hidden windows shown");
     }
-    if s.takeover.load(Relaxed) != 0 {
+    if s.takeover.load(Relaxed) {
         if let Some(tray) = shell::find_real_tray() {
             hook::detach(tray, pid);
         }
@@ -196,16 +183,16 @@ pub fn run(args: &[String]) -> i32 {
     let Some(process) = open_process(PROCESS_SYNCHRONIZE, pid) else {
         return 1;
     };
-    let name = mapping_name(pid);
+    let name = object_name("guard", pid, seq);
     let Ok(mapping) = (unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(name.as_ptr())) }) else {
         return 1;
     };
     let mapping = OwnedHandle(mapping);
-    let Some(shared) = map(mapping.0, FILE_MAP_READ) else {
+    let Some((_view, shared)) = map(mapping.0, FILE_MAP_READ) else {
         return 1;
     };
     let open = |kind, access| {
-        let name = event_name(kind, pid, seq);
+        let name = object_name(kind, pid, seq);
         unsafe { OpenEventW(access, false, PCWSTR(name.as_ptr())) }.ok().map(OwnedHandle)
     };
     let (Some(exit), Some(ready)) = (open("exit", SYNCHRONIZATION_SYNCHRONIZE), open("ready", EVENT_MODIFY_STATE))
@@ -214,6 +201,9 @@ pub fn run(args: &[String]) -> i32 {
     };
     unsafe {
         let _ = SetEvent(ready.0);
+    }
+    super::init_logging("watchdog.txt");
+    unsafe {
         let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
     }
     let r = unsafe { WaitForMultipleObjects(&[process.0, exit.0], false, INFINITE) };

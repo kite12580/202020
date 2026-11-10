@@ -18,13 +18,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, GetFileSizeEx, OPEN_EXISTING,
 };
-use windows::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, PAGE_READONLY, UnmapViewOfFile,
-};
+use windows::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_READ, MapViewOfFile, PAGE_READONLY};
 use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, HICON, ICONINFO};
 use windows::core::PCWSTR;
 
-use crate::capsule::util::{OwnedHandle, wide};
+use crate::capsule::util::{OwnedHandle, View, wide};
 use crate::render::rounded_rect;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,16 +59,6 @@ pub enum Font {
 
 const TEXT_FONTS: &[&str] = &["SegUIVar.ttf", "segoeui.ttf", "msyh.ttc", "YuGothM.ttc", "malgun.ttf", "seguisym.ttf"];
 const GLYPH_FONTS: &[&str] = &["SegoeIcons.ttf", "segmdl2.ttf"];
-
-struct View(MEMORY_MAPPED_VIEW_ADDRESS);
-
-impl Drop for View {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = UnmapViewOfFile(self.0);
-        }
-    }
-}
 
 /// A font file mapped from the Fonts folder. `font` borrows `_view`, so it
 /// must stay the first field.

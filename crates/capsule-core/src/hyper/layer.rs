@@ -54,9 +54,14 @@ pub struct Layer {
     buttons: [u16; 3],
     /// The key that began the transparency session, and when.
     alpha: Option<(u16, u32)>,
-    /// The key pressed for `VirgoDesktop`, when, and whether holding it
-    /// already moved the window.
-    virgo: Option<(u16, u32, bool)>,
+    virgo: Option<Virgo>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Virgo {
+    key: u16,
+    at: u32,
+    moved: bool,
 }
 
 impl Default for Layer {
@@ -138,7 +143,7 @@ impl Layer {
             vk::CAPITAL => self.release_caps(time, emit),
             vk::LMENU => self.end_alt(emit),
             _ if self.alpha.is_some_and(|(k, _)| k == key) => self.end_alpha(time, emit),
-            _ if self.virgo.is_some_and(|(k, ..)| k == key) => self.end_virgo(emit),
+            _ if self.virgo.is_some_and(|v| v.key == key) => self.end_virgo(emit),
             _ => {}
         }
         for (b, held) in BUTTONS.into_iter().zip(&mut self.buttons) {
@@ -177,35 +182,35 @@ impl Layer {
         target: impl FnOnce() -> Target,
         emit: &mut impl FnMut(Effect<'a>),
     ) -> bool {
-        let action = cfg.win_keys.get(key, target);
-        if !matches!(action, Some(Action::Keys(_) | Action::VirgoDesktop)) || mods() != WIN {
+        let Some(action) = cfg.win_keys.get(key, target) else { return false };
+        if mods() != WIN {
             return false;
         }
-        self.mark(key);
         match action {
-            Some(Action::Keys(chords)) => emit(Effect::WinKeys(chords)),
-            _ => self.press_virgo(key, time, emit),
+            Action::Keys(chords) => emit(Effect::WinKeys(chords)),
+            Action::VirgoDesktop => self.press_virgo(key, time, emit),
+            _ => return false,
         }
+        self.mark(key);
         true
     }
 
     fn press_virgo<'a>(&mut self, key: u16, time: u32, emit: &mut impl FnMut(Effect<'a>)) {
         match &mut self.virgo {
-            Some((k, at, moved)) if *k == key => {
-                if !*moved && time.wrapping_sub(*at) >= HOLD_MS {
-                    *moved = true;
-                    emit(Effect::VirgoMove);
-                }
+            Some(v) if v.key == key && !v.moved && time.wrapping_sub(v.at) >= HOLD_MS => {
+                v.moved = true;
+                emit(Effect::VirgoMove);
             }
+            Some(v) if v.key == key => {}
             _ => {
-                self.virgo = Some((key, time, false));
+                self.virgo = Some(Virgo { key, at: time, moved: false });
                 emit(Effect::MaskWin);
             }
         }
     }
 
     fn end_virgo<'a>(&mut self, emit: &mut impl FnMut(Effect<'a>)) {
-        if let Some((_, _, false)) = self.virgo.take() {
+        if self.virgo.take().is_some_and(|v| !v.moved) {
             emit(Effect::VirgoToggle);
         }
     }

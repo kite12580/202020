@@ -104,8 +104,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             with_app(App::toggle_pause);
         }
         WM_LAUNCHER_CMD => run_command(wparam.0 as i32),
-        WM_DESKTOP if wparam.0 == 0 => capsule::desktops::toggle(),
-        WM_DESKTOP => capsule::desktops::move_active(),
+        WM_DESKTOP => capsule::desktops::on_request(wparam.0),
         WM_QUERYENDSESSION => {
             capsule::desktops::restore_all();
             return LRESULT(1);
@@ -224,10 +223,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     match args.first().map(String::as_str) {
-        Some("--watchdog") => {
-            capsule::init_logging("watchdog.txt");
-            std::process::exit(capsule::run_watchdog(&args[1..]));
-        }
+        Some("--watchdog") => std::process::exit(capsule::run_watchdog(&args[1..])),
         Some("--restore") => {
             capsule::restore_taskbar();
             return;
