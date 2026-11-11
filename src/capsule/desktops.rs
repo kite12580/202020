@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsHungAppWindow, IsWindowVisible, SW_HIDE, SW_SHOWNA, ShowWindow, ShowWindowAsync,
 };
 
-use crate::capsule::util::{foreground, root_owner, window_ids};
+use crate::capsule::util::{class_name, foreground, root_owner, window_ids};
 use crate::capsule::watchdog;
 use crate::capsule::windows_list::{cloaked, force_foreground, qualifies, top_level};
 
@@ -17,6 +17,10 @@ pub const TOGGLE: usize = 0;
 pub const MOVE_ACTIVE: usize = 1;
 
 type Window = (HWND, u32);
+
+/// ConPTY's stand-in console window. Hiding it makes the terminal owning it
+/// minimize, which keeps the terminal on the taskbar.
+const PSEUDO_CONSOLE: &str = "PseudoConsoleWindow";
 
 #[derive(Default)]
 struct Desktops {
@@ -68,7 +72,10 @@ fn on_screen(keep: impl Fn(HWND) -> bool) -> Vec<Window> {
             let r = root_owner(h);
             keep(r)
                 && (qualifies(h)
-                    || (r != h && !cloaked(h) && *roots.entry(r.0 as isize).or_insert_with(|| qualifies(r))))
+                    || (r != h
+                        && !cloaked(h)
+                        && class_name(h) != PSEUDO_CONSOLE
+                        && *roots.entry(r.0 as isize).or_insert_with(|| qualifies(r))))
         })
         .map(|h| (h, window_ids(h).1))
         .collect()
