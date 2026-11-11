@@ -60,8 +60,8 @@ pub fn show(windows: impl DoubleEndedIterator<Item = Window>) {
 }
 
 /// Visible windows of the apps on screen whose root owner passes `keep`,
-/// owned ones included, top first.
-fn on_screen(keep: impl Fn(HWND) -> bool) -> Vec<Window> {
+/// owned ones included, top first. Windows owned by `away` count too.
+fn on_screen(keep: impl Fn(HWND) -> bool, away: &[Window]) -> Vec<Window> {
     let mut roots = HashMap::new();
     top_level()
         .into_iter()
@@ -75,7 +75,7 @@ fn on_screen(keep: impl Fn(HWND) -> bool) -> Vec<Window> {
                     || (r != h
                         && !cloaked(h)
                         && class_name(h) != PSEUDO_CONSOLE
-                        && *roots.entry(r.0 as isize).or_insert_with(|| qualifies(r))))
+                        && *roots.entry(r.0 as isize).or_insert_with(|| qualifies(r) || away.iter().any(|w| w.0 == r))))
         })
         .map(|h| (h, window_ids(h).1))
         .collect()
@@ -102,7 +102,7 @@ pub fn on_request(request: usize) {
 fn toggle() {
     STATE.with_borrow_mut(|d| {
         let active = foreground();
-        let Some(returning) = d.hide(on_screen(|_| true)) else { return };
+        let Some(returning) = d.hide(on_screen(|_| true, &[])) else { return };
         let target =
             d.other_active.filter(|&a| returning.iter().any(|&(h, _)| h == a)).or(returning.first().map(|w| w.0));
         show(returning.iter().copied().filter(|&(h, _)| Some(h) != target));
@@ -116,11 +116,11 @@ fn toggle() {
 
 fn move_active() {
     let Some(active) = foreground().map(root_owner) else { return };
-    let moving = on_screen(|r| r == active);
-    if moving.is_empty() {
-        return;
-    }
     STATE.with_borrow_mut(|d| {
+        let moving = on_screen(|r| r == active, &d.hidden);
+        if moving.is_empty() {
+            return;
+        }
         let Some(rest) = d.hide(moving) else { return };
         d.hidden.extend(rest);
         watchdog::set_hidden(&d.hidden);
