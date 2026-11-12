@@ -39,7 +39,6 @@ const WM_CROP: u32 = WM_APP + 8;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
 const HOTKEY_LAUNCHER: i32 = 2;
-const HOTKEY_CROP_CANCEL: i32 = 3;
 const TIMER_TICK: usize = 1;
 const TIMER_FRAME: usize = 2;
 const TIMER_BREAK_END: usize = 3;
@@ -102,15 +101,12 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 launcher::toggle();
             }
         }
-        WM_HOTKEY if wparam.0 as i32 == HOTKEY_CROP_CANCEL => {
-            capsule::crop::on_request(capsule::crop::CANCEL, 0);
-        }
         WM_HOTKEY => {
             with_app(App::toggle_pause);
         }
         WM_LAUNCHER_CMD => run_command(wparam.0 as i32),
         WM_DESKTOP => capsule::desktops::on_request(wparam.0),
-        WM_CROP => capsule::crop::on_request(wparam.0, lparam.0),
+        WM_CROP => capsule::crop::on_toggle(),
         WM_QUERYENDSESSION => {
             capsule::desktops::restore_all();
             capsule::crop::restore_all();
@@ -217,11 +213,7 @@ fn start_features(hwnd: HWND) {
         commands: LAUNCHER_COMMANDS,
     });
     with_app(|app| app.apply_launcher(cfg.launcher));
-    capsule::crop::init(capsule::crop::Options {
-        owner: hwnd.0 as isize,
-        msg: WM_CROP,
-        cancel_hotkey: HOTKEY_CROP_CANCEL,
-    });
+    capsule::crop::init(capsule::crop::Options { owner: hwnd.0 as isize, msg: WM_CROP });
     capsule::hyper::init(capsule::hyper::Options {
         owner: hwnd.0 as isize,
         command_msg: WM_LAUNCHER_CMD,

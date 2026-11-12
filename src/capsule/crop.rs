@@ -1,15 +1,18 @@
 //! Shows one pane of a window, such as a browser's page: the window is
 //! clipped to the pane and grown so the pane fills the window's frame.
-//! Corner grips stand in for the hidden title bar and borders. Runs on the
-//! main thread.
+//! Corner grips stand in for the hidden title bar and borders. Runs on its
+//! own thread, so a slow target stalls only crops, not the main thread. The
+//! thread starts on a toggle and ends once nothing is cropped or picked.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
-use std::sync::{Once, OnceLock};
+use std::os::windows::io::AsRawHandle;
+use std::sync::{Mutex, Once, OnceLock, mpsc};
+use std::thread::JoinHandle;
 
 use capsule_core::crop::{GRIPS, Grip, croppable, drag, fit, grip_rect, insets, shrink};
 use capsule_core::layout::PxRect;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject, GetMonitorInfoW, GetWindowRgnBox,
@@ -17,22 +20,24 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{GetCurrentThreadId, WaitForSingleObject};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_NOREPEAT, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, CWP_SKIPINVISIBLE, CallNextHookEx, ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-    FindWindowExW, GA_PARENT, GA_ROOT, GW_HWNDPREV, GWLP_USERDATA, GetAncestor, GetCursorPos, GetWindow,
-    GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IDC_SIZEALL,
-    IDC_SIZENESW, IDC_SIZENWSE, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible, IsZoomed, LWA_ALPHA, LoadCursorW,
-    MA_NOACTIVATE, MB_OK, MSLLHOOKSTRUCT, OBJID_WINDOW, PostMessageW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_MAXIMIZE,
-    SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetLayeredWindowAttributes, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, ShowWindowAsync, UnhookWindowsHookEx, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
-    WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    DestroyWindow, DispatchMessageW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
+    EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, FindWindowExW, GA_PARENT, GA_ROOT, GW_HWNDPREV, GWLP_USERDATA, GetAncestor,
+    GetCursorPos, GetMessageW, GetWindow, GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, HWND_NOTOPMOST, HWND_TOP,
+    HWND_TOPMOST, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENWSE, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
+    IsZoomed, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MB_OK, MSG, MSLLHOOKSTRUCT, OBJID_WINDOW, PM_NOREMOVE,
+    PeekMessageW, PostThreadMessageW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SWP_NOACTIVATE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    ShowWindowAsync, UnhookWindowsHookEx, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_CAPTURECHANGED, WM_HOTKEY,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_USER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP, WindowFromPoint,
 };
 use windows::core::{PCWSTR, w};
@@ -40,14 +45,14 @@ use windows::core::{PCWSTR, w};
 use crate::capsule::desktops::alive;
 use crate::capsule::theme::Theme;
 use crate::capsule::util::{
-    class_name, dpi, foreground, hwnd, mouse_hook, own_window, px_rect, register_class, scale, topmost, wide,
+    self, class_name, dpi, foreground, mouse_hook, own_window, px_rect, register_class, scale, topmost, wide,
     window_ids,
 };
 use crate::capsule::watchdog;
 use crate::capsule::windows_list::{cloaked, qualifies};
 
 const TOGGLE: usize = 0;
-pub const CANCEL: usize = 1;
+const CANCEL: usize = 1;
 const POINTED: usize = 2;
 const PICKED: usize = 3;
 const OUTWARD: usize = 4;
@@ -59,6 +64,9 @@ const MIN_DIP: f32 = 120.0;
 const OUTLINE_DIP: f32 = 3.0;
 const GRIP_CLASS: PCWSTR = w!("202020CropGrip");
 const OUTLINE_CLASS: PCWSTR = w!("202020CropOutline");
+const WM_REQUEST: u32 = WM_APP;
+const CANCEL_HOTKEY: i32 = 1;
+const RESTORE_TIMEOUT_MS: u32 = 2000;
 
 const PROCESS_EVENTS: [(u32, u32); 5] = [
     (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
@@ -68,13 +76,14 @@ const PROCESS_EVENTS: [(u32, u32); 5] = [
     (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
 ];
 
+/// Where `toggle` posts `msg` so the main thread calls `on_toggle`.
 pub struct Options {
     pub owner: isize,
     pub msg: u32,
-    pub cancel_hotkey: i32,
 }
 
 static OPTIONS: OnceLock<Options> = OnceLock::new();
+static THREAD: Mutex<Option<(u32, JoinHandle<()>)>> = Mutex::new(None);
 
 #[derive(Clone, Copy)]
 pub struct Saved {
@@ -136,6 +145,7 @@ thread_local! {
     static STATE: RefCell<Crops> = RefCell::default();
     static CURSOR: Cell<POINT> = const { Cell::new(POINT { x: 0, y: 0 }) };
     static POINTED_POSTED: Cell<bool> = const { Cell::new(false) };
+    static CHANGED_WINDOWS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn init(opts: Options) {
@@ -157,19 +167,91 @@ fn register_classes() {
     });
 }
 
-fn post(request: usize, lparam: isize) {
-    if let Some(o) = OPTIONS.get() {
-        unsafe {
-            let _ = PostMessageW(Some(hwnd(o.owner)), o.msg, WPARAM(request), LPARAM(lparam));
-        }
-    }
+fn post_to(tid: u32, request: usize) -> bool {
+    unsafe { PostThreadMessageW(tid, WM_REQUEST, WPARAM(request), LPARAM(0)) }.is_ok()
+}
+
+fn post(request: usize) {
+    post_to(unsafe { GetCurrentThreadId() }, request);
 }
 
 pub fn toggle() {
-    post(TOGGLE, 0);
+    if let Some(o) = OPTIONS.get() {
+        util::post(o.owner, o.msg, 0);
+    }
 }
 
-pub fn on_request(request: usize, lparam: isize) {
+pub fn on_toggle() {
+    let mut thread = THREAD.lock().unwrap_or_else(|e| e.into_inner());
+    if thread.as_ref().is_some_and(|&(tid, _)| post_to(tid, TOGGLE)) {
+        return;
+    }
+    *thread = spawn();
+    if let Some(&(tid, _)) = thread.as_ref() {
+        post_to(tid, TOGGLE);
+    }
+}
+
+/// Gives up waiting after a while, as a hung target would block the crop
+/// thread; the watchdog restores whatever is left if 202020 then exits.
+pub fn restore_all() {
+    let Some((tid, join)) = THREAD.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    unsafe {
+        let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+        WaitForSingleObject(HANDLE(join.as_raw_handle()), RESTORE_TIMEOUT_MS);
+    }
+}
+
+fn spawn() -> Option<(u32, JoinHandle<()>)> {
+    let (tx, rx) = mpsc::channel();
+    let join = std::thread::Builder::new()
+        .name("crop".into())
+        .stack_size(256 << 10)
+        .spawn(move || {
+            let mut msg = MSG::default();
+            unsafe {
+                let _ = PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE);
+            }
+            let _ = tx.send(unsafe { GetCurrentThreadId() });
+            run();
+        })
+        .ok()?;
+    Some((rx.recv().ok()?, join))
+}
+
+fn run() {
+    let mut msg = MSG::default();
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
+        match (msg.hwnd.is_invalid(), msg.message) {
+            (true, WM_REQUEST) => on_request(msg.wParam.0),
+            (true, WM_HOTKEY) => on_request(CANCEL),
+            (true, _) => {}
+            (false, _) => unsafe {
+                DispatchMessageW(&msg);
+            },
+        }
+        if STATE.with_borrow(Crops::idle) && retire() {
+            break;
+        }
+    }
+    STATE.with_borrow_mut(Crops::restore);
+}
+
+/// Whether the idle thread may end: not if a request is already queued.
+fn retire() -> bool {
+    let mut thread = THREAD.lock().unwrap_or_else(|e| e.into_inner());
+    let me = unsafe { GetCurrentThreadId() };
+    if thread.as_ref().is_some_and(|&(tid, _)| tid == me) {
+        let mut msg = MSG::default();
+        if unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE) }.as_bool() {
+            return false;
+        }
+        *thread = None;
+    }
+    true
+}
+
+fn on_request(request: usize) {
     if request == POINTED {
         POINTED_POSTED.set(false);
     }
@@ -179,17 +261,8 @@ pub fn on_request(request: usize, lparam: isize) {
         POINTED => c.point(CURSOR.get()),
         PICKED => c.picked(),
         OUTWARD | INWARD => c.step(request == OUTWARD),
-        CHANGED => c.changed(hwnd(lparam)),
+        CHANGED => c.changed(&CHANGED_WINDOWS.take()),
         _ => {}
-    })
-}
-
-pub fn restore_all() {
-    STATE.with_borrow_mut(|c| {
-        c.end_pick();
-        while !c.entries.is_empty() {
-            c.uncrop(c.entries.len() - 1);
-        }
     })
 }
 
@@ -465,6 +538,17 @@ fn show_ring(outline: HWND, r: PxRect, dpi: u32) {
 }
 
 impl Crops {
+    fn idle(&self) -> bool {
+        self.entries.is_empty() && self.pick.is_none()
+    }
+
+    fn restore(&mut self) {
+        self.end_pick();
+        while !self.entries.is_empty() {
+            self.uncrop(self.entries.len() - 1);
+        }
+    }
+
     fn find(&self, target: HWND) -> Option<usize> {
         self.entries.iter().position(|e| e.target == target)
     }
@@ -480,11 +564,10 @@ impl Crops {
     }
 
     fn start_pick(&mut self) {
-        let Some(o) = OPTIONS.get() else { return };
         let Some(hook) = mouse_hook(Some(pick_proc)) else { return };
         register_classes();
         unsafe {
-            let _ = RegisterHotKey(Some(hwnd(o.owner)), o.cancel_hotkey, MOD_NOREPEAT, u32::from(VK_ESCAPE.0));
+            let _ = RegisterHotKey(None, CANCEL_HOTKEY, MOD_NOREPEAT, u32::from(VK_ESCAPE.0));
         }
         let outline = popup(OUTLINE_CLASS, WS_EX_TRANSPARENT | WS_EX_TOPMOST, 255);
         self.pick = Some(Pick { hook, outline, chain: Vec::new(), level: 0 });
@@ -495,9 +578,7 @@ impl Crops {
         let Some(p) = self.pick.take() else { return };
         unsafe {
             let _ = UnhookWindowsHookEx(p.hook);
-            if let Some(o) = OPTIONS.get() {
-                let _ = UnregisterHotKey(Some(hwnd(o.owner)), o.cancel_hotkey);
-            }
+            let _ = UnregisterHotKey(None, CANCEL_HOTKEY);
         }
         destroy(p.outline.as_slice());
     }
@@ -611,11 +692,13 @@ impl Crops {
     }
 
     /// A window beside a pane counts, as it may replace the pane.
-    fn changed(&mut self, h: HWND) {
-        let parent = unsafe { GetAncestor(h, GA_PARENT) };
+    fn changed(&mut self, windows: &[HWND]) {
+        let parents: Vec<HWND> = windows.iter().map(|&h| unsafe { GetAncestor(h, GA_PARENT) }).collect();
         for i in (0..self.entries.len()).rev() {
             let e = &self.entries[i];
-            if e.target == h || e.pane.hwnd == h || e.pane.parent == h || e.pane.parent == parent {
+            let hit = windows.iter().any(|&h| e.target == h || e.pane.hwnd == h || e.pane.parent == h)
+                || parents.contains(&e.pane.parent);
+            if hit {
                 self.sync(i);
             }
         }
@@ -688,9 +771,14 @@ unsafe extern "system" fn on_event(
     if h.is_invalid() || object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 {
         return;
     }
-    if !try_with(|c| c.changed(h)) {
-        post(CHANGED, h.0 as isize);
-    }
+    CHANGED_WINDOWS.with_borrow_mut(|windows| {
+        if windows.is_empty() {
+            post(CHANGED);
+        }
+        if !windows.contains(&h) {
+            windows.push(h);
+        }
+    });
 }
 
 unsafe extern "system" fn pick_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -703,7 +791,7 @@ unsafe extern "system" fn pick_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     let request = match wparam.0 as u32 {
         WM_MOUSEMOVE => {
             if !POINTED_POSTED.replace(true) {
-                post(POINTED, 0);
+                post(POINTED);
             }
             return next();
         }
@@ -714,7 +802,7 @@ unsafe extern "system" fn pick_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         WM_MOUSEWHEEL => INWARD,
         _ => return next(),
     };
-    post(request, 0);
+    post(request);
     LRESULT(1)
 }
 
