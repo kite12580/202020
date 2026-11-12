@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 
 use capsule_core::crop::{GRIPS, Grip, croppable, drag, fit, grip_rect, insets, shrink};
 use capsule_core::layout::PxRect;
@@ -106,6 +106,9 @@ struct Entry {
     region: Option<PxRect>,
     saved: Saved,
     grips: [HWND; 4],
+    /// The frame, window above and size the grips were last shown with;
+    /// none while they are hidden.
+    grips_at: Option<(PxRect, HWND, i32)>,
 }
 
 struct Pick {
@@ -136,16 +139,22 @@ thread_local! {
 }
 
 pub fn init(opts: Options) {
-    let accent = Theme::read().accent;
-    let color = COLORREF(u32::from(accent[0]) | u32::from(accent[1]) << 8 | u32::from(accent[2]) << 16);
-    register_class(WNDCLASSEXW {
-        lpfnWndProc: Some(outline_proc),
-        hbrBackground: unsafe { CreateSolidBrush(color) },
-        lpszClassName: OUTLINE_CLASS,
-        ..Default::default()
-    });
-    register_class(WNDCLASSEXW { lpfnWndProc: Some(grip_proc), lpszClassName: GRIP_CLASS, ..Default::default() });
     let _ = OPTIONS.set(opts);
+}
+
+fn register_classes() {
+    static REGISTERED: Once = Once::new();
+    REGISTERED.call_once(|| {
+        let accent = Theme::read().accent;
+        let color = COLORREF(u32::from(accent[0]) | u32::from(accent[1]) << 8 | u32::from(accent[2]) << 16);
+        register_class(WNDCLASSEXW {
+            lpfnWndProc: Some(outline_proc),
+            hbrBackground: unsafe { CreateSolidBrush(color) },
+            lpszClassName: OUTLINE_CLASS,
+            ..Default::default()
+        });
+        register_class(WNDCLASSEXW { lpfnWndProc: Some(grip_proc), lpszClassName: GRIP_CLASS, ..Default::default() });
+    });
 }
 
 fn post(request: usize, lparam: isize) {
@@ -344,7 +353,7 @@ impl Entry {
     /// Shows the grips just above the target. A window placed after a
     /// topmost one becomes topmost, so when the window above the target
     /// differs in that, the grips go to the top of the target's band instead.
-    fn place_grips(&self) {
+    fn place_grips(&mut self) {
         let size = scale(GRIP_DIP, dpi(self.target));
         let on_top = topmost(self.target);
         let prev = |h| unsafe { GetWindow(h, GW_HWNDPREV) }.ok();
@@ -358,13 +367,21 @@ impl Entry {
             None if topmost(self.grips[0]) => HWND_NOTOPMOST,
             None => HWND_TOP,
         };
+        let at = Some((self.frame, after, size));
+        if self.grips_at == at {
+            return;
+        }
+        self.grips_at = at;
         for (&g, grip) in self.grips.iter().zip(GRIPS) {
             place(g, Some(after), grip_rect(self.frame, grip, size), SWP_SHOWWINDOW);
             after = g;
         }
     }
 
-    fn hide_grips(&self) {
+    fn hide_grips(&mut self) {
+        if self.grips_at.take().is_none() {
+            return;
+        }
         for &g in &self.grips {
             unsafe {
                 let _ = ShowWindow(g, SW_HIDE);
@@ -465,6 +482,7 @@ impl Crops {
     fn start_pick(&mut self) {
         let Some(o) = OPTIONS.get() else { return };
         let Some(hook) = mouse_hook(Some(pick_proc)) else { return };
+        register_classes();
         unsafe {
             let _ = RegisterHotKey(Some(hwnd(o.owner)), o.cancel_hotkey, MOD_NOREPEAT, u32::from(VK_ESCAPE.0));
         }
@@ -553,6 +571,7 @@ impl Crops {
             region: None,
             saved,
             grips,
+            grips_at: None,
         });
         if !watchdog::set_crops(&self.cropped()) {
             self.entries.pop();
