@@ -22,7 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use crate::capsule::util::{self, foreground, process_path, reg_value, window_ids};
-use crate::capsule::{desktops, input, keyhook};
+use crate::capsule::{crop, desktops, input, keyhook};
 use jobs::AlphaMsg;
 
 pub struct Options {
@@ -30,6 +30,7 @@ pub struct Options {
     pub command_msg: u32,
     pub reload_command: u32,
     pub desktop_msg: u32,
+    pub crop_msg: u32,
 }
 
 static OPTIONS: OnceLock<Options> = OnceLock::new();
@@ -58,6 +59,9 @@ pub fn apply(cfg: Hyper) {
     let on = cfg.enabled;
     if !(on && cfg.binds(&Action::VirgoDesktop)) {
         desktops::restore_all();
+    }
+    if !(on && cfg.binds(&Action::Crop)) {
+        crop::restore_all();
     }
     {
         let mut current = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
@@ -127,6 +131,7 @@ fn run(effect: Effect, cfg: &Arc<Hyper>) {
         Effect::MaskWin => input::mask_win(),
         Effect::VirgoToggle => post(|o| (o.desktop_msg, desktops::TOGGLE)),
         Effect::VirgoMove => post(|o| (o.desktop_msg, desktops::MOVE_ACTIVE)),
+        Effect::Crop => post(|o| (o.crop_msg, crop::TOGGLE)),
         Effect::Button(b, down) => input::button(b, down),
         Effect::SlowMouse(on) => slow_mouse(on.then_some(cfg.slow_mouse_speed)),
         Effect::AlphaBegin => begin_alpha(),

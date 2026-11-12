@@ -3,7 +3,9 @@ macro_rules! default_keys {
         r#"# CapsLock + key. Without this table these defaults apply; with it, keys left out of it do nothing.
 # A value is either keys to press, separated by spaces ("End Enter", "Ctrl+Shift+Left"), or one of the actions
 # copy_or_line, paste_plain, delete_line, hotstring, escape_or_move, power_options, topmost, caption, reload,
-# transparency, switch_desktop, virgo_desktop, left_button, middle_button and right_button (held while the key is).
+# transparency, switch_desktop, virgo_desktop, crop, left_button, middle_button and right_button (held while the key
+# is). crop asks for a click on a pane of a window, such as a browser's page, and shows only that pane until pressed
+# again on the window.
 # A table instead holds one of:
 #   do = keys or an action
 #   wrap = [open, close]   wraps the selection, or inserts both; with at_end = true, at the end of the line, then Enter
@@ -26,6 +28,7 @@ q = "PageDown"
 n = "Ctrl+Shift+Tab"
 m = "Ctrl+Tab"
 o = "End Enter"
+s = "crop"
 u = { do = "Ctrl+Z", terminal = "Ctrl+/" }
 z = "Ctrl+S"
 c = "Alt+Tab"
@@ -87,9 +90,9 @@ f3 = "MediaPrev"
 "#
     };
     (win_keys) => {
-        r#"# Win + key with no other modifier, mapped to keys to press instead, or to virgo_desktop: tap it to switch
-# between two desktops, hold it to send the active window to the other one. Without this table these defaults apply;
-# leave it empty to keep Windows' own shortcuts.
+        r#"# Win + key with no other modifier, mapped to keys to press instead, to crop, or to virgo_desktop: tap that to
+# switch between two desktops, hold it to send the active window to the other one. Without this table these defaults
+# apply; leave it empty to keep Windows' own shortcuts.
 e = "Win+2"
 t = "Ctrl+Shift+T"
 "`" = "virgo_desktop"

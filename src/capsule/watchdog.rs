@@ -1,6 +1,6 @@
 //! A helper process that undoes 202020's changes outside itself (the taken
-//! over taskbar, windows hidden on the other desktop) if 202020 dies without
-//! cleaning up. It runs only while one of them is in effect and reads them
+//! over taskbar, windows hidden on the other desktop, cropped windows) if
+//! 202020 dies without cleaning up. It runs only while one of them is in effect and reads them
 //! from memory shared with 202020.
 
 use std::os::windows::io::AsRawHandle;
@@ -18,11 +18,13 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::PCWSTR;
 
+use crate::capsule::crop::{self, Cropped};
 use crate::capsule::shell::{self, Saved};
 use crate::capsule::util::{OwnedHandle, View, hwnd, open_process, wide};
 use crate::capsule::{desktops, hook};
 
 const CAPACITY: usize = 1024;
+const CROP_CAPACITY: usize = 64;
 const READY_TIMEOUT_MS: u32 = 1000;
 
 #[repr(C)]
@@ -32,17 +34,27 @@ struct Slot {
 }
 
 #[repr(C)]
+struct CropSlot {
+    hwnd: AtomicIsize,
+    pid: AtomicU32,
+    maximized: AtomicBool,
+    rect: [AtomicI32; 4],
+}
+
+#[repr(C)]
 struct Shared {
     takeover: AtomicBool,
     ab_state: AtomicU32,
     work_area: [AtomicI32; 4],
     count: AtomicU32,
     hidden: [Slot; CAPACITY],
+    crop_count: AtomicU32,
+    crops: [CropSlot; CROP_CAPACITY],
 }
 
 impl Shared {
     fn outstanding(&self) -> bool {
-        self.takeover.load(Relaxed) || self.count.load(Relaxed) != 0
+        self.takeover.load(Relaxed) || self.count.load(Relaxed) != 0 || self.crop_count.load(Relaxed) != 0
     }
 }
 
@@ -154,6 +166,25 @@ pub fn set_hidden(windows: &[(HWND, u32)]) -> bool {
     })
 }
 
+pub fn set_crops(windows: &[Cropped]) -> bool {
+    if windows.len() > CROP_CAPACITY {
+        log::warn!("{} windows are more than can be cropped", windows.len());
+        return false;
+    }
+    update(!windows.is_empty(), |s| {
+        for (slot, &(h, pid, saved)) in s.crops.iter().zip(windows) {
+            slot.hwnd.store(h.0 as isize, Relaxed);
+            slot.pid.store(pid, Relaxed);
+            slot.maximized.store(saved.maximized, Relaxed);
+            let r = saved.rect;
+            for (v, x) in slot.rect.iter().zip([r.left, r.top, r.right, r.bottom]) {
+                v.store(x, Relaxed);
+            }
+        }
+        s.crop_count.store(windows.len() as u32, Relaxed);
+    })
+}
+
 fn restore(s: &Shared, pid: u32) {
     let n = (s.count.load(Relaxed) as usize).min(CAPACITY);
     desktops::show(
@@ -164,6 +195,20 @@ fn restore(s: &Shared, pid: u32) {
     );
     if n > 0 {
         log::info!("{n} hidden windows shown");
+    }
+    let n = (s.crop_count.load(Relaxed) as usize).min(CROP_CAPACITY);
+    for slot in &s.crops[..n] {
+        let h = hwnd(slot.hwnd.load(Relaxed));
+        if desktops::alive(&(h, slot.pid.load(Relaxed))) {
+            let [left, top, right, bottom] = [0, 1, 2, 3].map(|i| slot.rect[i].load(Relaxed));
+            crop::undo(
+                h,
+                &crop::Saved { rect: RECT { left, top, right, bottom }, maximized: slot.maximized.load(Relaxed) },
+            );
+        }
+    }
+    if n > 0 {
+        log::info!("{n} cropped windows restored");
     }
     if s.takeover.load(Relaxed) {
         if let Some(tray) = shell::find_real_tray() {

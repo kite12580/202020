@@ -415,6 +415,7 @@ impl App {
         self.dismiss_break();
         capsule::hyper::stop();
         capsule::desktops::restore_all();
+        capsule::crop::restore_all();
         launcher::flush_history();
         launcher::unload();
         self.notify(NIM_DELETE);

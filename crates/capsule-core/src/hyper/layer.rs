@@ -36,6 +36,7 @@ pub enum Effect<'a> {
     MaskWin,
     VirgoToggle,
     VirgoMove,
+    Crop,
 }
 
 const ESC: Effect = Effect::Keys(&[k(vk::ESCAPE)]);
@@ -186,12 +187,19 @@ impl Layer {
         if mods() != WIN {
             return false;
         }
+        if !matches!(action, Action::Keys(_) | Action::VirgoDesktop | Action::Crop) {
+            return false;
+        }
+        let repeat = self.mark(key);
         match action {
             Action::Keys(chords) => emit(Effect::WinKeys(chords)),
             Action::VirgoDesktop => self.press_virgo(key, time, emit),
-            _ => return false,
+            Action::Crop if !repeat => {
+                emit(Effect::MaskWin);
+                emit(Effect::Crop);
+            }
+            _ => {}
         }
-        self.mark(key);
         true
     }
 
@@ -265,6 +273,7 @@ impl Layer {
                 }
             }
             Some(Action::SwitchDesktop) => emit(Effect::SwitchDesktop),
+            Some(Action::Crop) => emit(Effect::Crop),
         }
         true
     }
@@ -442,6 +451,25 @@ mod tests {
 
         assert!(!run_with(&mut layer, ev(BACKTICK, true, 2000), WIN | super::SHIFT).0);
         assert!(!run(&mut layer, ev(BACKTICK, true, 2100)).0);
+    }
+
+    #[test]
+    fn crop_once_per_press() {
+        let mut layer = Layer::new();
+        run(&mut layer, ev(CAPITAL, true, 0));
+        assert_eq!(run(&mut layer, ev(S, true, 10)).1, vec![Effect::Crop]);
+        assert_eq!(run(&mut layer, ev(S, true, 40)), (true, vec![]));
+        run(&mut layer, ev(S, false, 50));
+        run(&mut layer, ev(CAPITAL, false, 60));
+
+        let win_keys: Keymap = [(C, Binding { action: Action::Crop, terminal: None })].into_iter().collect();
+        let cfg = Hyper { win_keys, ..Hyper::default() };
+        let mut out = Vec::new();
+        for (down, time) in [(true, 100), (true, 130), (false, 140)] {
+            assert!(layer.on_key(ev(C, down, time), &cfg, || WIN, || Target::Other, &mut |x| out.push(x)));
+        }
+        assert_eq!(out, [Effect::MaskWin, Effect::Crop]);
+        assert!(!engaged(&layer));
     }
 
     #[test]
