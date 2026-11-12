@@ -1,12 +1,13 @@
 //! A helper process that undoes 202020's changes outside itself (the taken
 //! over taskbar, windows hidden on the other desktop, cropped windows) if
-//! 202020 dies without cleaning up. It runs only while one of them is in effect and reads them
-//! from memory shared with 202020.
+//! 202020 dies without cleaning up. It runs only while one of them is in
+//! effect and reads them from memory shared with 202020.
 
 use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering::Relaxed};
 
+use capsule_core::layout::PxRect;
 use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE, RECT, WAIT_OBJECT_0};
 use windows::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
@@ -144,9 +145,7 @@ pub fn set_takeover(saved: Option<Saved>) -> bool {
         if let Some(saved) = saved {
             s.ab_state.store(saved.ab_state, Relaxed);
             let r = saved.work_area;
-            for (slot, v) in s.work_area.iter().zip([r.left, r.top, r.right, r.bottom]) {
-                slot.store(v, Relaxed);
-            }
+            store_rect(&s.work_area, [r.left, r.top, r.right, r.bottom]);
         }
         s.takeover.store(saved.is_some(), Relaxed);
     })
@@ -177,12 +176,20 @@ pub fn set_crops(windows: &[Cropped]) -> bool {
             slot.pid.store(pid, Relaxed);
             slot.maximized.store(saved.maximized, Relaxed);
             let r = saved.rect;
-            for (v, x) in slot.rect.iter().zip([r.left, r.top, r.right, r.bottom]) {
-                v.store(x, Relaxed);
-            }
+            store_rect(&slot.rect, [r.left, r.top, r.right, r.bottom]);
         }
         s.crop_count.store(windows.len() as u32, Relaxed);
     })
+}
+
+fn store_rect(slots: &[AtomicI32; 4], values: [i32; 4]) {
+    for (slot, v) in slots.iter().zip(values) {
+        slot.store(v, Relaxed);
+    }
+}
+
+fn load_rect(slots: &[AtomicI32; 4]) -> [i32; 4] {
+    slots.each_ref().map(|v| v.load(Relaxed))
 }
 
 fn restore(s: &Shared, pid: u32) {
@@ -200,10 +207,10 @@ fn restore(s: &Shared, pid: u32) {
     for slot in &s.crops[..n] {
         let h = hwnd(slot.hwnd.load(Relaxed));
         if desktops::alive(&(h, slot.pid.load(Relaxed))) {
-            let [left, top, right, bottom] = [0, 1, 2, 3].map(|i| slot.rect[i].load(Relaxed));
+            let [left, top, right, bottom] = load_rect(&slot.rect);
             crop::undo(
                 h,
-                &crop::Saved { rect: RECT { left, top, right, bottom }, maximized: slot.maximized.load(Relaxed) },
+                &crop::Saved { rect: PxRect { left, top, right, bottom }, maximized: slot.maximized.load(Relaxed) },
             );
         }
     }
@@ -214,7 +221,7 @@ fn restore(s: &Shared, pid: u32) {
         if let Some(tray) = shell::find_real_tray() {
             hook::detach(tray, pid);
         }
-        let [left, top, right, bottom] = [0, 1, 2, 3].map(|i| s.work_area[i].load(Relaxed));
+        let [left, top, right, bottom] = load_rect(&s.work_area);
         shell::restore(&Saved { ab_state: s.ab_state.load(Relaxed), work_area: RECT { left, top, right, bottom } });
     }
 }

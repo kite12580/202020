@@ -122,7 +122,7 @@ fn win_keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(Stri
     table
         .into_iter()
         .filter_map(|(name, v)| match (crate::launcher::hotkey::key(&name), v.as_str().and_then(hyper::action)) {
-            (Some(key), Some(action @ (Action::Keys(_) | Action::VirgoDesktop | Action::Crop))) => {
+            (Some(key), Some(action)) if action.fits_win_key() => {
                 Some((key as u16, Binding { action, terminal: None }))
             }
             (None, _) => {

@@ -102,8 +102,7 @@ fn process_created(pid: u32) -> u64 {
     (u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime)
 }
 
-/// Enumeration callback pushing each window onto the `Vec<HWND>` at `l`.
-pub unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> BOOL {
+unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> BOOL {
     let v = unsafe { &mut *(l.0 as *mut Vec<HWND>) };
     v.push(h);
     BOOL(1)

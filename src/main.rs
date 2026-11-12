@@ -227,7 +227,6 @@ fn start_features(hwnd: HWND) {
         command_msg: WM_LAUNCHER_CMD,
         reload_command: CMD_RELOAD_CONFIG as u32,
         desktop_msg: WM_DESKTOP,
-        crop_msg: WM_CROP,
     });
     capsule::hyper::apply(cfg.hyper);
 }

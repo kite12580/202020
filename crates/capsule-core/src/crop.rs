@@ -28,7 +28,6 @@ pub fn fit(frame: PxRect, window: PxRect, pane: PxRect) -> (PxRect, PxRect) {
     (placed, PxRect { left: dx, top: dy, right: dx + frame.width(), bottom: dy + frame.height() })
 }
 
-/// Whether `pane` lies within `window` and leaves part of it out.
 pub fn croppable(window: PxRect, pane: PxRect) -> bool {
     pane.width() > 0
         && pane.height() > 0
@@ -39,7 +38,6 @@ pub fn croppable(window: PxRect, pane: PxRect) -> bool {
         && pane.bottom <= window.bottom
 }
 
-/// How far each edge of `inner` lies inside `outer`.
 pub fn insets(outer: PxRect, inner: PxRect) -> PxRect {
     PxRect {
         left: inner.left - outer.left,
@@ -53,7 +51,6 @@ pub fn shrink(r: PxRect, by: PxRect) -> PxRect {
     PxRect { left: r.left + by.left, top: r.top + by.top, right: r.right - by.right, bottom: r.bottom - by.bottom }
 }
 
-/// The `size`-pixel square in `frame`'s corner for `grip`.
 pub fn grip_rect(frame: PxRect, grip: Grip, size: i32) -> PxRect {
     let left = if matches!(grip, Grip::TopLeft | Grip::BottomLeft) { frame.left } else { frame.right - size };
     let top = if matches!(grip, Grip::TopLeft | Grip::TopRight) { frame.top } else { frame.bottom - size };
@@ -66,9 +63,7 @@ pub fn grip_rect(frame: PxRect, grip: Grip, size: i32) -> PxRect {
 pub fn drag(start: PxRect, grip: Grip, dx: i32, dy: i32, min: i32) -> PxRect {
     let mut r = start;
     match grip {
-        Grip::TopLeft => {
-            return PxRect { left: r.left + dx, top: r.top + dy, right: r.right + dx, bottom: r.bottom + dy };
-        }
+        Grip::TopLeft => return r.offset(dx, dy),
         Grip::TopRight | Grip::BottomRight => r.right = (r.right + dx).max(r.left + min),
         Grip::BottomLeft => r.left = (r.left + dx).min(r.right - min),
     }

@@ -18,7 +18,6 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_NOREPEAT, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, VK_ESCAPE,
 };
@@ -26,25 +25,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, CWP_SKIPINVISIBLE, CallNextHookEx, ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW,
     DestroyWindow, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-    EnumChildWindows, GA_PARENT, GA_ROOT, GW_HWNDPREV, GWL_EXSTYLE, GWLP_USERDATA, GetAncestor, GetCursorPos,
-    GetWindow, GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IDC_SIZEALL,
+    FindWindowExW, GA_PARENT, GA_ROOT, GW_HWNDPREV, GWLP_USERDATA, GetAncestor, GetCursorPos, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IDC_SIZEALL,
     IDC_SIZENESW, IDC_SIZENWSE, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible, IsZoomed, LWA_ALPHA, LoadCursorW,
     MA_NOACTIVATE, MB_OK, MSLLHOOKSTRUCT, OBJID_WINDOW, PostMessageW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_MAXIMIZE,
     SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetLayeredWindowAttributes, SetWindowLongPtrW,
-    SetWindowPos, SetWindowsHookExW, ShowWindow, ShowWindowAsync, UnhookWindowsHookEx, WH_MOUSE_LL,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WindowFromPoint,
+    SetWindowPos, ShowWindow, ShowWindowAsync, UnhookWindowsHookEx, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
+    WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP, WindowFromPoint,
 };
 use windows::core::{PCWSTR, w};
 
 use crate::capsule::desktops::alive;
 use crate::capsule::theme::Theme;
-use crate::capsule::util::{class_name, foreground, hwnd, own_window, px_rect, register_class, scale, window_ids};
+use crate::capsule::util::{
+    class_name, dpi, foreground, hwnd, mouse_hook, own_window, px_rect, register_class, scale, topmost, wide,
+    window_ids,
+};
 use crate::capsule::watchdog;
-use crate::capsule::windows_list::{cloaked, collect, qualifies};
+use crate::capsule::windows_list::{cloaked, qualifies};
 
-pub const TOGGLE: usize = 0;
+const TOGGLE: usize = 0;
 pub const CANCEL: usize = 1;
 const POINTED: usize = 2;
 const PICKED: usize = 3;
@@ -58,11 +60,12 @@ const OUTLINE_DIP: f32 = 3.0;
 const GRIP_CLASS: PCWSTR = w!("202020CropGrip");
 const OUTLINE_CLASS: PCWSTR = w!("202020CropOutline");
 
-const PROCESS_EVENTS: [(u32, u32); 4] = [
+const PROCESS_EVENTS: [(u32, u32); 5] = [
     (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
     (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
     (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
     (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
+    (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
 ];
 
 pub struct Options {
@@ -75,17 +78,16 @@ static OPTIONS: OnceLock<Options> = OnceLock::new();
 
 #[derive(Clone, Copy)]
 pub struct Saved {
-    pub rect: RECT,
+    pub rect: PxRect,
     pub maximized: bool,
 }
 
-/// A cropped window, its process id and what uncropping puts back.
 pub type Cropped = (HWND, u32, Saved);
 
 struct Pane {
     hwnd: HWND,
     parent: HWND,
-    class: String,
+    class: Vec<u16>,
 }
 
 struct Entry {
@@ -101,7 +103,7 @@ struct Entry {
     /// The rect last asked for, which the target may have adjusted.
     asked: PxRect,
     /// The pane within the target, as last clipped.
-    region: PxRect,
+    region: Option<PxRect>,
     saved: Saved,
     grips: [HWND; 4],
 }
@@ -109,7 +111,6 @@ struct Entry {
 struct Pick {
     hook: HHOOK,
     outline: Option<HWND>,
-    /// The windows under the cursor, deepest first, ending at the top-level one.
     chain: Vec<HWND>,
     level: usize,
 }
@@ -126,7 +127,6 @@ struct Crops {
     pick: Option<Pick>,
     drag: Option<Drag>,
     hooks: Vec<(u32, Vec<HWINEVENTHOOK>)>,
-    foreground_hook: Option<HWINEVENTHOOK>,
 }
 
 thread_local! {
@@ -156,6 +156,10 @@ fn post(request: usize, lparam: isize) {
     }
 }
 
+pub fn toggle() {
+    post(TOGGLE, 0);
+}
+
 pub fn on_request(request: usize, lparam: isize) {
     if request == POINTED {
         POINTED_POSTED.set(false);
@@ -181,11 +185,12 @@ pub fn restore_all() {
 }
 
 pub fn undo(h: HWND, saved: &Saved) {
-    let r = saved.rect;
     unsafe {
         SetWindowRgn(h, None, true);
-        let _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-        if saved.maximized {
+    }
+    place(h, None, saved.rect, SWP_NOZORDER);
+    if saved.maximized {
+        unsafe {
             let _ = ShowWindowAsync(h, SW_MAXIMIZE);
         }
     }
@@ -223,8 +228,22 @@ fn work_area(h: HWND) -> PxRect {
     px_rect(info.rcWork)
 }
 
-fn dpi(h: HWND) -> u32 {
-    unsafe { GetDpiForWindow(h) }.max(96)
+fn cursor() -> POINT {
+    let mut pt = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut pt);
+    }
+    pt
+}
+
+fn unmaximize(h: HWND) -> bool {
+    let zoomed = unsafe { IsZoomed(h) }.as_bool();
+    if zoomed {
+        unsafe {
+            let _ = ShowWindow(h, SW_RESTORE);
+        }
+    }
+    zoomed
 }
 
 fn place(h: HWND, after: Option<HWND>, r: PxRect, flags: SET_WINDOW_POS_FLAGS) {
@@ -262,7 +281,7 @@ fn usable(h: HWND, target: HWND) -> bool {
 
 impl Pane {
     fn new(h: HWND) -> Pane {
-        Pane { hwnd: h, parent: unsafe { GetAncestor(h, GA_PARENT) }, class: class_name(h) }
+        Pane { hwnd: h, parent: unsafe { GetAncestor(h, GA_PARENT) }, class: wide(&class_name(h)) }
     }
 
     /// The pane, or when it was hidden or destroyed, as when a browser
@@ -271,18 +290,13 @@ impl Pane {
         if usable(self.hwnd, target) {
             return Some(self.hwnd);
         }
-        let mut all = Vec::new();
-        unsafe {
-            let _ = EnumChildWindows(Some(self.parent), Some(collect), LPARAM(&mut all as *mut _ as isize));
-        }
-        let found = all
-            .into_iter()
-            .filter(|&h| unsafe { GetAncestor(h, GA_PARENT) } == self.parent && usable(h, target))
-            .filter(|&h| class_name(h) == self.class)
-            .max_by_key(|&h| {
-                let r = window_rect(h);
-                i64::from(r.width()) * i64::from(r.height())
-            })?;
+        let class = PCWSTR(self.class.as_ptr());
+        let next = |after| unsafe { FindWindowExW(Some(self.parent), after, class, PCWSTR::null()) }.ok();
+        let siblings = std::iter::successors(next(None), |&h| next(Some(h)));
+        let found = siblings.filter(|&h| usable(h, target)).max_by_key(|&h| {
+            let r = window_rect(h);
+            i64::from(r.width()) * i64::from(r.height())
+        })?;
         self.hwnd = found;
         Some(found)
     }
@@ -304,34 +318,24 @@ impl Entry {
         if unsafe { IsHungAppWindow(target) }.as_bool() {
             return true;
         }
-        if unsafe { IsZoomed(target) }.as_bool() {
-            self.frame = work_area(target);
-            unsafe {
-                let _ = ShowWindow(target, SW_RESTORE);
-            }
-            self.applied = window_rect(target);
-        }
+        let maximized = unmaximize(target);
         let window = window_rect(target);
-        if window != self.applied {
+        if maximized {
+            self.frame = work_area(target);
+        } else if window != self.applied {
             self.frame = shrink(window, self.border);
         }
-        let pane = match self.pane.current(target).map(window_rect).filter(|&p| croppable(window, p)) {
-            Some(pane) => pane,
-            None if self.region.width() > 0 => PxRect {
-                left: window.left + self.region.left,
-                top: window.top + self.region.top,
-                right: window.left + self.region.right,
-                bottom: window.top + self.region.bottom,
-            },
-            None => return true,
-        };
+        let pane = self.pane.current(target).map(window_rect).filter(|&p| croppable(window, p));
+        let Some(pane) = pane.or_else(|| Some(self.region?.offset(window.left, window.top))) else { return true };
         let (placed, region) = fit(self.frame, window, pane);
-        if placed != window && !(placed == self.asked && window == self.applied) {
+        self.applied = if placed != window && !(placed == self.asked && window == self.applied) {
             place(target, None, placed, SWP_NOZORDER);
             self.asked = placed;
-        }
-        self.applied = window_rect(target);
-        self.region = region;
+            window_rect(target)
+        } else {
+            window
+        };
+        self.region = Some(region);
         clip(target, region);
         self.place_grips();
         true
@@ -343,16 +347,20 @@ impl Entry {
     fn place_grips(&self) {
         let size = scale(GRIP_DIP, dpi(self.target));
         let on_top = topmost(self.target);
-        let above = unsafe { GetWindow(self.target, GW_HWNDPREV) }.ok().filter(|&h| topmost(h) == on_top);
+        let prev = |h| unsafe { GetWindow(h, GW_HWNDPREV) }.ok();
+        let mut above = prev(self.target);
+        while let Some(g) = above.filter(|g| self.grips.contains(g)) {
+            above = prev(g);
+        }
+        let mut after = match above.filter(|&h| topmost(h) == on_top) {
+            Some(h) => h,
+            None if on_top => HWND_TOPMOST,
+            None if topmost(self.grips[0]) => HWND_NOTOPMOST,
+            None => HWND_TOP,
+        };
         for (&g, grip) in self.grips.iter().zip(GRIPS) {
-            let after = match above {
-                Some(h) => h,
-                None if on_top => HWND_TOPMOST,
-                None if topmost(g) => HWND_NOTOPMOST,
-                None => HWND_TOP,
-            };
-            let flags = if g == after { SWP_SHOWWINDOW | SWP_NOZORDER } else { SWP_SHOWWINDOW };
-            place(g, Some(after), grip_rect(self.frame, grip, size), flags);
+            place(g, Some(after), grip_rect(self.frame, grip, size), SWP_SHOWWINDOW);
+            after = g;
         }
     }
 
@@ -369,9 +377,8 @@ impl Entry {
     }
 }
 
-fn topmost(h: HWND) -> bool {
-    let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) };
-    ex & WS_EX_TOPMOST.0 as isize != 0
+fn grip_of(h: HWND) -> Grip {
+    GRIPS[unsafe { GetWindowLongPtrW(h, GWLP_USERDATA) } as usize % GRIPS.len()]
 }
 
 fn clip(h: HWND, region: PxRect) {
@@ -384,52 +391,11 @@ fn clip(h: HWND, region: PxRect) {
     }
 }
 
-fn create_grips() -> Option<[HWND; 4]> {
-    let instance = unsafe { GetModuleHandleW(None) }.ok()?;
-    let mut grips = [HWND::default(); 4];
-    for (i, g) in grips.iter_mut().enumerate() {
-        let created = unsafe {
-            CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                GRIP_CLASS,
-                PCWSTR::null(),
-                WS_POPUP,
-                0,
-                0,
-                0,
-                0,
-                None,
-                None,
-                Some(instance.into()),
-                None,
-            )
-        };
-        let Ok(h) = created else {
-            destroy(&grips[..i]);
-            return None;
-        };
-        unsafe {
-            SetWindowLongPtrW(h, GWLP_USERDATA, i as isize);
-            let _ = SetLayeredWindowAttributes(h, COLORREF(0), 1, LWA_ALPHA);
-        }
-        *g = h;
-    }
-    Some(grips)
-}
-
-fn destroy(windows: &[HWND]) {
-    for &h in windows {
-        unsafe {
-            let _ = DestroyWindow(h);
-        }
-    }
-}
-
-fn create_outline() -> Option<HWND> {
+fn popup(class: PCWSTR, ex: WINDOW_EX_STYLE, alpha: u8) -> Option<HWND> {
     unsafe {
         let h = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            OUTLINE_CLASS,
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | ex,
+            class,
             PCWSTR::null(),
             WS_POPUP,
             0,
@@ -442,8 +408,29 @@ fn create_outline() -> Option<HWND> {
             None,
         )
         .ok()?;
-        let _ = SetLayeredWindowAttributes(h, COLORREF(0), 255, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(h, COLORREF(0), alpha, LWA_ALPHA);
         Some(h)
+    }
+}
+
+fn create_grips() -> Option<[HWND; 4]> {
+    let mut grips = [HWND::default(); 4];
+    for (i, g) in grips.iter_mut().enumerate() {
+        let Some(h) = popup(GRIP_CLASS, WINDOW_EX_STYLE(0), 1) else {
+            destroy(&grips[..i]);
+            return None;
+        };
+        unsafe { SetWindowLongPtrW(h, GWLP_USERDATA, i as isize) };
+        *g = h;
+    }
+    Some(grips)
+}
+
+fn destroy(windows: &[HWND]) {
+    for &h in windows {
+        unsafe {
+            let _ = DestroyWindow(h);
+        }
     }
 }
 
@@ -477,15 +464,13 @@ impl Crops {
 
     fn start_pick(&mut self) {
         let Some(o) = OPTIONS.get() else { return };
-        let module = unsafe { GetModuleHandleW(None) }.ok().map(Into::into);
-        let Ok(hook) = (unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(pick_proc), module, 0) }) else { return };
-        let mut pt = POINT::default();
+        let Some(hook) = mouse_hook(Some(pick_proc)) else { return };
         unsafe {
             let _ = RegisterHotKey(Some(hwnd(o.owner)), o.cancel_hotkey, MOD_NOREPEAT, u32::from(VK_ESCAPE.0));
-            let _ = GetCursorPos(&mut pt);
         }
-        self.pick = Some(Pick { hook, outline: create_outline(), chain: Vec::new(), level: 0 });
-        self.point(pt);
+        let outline = popup(OUTLINE_CLASS, WS_EX_TRANSPARENT | WS_EX_TOPMOST, 255);
+        self.pick = Some(Pick { hook, outline, chain: Vec::new(), level: 0 });
+        self.point(cursor());
     }
 
     fn end_pick(&mut self) {
@@ -502,10 +487,11 @@ impl Crops {
     fn point(&mut self, pt: POINT) {
         let Some(p) = &mut self.pick else { return };
         let chain = chain_at(pt);
-        if chain != p.chain {
-            p.chain = chain;
-            p.level = 0;
+        if chain == p.chain {
+            return;
         }
+        p.chain = chain;
+        p.level = 0;
         self.show_outline();
     }
 
@@ -545,44 +531,35 @@ impl Crops {
         if let Some(i) = self.find(target) {
             let e = &mut self.entries[i];
             e.pane = Pane::new(pane);
-            e.region = PxRect::default();
+            e.region = None;
             return self.sync(i);
         }
         if unsafe { IsHungAppWindow(target) }.as_bool() || !croppable(window_rect(target), window_rect(pane)) {
             return beep();
         }
-        let maximized = unsafe { IsZoomed(target) }.as_bool();
-        if maximized {
-            unsafe {
-                let _ = ShowWindow(target, SW_RESTORE);
-            }
-        }
+        let Some(grips) = create_grips() else { return beep() };
+        let maximized = unmaximize(target);
         let window = window_rect(target);
         let visible = visible_rect(target);
-        let Some(grips) = create_grips() else { return beep() };
-        let pid = window_ids(target).1;
-        let saved = Saved {
-            rect: RECT { left: window.left, top: window.top, right: window.right, bottom: window.bottom },
-            maximized,
-        };
-        let crops: Vec<Cropped> = self.entries.iter().map(Entry::cropped).chain([(target, pid, saved)]).collect();
-        if !watchdog::set_crops(&crops) {
-            destroy(&grips);
-            undo(target, &saved);
-            return beep();
-        }
+        let saved = Saved { rect: window, maximized };
         self.entries.push(Entry {
             target,
-            pid,
+            pid: window_ids(target).1,
             pane: Pane::new(pane),
             frame: if maximized { work_area(target) } else { visible },
             border: insets(window, visible),
             applied: window,
             asked: PxRect::default(),
-            region: PxRect::default(),
+            region: None,
             saved,
             grips,
         });
+        if !watchdog::set_crops(&self.cropped()) {
+            self.entries.pop();
+            destroy(&grips);
+            undo(target, &saved);
+            return beep();
+        }
         self.watch();
         self.sync(self.entries.len() - 1);
     }
@@ -601,23 +578,25 @@ impl Crops {
 
     fn sync(&mut self, i: usize) {
         if !self.entries[i].sync() {
-            let e = self.entries.remove(i);
-            destroy(&e.grips);
-            self.update_watchers();
+            self.uncrop(i);
         }
     }
 
+    fn cropped(&self) -> Vec<Cropped> {
+        self.entries.iter().map(Entry::cropped).collect()
+    }
+
     fn update_watchers(&mut self) {
-        let crops: Vec<Cropped> = self.entries.iter().map(Entry::cropped).collect();
-        watchdog::set_crops(&crops);
+        watchdog::set_crops(&self.cropped());
         self.watch();
     }
 
+    /// A window beside a pane counts, as it may replace the pane.
     fn changed(&mut self, h: HWND) {
-        let root = unsafe { GetAncestor(h, GA_ROOT) };
+        let parent = unsafe { GetAncestor(h, GA_PARENT) };
         for i in (0..self.entries.len()).rev() {
             let e = &self.entries[i];
-            if e.target == h || e.pane.hwnd == h || e.target == root {
+            if e.target == h || e.pane.hwnd == h || e.pane.parent == h || e.pane.parent == parent {
                 self.sync(i);
             }
         }
@@ -645,19 +624,6 @@ impl Crops {
                 .collect();
             self.hooks.push((pid, hooks));
         }
-        match (pids.is_empty(), self.foreground_hook) {
-            (true, Some(hook)) => {
-                unhook(&[hook]);
-                self.foreground_hook = None;
-            }
-            (false, None) => {
-                let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
-                let event = EVENT_SYSTEM_FOREGROUND;
-                let hook = unsafe { SetWinEventHook(event, event, None, Some(on_event), 0, 0, flags) };
-                self.foreground_hook = (!hook.is_invalid()).then_some(hook);
-            }
-            _ => {}
-        }
     }
 
     fn grip(&self, g: HWND) -> Option<usize> {
@@ -666,25 +632,21 @@ impl Crops {
 
     fn begin_drag(&mut self, g: HWND) {
         let Some(i) = self.grip(g) else { return };
-        let mut from = POINT::default();
-        unsafe {
-            let _ = GetCursorPos(&mut from);
-        }
-        self.drag = Some(Drag { grip: g, from, frame: self.entries[i].frame });
+        self.drag = Some(Drag { grip: g, from: cursor(), frame: self.entries[i].frame });
     }
 
     fn drag_to(&mut self, g: HWND) {
         let Some(d) = self.drag.as_ref().filter(|d| d.grip == g) else { return };
         let Some(i) = self.grip(g) else { return };
-        let mut pt = POINT::default();
-        unsafe {
-            let _ = GetCursorPos(&mut pt);
-        }
-        let grip = GRIPS[unsafe { GetWindowLongPtrW(g, GWLP_USERDATA) } as usize % GRIPS.len()];
+        let pt = cursor();
         let min = scale(MIN_DIP, dpi(g));
-        self.entries[i].frame = drag(d.frame, grip, pt.x - d.from.x, pt.y - d.from.y, min);
+        self.entries[i].frame = drag(d.frame, grip_of(g), pt.x - d.from.x, pt.y - d.from.y, min);
         self.sync(i);
     }
+}
+
+fn try_with(f: impl FnOnce(&mut Crops)) -> bool {
+    STATE.with(|c| c.try_borrow_mut().map(|mut c| f(&mut c)).is_ok())
 }
 
 fn unhook(hooks: &[HWINEVENTHOOK]) {
@@ -707,37 +669,34 @@ unsafe extern "system" fn on_event(
     if h.is_invalid() || object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 {
         return;
     }
-    let handled = STATE.with(|c| c.try_borrow_mut().map(|mut c| c.changed(h)).is_ok());
-    if !handled {
+    if !try_with(|c| c.changed(h)) {
         post(CHANGED, h.0 as isize);
     }
 }
 
 unsafe extern "system" fn pick_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32 {
-        let m = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
-        CURSOR.set(m.pt);
-        let request = match wparam.0 as u32 {
-            WM_MOUSEMOVE => {
-                if !POINTED_POSTED.replace(true) {
-                    post(POINTED, 0);
-                }
-                None
-            }
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN => Some(None),
-            WM_LBUTTONUP => Some(Some(PICKED)),
-            WM_RBUTTONUP => Some(Some(CANCEL)),
-            WM_MOUSEWHEEL => Some(Some(if (m.mouseData >> 16) as i16 > 0 { OUTWARD } else { INWARD })),
-            _ => None,
-        };
-        if let Some(request) = request {
-            if let Some(request) = request {
-                post(request, 0);
-            }
-            return LRESULT(1);
-        }
+    let next = || unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    if code != HC_ACTION as i32 {
+        return next();
     }
-    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    let m = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+    CURSOR.set(m.pt);
+    let request = match wparam.0 as u32 {
+        WM_MOUSEMOVE => {
+            if !POINTED_POSTED.replace(true) {
+                post(POINTED, 0);
+            }
+            return next();
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN => return LRESULT(1),
+        WM_LBUTTONUP => PICKED,
+        WM_RBUTTONUP => CANCEL,
+        WM_MOUSEWHEEL if (m.mouseData >> 16) as i16 > 0 => OUTWARD,
+        WM_MOUSEWHEEL => INWARD,
+        _ => return next(),
+    };
+    post(request, 0);
+    LRESULT(1)
 }
 
 unsafe extern "system" fn outline_proc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -745,10 +704,9 @@ unsafe extern "system" fn outline_proc(h: HWND, msg: u32, wparam: WPARAM, lparam
 }
 
 unsafe extern "system" fn grip_proc(h: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let with = |f: fn(&mut Crops, HWND)| STATE.with(|c| c.try_borrow_mut().map(|mut c| f(&mut c, h)).is_ok());
     match msg {
         WM_SETCURSOR => {
-            let cursor = match GRIPS[unsafe { GetWindowLongPtrW(h, GWLP_USERDATA) } as usize % GRIPS.len()] {
+            let cursor = match grip_of(h) {
                 Grip::TopLeft => IDC_SIZEALL,
                 Grip::TopRight | Grip::BottomLeft => IDC_SIZENESW,
                 Grip::BottomRight => IDC_SIZENWSE,
@@ -759,16 +717,16 @@ unsafe extern "system" fn grip_proc(h: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
         WM_LBUTTONDOWN => {
             unsafe { SetCapture(h) };
-            with(Crops::begin_drag);
+            try_with(|c| c.begin_drag(h));
         }
         WM_MOUSEMOVE => {
-            with(Crops::drag_to);
+            try_with(|c| c.drag_to(h));
         }
         WM_LBUTTONUP => unsafe {
             let _ = ReleaseCapture();
         },
         WM_CAPTURECHANGED => {
-            with(|c, _| c.drag = None);
+            try_with(|c| c.drag = None);
         }
         _ => return unsafe { DefWindowProcW(h, msg, wparam, lparam) },
     }

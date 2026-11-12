@@ -30,7 +30,6 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1D
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcess, INFINITE, SetProcessWorkingSetSize};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCaretBlinkTime, KillTimer, SW_HIDE, SW_SHOW,
     SetForegroundWindow, SetTimer, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU,
@@ -43,7 +42,7 @@ use crate::capsule::config_store;
 use crate::capsule::gfx::{Font, Gfx, Image, Surface, Text};
 use crate::capsule::hook::{Hook, HookEvent};
 use crate::capsule::theme::{self, Theme};
-use crate::capsule::util::{hwnd, post, register_class, scale};
+use crate::capsule::util::{dpi, hwnd, post, register_class, scale};
 use crate::capsule::windows_list as winlist;
 use index::{Action, Batch, Entry};
 use search::Row;
@@ -236,7 +235,7 @@ impl Launcher {
         Some(Launcher {
             opts,
             hwnd,
-            dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
+            dpi: dpi(hwnd),
             placeholder: gfx.text("Search apps, files, windows and commands", Font::Search),
             lens: gfx.text("\u{E721}", Font::SearchGlyph),
             gfx,

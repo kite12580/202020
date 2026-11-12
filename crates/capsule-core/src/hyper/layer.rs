@@ -184,10 +184,7 @@ impl Layer {
         emit: &mut impl FnMut(Effect<'a>),
     ) -> bool {
         let Some(action) = cfg.win_keys.get(key, target) else { return false };
-        if mods() != WIN {
-            return false;
-        }
-        if !matches!(action, Action::Keys(_) | Action::VirgoDesktop | Action::Crop) {
+        if mods() != WIN || !action.fits_win_key() {
             return false;
         }
         let repeat = self.mark(key);

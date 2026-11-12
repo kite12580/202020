@@ -85,6 +85,12 @@ pub enum Action {
     Crop,
 }
 
+impl Action {
+    pub fn fits_win_key(&self) -> bool {
+        matches!(self, Action::Keys(_) | Action::VirgoDesktop | Action::Crop)
+    }
+}
+
 const NAMED: &[(&str, Action)] = &[
     ("copy_or_line", Action::Job(Job::CopyOrLine)),
     ("paste_plain", Action::Job(Job::PastePlain)),

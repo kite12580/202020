@@ -113,6 +113,10 @@ impl PxRect {
     pub fn height(&self) -> i32 {
         self.bottom - self.top
     }
+
+    pub fn offset(&self, dx: i32, dy: i32) -> PxRect {
+        PxRect { left: self.left + dx, top: self.top + dy, right: self.right + dx, bottom: self.bottom + dy }
+    }
 }
 
 /// Top-left corner for a `w`×`h` capsule anchored at `center_x` (a fraction

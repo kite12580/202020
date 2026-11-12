@@ -21,11 +21,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
     SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetLayeredWindowAttributes,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_EX_LAYERED,
-    WS_EX_TOPMOST, WS_THICKFRAME,
+    WS_THICKFRAME,
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
-use crate::capsule::util::{foreground, hwnd, px_rect, wide};
+use crate::capsule::util::{foreground, hwnd, px_rect, topmost, wide};
 use crate::capsule::{clipboard, input};
 
 const COPY_TIMEOUT: Duration = Duration::from_millis(100);
@@ -72,8 +72,7 @@ fn run(job: Job, cfg: &Hyper) {
 fn toggle_topmost() {
     let Some(h) = foreground() else { return };
     unsafe {
-        let topmost = GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0;
-        let after = if topmost { HWND_NOTOPMOST } else { HWND_TOPMOST };
+        let after = if topmost(h) { HWND_NOTOPMOST } else { HWND_TOPMOST };
         let _ = SetWindowPos(h, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
