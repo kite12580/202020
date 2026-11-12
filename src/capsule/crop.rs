@@ -9,6 +9,7 @@ use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
 use std::sync::{Mutex, Once, OnceLock, mpsc};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use capsule_core::crop::{GRIPS, Grip, croppable, drag, fit, grip_rect, insets, shrink};
 use capsule_core::layout::PxRect;
@@ -32,13 +33,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_SYSTEM_MINIMIZESTART, FindWindowExW, GA_PARENT, GA_ROOT, GW_HWNDPREV, GWLP_USERDATA, GetAncestor,
     GetCursorPos, GetMessageW, GetWindow, GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, HWND_NOTOPMOST, HWND_TOP,
     HWND_TOPMOST, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENWSE, IsHungAppWindow, IsIconic, IsWindow, IsWindowVisible,
-    IsZoomed, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MB_OK, MSG, MSLLHOOKSTRUCT, OBJID_WINDOW, PM_NOREMOVE,
-    PeekMessageW, PostThreadMessageW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SWP_NOACTIVATE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    ShowWindowAsync, UnhookWindowsHookEx, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_CAPTURECHANGED, WM_HOTKEY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_USER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP, WindowFromPoint,
+    IsZoomed, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MB_OK, MSG, MSLLHOOKSTRUCT, OBJID_CARET, OBJID_CURSOR,
+    OBJID_WINDOW, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_MAXIMIZE,
+    SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetLayeredWindowAttributes, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, ShowWindowAsync, UnhookWindowsHookEx, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WM_APP,
+    WM_CAPTURECHANGED, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_USER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WindowFromPoint,
 };
 use windows::core::{PCWSTR, w};
 
@@ -146,6 +147,8 @@ thread_local! {
     static CURSOR: Cell<POINT> = const { Cell::new(POINT { x: 0, y: 0 }) };
     static POINTED_POSTED: Cell<bool> = const { Cell::new(false) };
     static CHANGED_WINDOWS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
+    /// Window, cursor, caret and other events, and syncs, for the log.
+    static COUNTS: Cell<[u32; 5]> = const { Cell::new([0; 5]) };
 }
 
 pub fn init(opts: Options) {
@@ -220,6 +223,7 @@ fn spawn() -> Option<(u32, JoinHandle<()>)> {
 }
 
 fn run() {
+    let started = Instant::now();
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         match (msg.hwnd.is_invalid(), msg.message) {
@@ -235,6 +239,11 @@ fn run() {
         }
     }
     STATE.with_borrow_mut(Crops::restore);
+    let [window, cursor, caret, other, syncs] = COUNTS.get();
+    log::debug!(
+        "crop: {window} window, {cursor} cursor, {caret} caret and {other} other events, {syncs} syncs in {:.1?}",
+        started.elapsed()
+    );
 }
 
 /// Whether the idle thread may end: not if a request is already queued.
@@ -264,6 +273,12 @@ fn on_request(request: usize) {
         CHANGED => c.changed(&CHANGED_WINDOWS.take()),
         _ => {}
     })
+}
+
+fn count(i: usize) {
+    let mut counts = COUNTS.get();
+    counts[i] += 1;
+    COUNTS.set(counts);
 }
 
 pub fn undo(h: HWND, saved: &Saved) {
@@ -677,6 +692,7 @@ impl Crops {
     }
 
     fn sync(&mut self, i: usize) {
+        count(4);
         if !self.entries[i].sync() {
             self.uncrop(i);
         }
@@ -768,6 +784,12 @@ unsafe extern "system" fn on_event(
     _thread: u32,
     _time: u32,
 ) {
+    count(match object {
+        o if o == OBJID_WINDOW.0 => 0,
+        o if o == OBJID_CURSOR.0 => 1,
+        o if o == OBJID_CARET.0 => 2,
+        _ => 3,
+    });
     if h.is_invalid() || object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 {
         return;
     }
