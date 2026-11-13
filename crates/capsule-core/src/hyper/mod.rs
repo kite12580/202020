@@ -82,13 +82,6 @@ pub enum Action {
     Transparency,
     SwitchDesktop,
     VirgoDesktop,
-    Crop,
-}
-
-impl Action {
-    pub fn fits_win_key(&self) -> bool {
-        matches!(self, Action::Keys(_) | Action::VirgoDesktop | Action::Crop)
-    }
 }
 
 const NAMED: &[(&str, Action)] = &[
@@ -104,7 +97,6 @@ const NAMED: &[(&str, Action)] = &[
     ("transparency", Action::Transparency),
     ("switch_desktop", Action::SwitchDesktop),
     ("virgo_desktop", Action::VirgoDesktop),
-    ("crop", Action::Crop),
     ("left_button", Action::Click(Button::Left)),
     ("middle_button", Action::Click(Button::Middle)),
     ("right_button", Action::Click(Button::Right)),

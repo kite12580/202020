@@ -122,7 +122,7 @@ fn win_keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(Stri
     table
         .into_iter()
         .filter_map(|(name, v)| match (crate::launcher::hotkey::key(&name), v.as_str().and_then(hyper::action)) {
-            (Some(key), Some(action)) if action.fits_win_key() => {
+            (Some(key), Some(action @ (Action::Keys(_) | Action::VirgoDesktop))) => {
                 Some((key as u16, Binding { action, terminal: None }))
             }
             (None, _) => {
@@ -130,7 +130,7 @@ fn win_keymap(table: BTreeMap<String, toml::Value>, mut skipped: impl FnMut(Stri
                 None
             }
             _ => {
-                skipped(format!("{name:?}: needs keys to press, virgo_desktop or crop"));
+                skipped(format!("{name:?}: needs keys to press or virgo_desktop"));
                 None
             }
         })
@@ -167,11 +167,9 @@ mod tests {
         let n = table.len();
         assert_eq!(win_keymap(table, |e| panic!("{e}")).len(), n);
         let mut skipped = Vec::new();
-        let table = toml::from_str(
-            "x = 'Win+1'\nbogus = 'End'\ny = 'reload'\nz = { do = 'End' }\nv = 'virgo_desktop'\nc = 'crop'",
-        )
-        .unwrap();
-        assert_eq!(win_keymap(table, |e| skipped.push(e)).len(), 3);
+        let table = toml::from_str("x = 'Win+1'\nbogus = 'End'\ny = 'reload'\nz = { do = 'End' }\nv = 'virgo_desktop'")
+            .unwrap();
+        assert_eq!(win_keymap(table, |e| skipped.push(e)).len(), 2);
         assert_eq!(skipped.len(), 3, "{skipped:?}");
         let h = parse("[hyper]\nblock_ctrl_wheel = false\n[hyper.win_keys]").unwrap().hyper;
         assert!(!h.block_ctrl_wheel && h.win_keys.is_empty());

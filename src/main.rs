@@ -35,7 +35,6 @@ const WM_BAR_DISABLE: u32 = WM_APP + 4;
 const WM_BAR_RESTART: u32 = WM_APP + 5;
 const WM_LAUNCHER_CMD: u32 = WM_APP + 6;
 const WM_DESKTOP: u32 = WM_APP + 7;
-const WM_CROP: u32 = WM_APP + 8;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
 const HOTKEY_LAUNCHER: i32 = 2;
@@ -106,10 +105,8 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         }
         WM_LAUNCHER_CMD => run_command(wparam.0 as i32),
         WM_DESKTOP => capsule::desktops::on_request(wparam.0),
-        WM_CROP => capsule::crop::on_toggle(),
         WM_QUERYENDSESSION => {
             capsule::desktops::restore_all();
-            capsule::crop::restore_all();
             return LRESULT(1);
         }
         WM_ENDSESSION if wparam.0 != 0 => launcher::flush_history(),
@@ -213,7 +210,6 @@ fn start_features(hwnd: HWND) {
         commands: LAUNCHER_COMMANDS,
     });
     with_app(|app| app.apply_launcher(cfg.launcher));
-    capsule::crop::init(capsule::crop::Options { owner: hwnd.0 as isize, msg: WM_CROP });
     capsule::hyper::init(capsule::hyper::Options {
         owner: hwnd.0 as isize,
         command_msg: WM_LAUNCHER_CMD,

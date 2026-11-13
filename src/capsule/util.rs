@@ -12,11 +12,9 @@ use windows::Win32::System::Threading::{
     GetCurrentProcessId, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW,
-    GetWindowThreadProcessId, HHOOK, HOOKPROC, IDC_ARROW, LoadCursorW, PostMessageW, RegisterClassExW,
-    SetWindowsHookExW, WH_MOUSE_LL, WNDCLASSEXW, WS_EX_TOPMOST,
+    GA_ROOTOWNER, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW,
+    PostMessageW, RegisterClassExW, WNDCLASSEXW,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -138,20 +136,6 @@ pub fn primary_monitor() -> PxRect {
 
 pub fn scale(dip: f32, dpi: u32) -> i32 {
     (dip * dpi as f32 / 96.0).round() as i32
-}
-
-pub fn dpi(h: HWND) -> u32 {
-    unsafe { GetDpiForWindow(h) }.max(96)
-}
-
-pub fn topmost(h: HWND) -> bool {
-    let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) };
-    ex & WS_EX_TOPMOST.0 as isize != 0
-}
-
-pub fn mouse_hook(proc: HOOKPROC) -> Option<HHOOK> {
-    let module = unsafe { GetModuleHandleW(None) }.ok().map(Into::into);
-    unsafe { SetWindowsHookExW(WH_MOUSE_LL, proc, module, 0) }.ok()
 }
 
 /// Registers `class` for this module, with an arrow cursor.

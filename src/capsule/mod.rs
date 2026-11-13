@@ -1,7 +1,6 @@
 mod app;
 mod clipboard;
 mod config_store;
-pub mod crop;
 pub mod desktops;
 mod gfx;
 mod hook;

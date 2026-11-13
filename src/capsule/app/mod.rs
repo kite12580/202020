@@ -30,6 +30,7 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::Controls::{
     ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, WM_MOUSEHOVER, WM_MOUSELEAVE,
 };
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::Shell::{ABM_NEW, ABM_REMOVE, APPBARDATA, SHAppBarMessage};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -58,7 +59,7 @@ use crate::capsule::shell::{self, REAL_TRAY, Takeover};
 use crate::capsule::theme::{self, Theme};
 use crate::capsule::tooltip::Tooltip;
 use crate::capsule::tray::{self, Tray, TrayKey};
-use crate::capsule::util::{dpi, hwnd, register_class, root_owner, scale};
+use crate::capsule::util::{hwnd, register_class, root_owner, scale};
 use crate::capsule::volume::Volume;
 use crate::capsule::windows_list::WindowList;
 use icons::IconRequests;
@@ -341,7 +342,7 @@ impl App {
             hwnd,
             gfx: Gfx::new(),
             surface: None,
-            dpi: dpi(hwnd),
+            dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
             layout: Layout::default(),
             bounds: RECT::default(),
             bar_tray: Vec::new(),

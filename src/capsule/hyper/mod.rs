@@ -12,15 +12,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 use capsule_core::config::Hyper;
 use capsule_core::hyper::{Action, CTRL, Chord, Effect, Event, Job, Layer, Target, WIN, vk};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_CONTROL};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, HC_ACTION, HHOOK, MSLLHOOKSTRUCT, UnhookWindowsHookEx, WM_MOUSEWHEEL,
+    CallNextHookEx, GetForegroundWindow, HC_ACTION, HHOOK, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx,
+    WH_MOUSE_LL, WM_MOUSEWHEEL,
 };
 use windows::core::w;
 
 use crate::capsule::util::{self, foreground, process_path, reg_value, window_ids};
-use crate::capsule::{crop, desktops, input, keyhook};
+use crate::capsule::{desktops, input, keyhook};
 use jobs::AlphaMsg;
 
 pub struct Options {
@@ -56,9 +58,6 @@ pub fn apply(cfg: Hyper) {
     let on = cfg.enabled;
     if !(on && cfg.binds(&Action::VirgoDesktop)) {
         desktops::restore_all();
-    }
-    if !(on && cfg.binds(&Action::Crop)) {
-        crop::restore_all();
     }
     {
         let mut current = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,7 +127,6 @@ fn run(effect: Effect, cfg: &Arc<Hyper>) {
         Effect::MaskWin => input::mask_win(),
         Effect::VirgoToggle => post(|o| (o.desktop_msg, desktops::TOGGLE)),
         Effect::VirgoMove => post(|o| (o.desktop_msg, desktops::MOVE_ACTIVE)),
-        Effect::Crop => crop::toggle(),
         Effect::Button(b, down) => input::button(b, down),
         Effect::SlowMouse(on) => slow_mouse(on.then_some(cfg.slow_mouse_speed)),
         Effect::AlphaBegin => begin_alpha(),
@@ -193,7 +191,8 @@ fn begin_alpha() {
     end_alpha(false);
     let Some(fg) = foreground() else { return };
     let Some(tx) = jobs::alpha_session(fg) else { return };
-    let Some(hook) = util::mouse_hook(Some(mouse_proc)) else { return };
+    let module = unsafe { GetModuleHandleW(None) }.ok().map(Into::into);
+    let Ok(hook) = (unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) }) else { return };
     ALPHA.with(|a| *a.borrow_mut() = Some(Alpha { hook, tx }));
 }
 
@@ -224,7 +223,8 @@ fn ctrl_held(ev: Event) -> bool {
 fn block_wheel(on: bool) {
     match WHEEL_HOOK.get() {
         None if on => {
-            WHEEL_HOOK.set(util::mouse_hook(Some(wheel_proc)));
+            let module = unsafe { GetModuleHandleW(None) }.ok().map(Into::into);
+            WHEEL_HOOK.set(unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(wheel_proc), module, 0) }.ok());
         }
         Some(hook) if !on => unsafe {
             WHEEL_HOOK.set(None);
