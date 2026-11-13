@@ -68,6 +68,9 @@ const OUTLINE_CLASS: PCWSTR = w!("202020CropOutline");
 const WM_REQUEST: u32 = WM_APP;
 const CANCEL_HOTKEY: i32 = 1;
 const RESTORE_TIMEOUT_MS: u32 = 2000;
+/// How many times one sync may place the target: resizing it lays its panes
+/// out again, which can move the pane within it and so needs another fit.
+const FIT_PASSES: usize = 3;
 
 const PROCESS_EVENTS: [(u32, u32); 5] = [
     (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
@@ -416,26 +419,39 @@ impl Entry {
             return true;
         }
         let maximized = unmaximize(target);
-        let window = window_rect(target);
+        let mut window = window_rect(target);
         if maximized {
             self.frame = work_area(target);
         } else if window != self.applied {
             self.frame = shrink(window, self.border);
         }
-        let pane = self.pane.current(target).map(window_rect).filter(|&p| croppable(window, p));
-        let Some(pane) = pane.or_else(|| Some(self.region?.offset(window.left, window.top))) else { return true };
-        let (placed, region) = fit(self.frame, window, pane);
-        self.applied = if placed != window && !(placed == self.asked && window == self.applied) {
+        let mut clipped = None;
+        for _ in 0..FIT_PASSES {
+            let Some((placed, region)) = self.fitted(window) else { break };
+            clipped = Some(region);
+            if placed == window || (placed == self.asked && window == self.applied) {
+                break;
+            }
             place(target, None, placed, SWP_NOZORDER);
             self.asked = placed;
-            window_rect(target)
-        } else {
-            window
-        };
-        self.region = Some(region);
-        clip(target, region);
+            window = window_rect(target);
+            self.applied = window;
+        }
+        self.applied = window;
+        if let Some(region) = clipped {
+            self.region = Some(region);
+            clip(target, region);
+        }
         self.place_grips();
         true
+    }
+
+    /// Where to put the target, and the pane within it, for a target at
+    /// `window`.
+    fn fitted(&mut self, window: PxRect) -> Option<(PxRect, PxRect)> {
+        let pane = self.pane.current(self.target).map(window_rect).filter(|&p| croppable(window, p));
+        let pane = pane.or_else(|| Some(self.region?.offset(window.left, window.top)))?;
+        Some(fit(self.frame, window, pane))
     }
 
     /// Shows the grips just above the target. A window placed after a
