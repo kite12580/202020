@@ -88,6 +88,7 @@ pub(super) struct App {
     hwnd: HWND,
     digits: Digits,
     icon: HICON,
+    pub(super) timer_on: bool,
     pub(super) paused: bool,
     deadline: f64,
     paused_remaining: f64,
@@ -116,13 +117,14 @@ pub(super) enum BarState {
 }
 
 impl App {
-    pub(super) fn new(hwnd: HWND, safe: bool) -> App {
+    pub(super) fn new(hwnd: HWND, safe: bool, timer_on: bool) -> App {
         let now = now();
         App {
             hwnd,
             digits: render::load_digits(),
             icon: HICON::default(),
-            paused: false,
+            timer_on,
+            paused: !timer_on,
             deadline: now + WORK_SECONDS,
             paused_remaining: WORK_SECONDS,
             tick_due: now,
@@ -204,6 +206,9 @@ impl App {
     }
 
     pub(super) fn toggle_pause(&mut self) {
+        if !self.timer_on {
+            return;
+        }
         if self.paused {
             self.deadline = now() + self.paused_remaining;
         } else {
@@ -211,6 +216,20 @@ impl App {
         }
         self.paused = !self.paused;
         self.refresh_icon();
+    }
+
+    pub(super) fn apply_timer(&mut self, on: bool) {
+        if on == self.timer_on {
+            return;
+        }
+        self.timer_on = on;
+        self.paused = !on;
+        self.reset_timer();
+    }
+
+    pub(super) fn toggle_timer(&mut self) {
+        capsule::set_timer_enabled(!self.timer_on);
+        self.apply_timer(!self.timer_on);
     }
 
     pub(super) fn reset_timer(&mut self) {
@@ -363,6 +382,7 @@ impl App {
             bar.reload_config();
         }
         let cfg = capsule::config();
+        self.apply_timer(cfg.timer.enabled);
         self.apply_launcher(cfg.launcher);
         capsule::hyper::apply(cfg.hyper);
     }

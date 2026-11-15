@@ -23,6 +23,7 @@ use windows::core::{PCWSTR, w};
 
 use app::App;
 use capsule::launcher::{self, AppCommand};
+use capsule_core::config::Config;
 use gdi::paint_overlay;
 use tray_menu::{run_command, show_menu};
 
@@ -50,8 +51,10 @@ const CMD_EDIT_CONFIG: i32 = 6;
 const CMD_RELOAD_CONFIG: i32 = 7;
 const CMD_LAUNCHER: i32 = 8;
 const CMD_HYPER: i32 = 9;
+const CMD_TIMER: i32 = 10;
 
 const LAUNCHER_COMMANDS: &[AppCommand] = &[
+    AppCommand { id: CMD_TIMER as u32, name: "Toggle 20-20-20 timer  切换 20-20-20 计时" },
     AppCommand { id: CMD_TOGGLE as u32, name: "Pause or resume timer  暂停 继续计时" },
     AppCommand { id: CMD_BREAK as u32, name: "Break now  立即休息" },
     AppCommand { id: CMD_RESET as u32, name: "Reset timer  重置计时" },
@@ -199,8 +202,7 @@ fn create_main_window() -> Option<HWND> {
     .ok()
 }
 
-fn start_features(hwnd: HWND) {
-    let cfg = capsule::config();
+fn start_features(hwnd: HWND, cfg: Config) {
     if cfg.capsule_bar.enabled {
         with_app(App::start_bar);
     }
@@ -242,11 +244,12 @@ fn main() {
     MAIN_HWND.store(hwnd.0, Ordering::Relaxed);
     TASKBAR_CREATED.store(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }, Ordering::Relaxed);
 
-    let mut app = App::new(hwnd, flag("--safe"));
+    let cfg = capsule::config();
+    let mut app = App::new(hwnd, flag("--safe"), cfg.timer.enabled);
     app.refresh_icon();
     app.notify(NIM_ADD);
     APP.with(|cell| *cell.borrow_mut() = Some(app));
-    start_features(hwnd);
+    start_features(hwnd, cfg);
 
     unsafe {
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_TOGGLE, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'C' as u32);

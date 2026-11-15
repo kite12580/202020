@@ -5,24 +5,25 @@ use windows::core::{PCWSTR, w};
 use crate::app::{App, BarState, LauncherState};
 use crate::capsule;
 use crate::{
-    CMD_BAR, CMD_BREAK, CMD_EDIT_CONFIG, CMD_HYPER, CMD_LAUNCHER, CMD_QUIT, CMD_RELOAD_CONFIG, CMD_RESET, CMD_TOGGLE,
-    with_app,
+    CMD_BAR, CMD_BREAK, CMD_EDIT_CONFIG, CMD_HYPER, CMD_LAUNCHER, CMD_QUIT, CMD_RELOAD_CONFIG, CMD_RESET, CMD_TIMER,
+    CMD_TOGGLE, with_app,
 };
 
 pub(super) fn show_menu(hwnd: HWND) {
-    let Some((paused, bar_flags, launcher)) = with_app(|app| {
+    let Some((timer_on, paused, bar_flags, launcher)) = with_app(|app| {
         let bar_flags = match app.bar {
             BarState::Off => MF_UNCHECKED,
             BarState::Running(_) => MF_CHECKED,
             BarState::Stopping(_) => MF_GRAYED,
         };
-        (app.paused, bar_flags, app.launcher)
+        (app.timer_on, app.paused, bar_flags, app.launcher)
     }) else {
         return;
     };
     let cmd = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let items = [
+            (MF_STRING | if timer_on { MF_CHECKED } else { MF_UNCHECKED }, CMD_TIMER, w!("20-20-20 timer")),
             (MF_STRING | bar_flags, CMD_BAR, w!("Capsule bar")),
             match launcher {
                 LauncherState::Off => (MF_STRING | MF_UNCHECKED, CMD_LAUNCHER, w!("Launcher")),
@@ -31,7 +32,11 @@ pub(super) fn show_menu(hwnd: HWND) {
             },
             (MF_STRING | if capsule::hyper::on() { MF_CHECKED } else { MF_UNCHECKED }, CMD_HYPER, w!("CapsLock hyper")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
-            (MF_STRING, CMD_TOGGLE, if paused { w!("Resume") } else { w!("Pause") }),
+            (
+                MF_STRING | if timer_on { MF_ENABLED } else { MF_GRAYED },
+                CMD_TOGGLE,
+                if paused { w!("Resume") } else { w!("Pause") },
+            ),
             (MF_STRING, CMD_BREAK, w!("Break now")),
             (MF_STRING, CMD_RESET, w!("Reset timer")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
@@ -56,6 +61,7 @@ pub(super) fn show_menu(hwnd: HWND) {
 
 pub(super) fn run_command(cmd: i32) {
     match cmd {
+        CMD_TIMER => with_app(App::toggle_timer),
         CMD_TOGGLE => with_app(App::toggle_pause),
         CMD_BREAK => with_app(App::show_break),
         CMD_RESET => with_app(App::reset_timer),

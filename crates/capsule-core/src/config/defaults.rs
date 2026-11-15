@@ -104,6 +104,11 @@ pub(super) const DEFAULT_WIN_KEYS: &str = default_keys!(win_keys);
 pub const DEFAULT_TEXT: &str = concat!(
     r#"# 202020 settings. Capsule bar changes apply on save while it is running.
 
+[timer]
+# Every 20 minutes, a fullscreen overlay asks you to look away for 20 seconds. Turned off, the timer stays paused.
+# Toggle it from the tray menu. Applied by Reload config.
+enabled = true
+
 [capsule_bar]
 # Replace the Windows taskbar with the capsule bar. Toggle it from the tray menu.
 enabled = false

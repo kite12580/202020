@@ -57,6 +57,10 @@ fn edit_file(edit: impl FnOnce(&str) -> String) {
     }
 }
 
+pub fn set_timer_enabled(enabled: bool) {
+    edit_file(|t| config::set_timer_enabled(t, enabled));
+}
+
 pub fn set_enabled(enabled: bool) {
     edit_file(|t| config::set_enabled(t, enabled));
 }

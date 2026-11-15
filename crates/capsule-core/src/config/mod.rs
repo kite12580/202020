@@ -11,6 +11,8 @@ pub use hyper::Hyper;
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
+    pub timer: Timer,
+    #[serde(default)]
     pub capsule_bar: CapsuleBar,
     #[serde(default)]
     pub launcher: Launcher,
@@ -49,6 +51,18 @@ impl From<LogLevel> for log::LevelFilter {
 #[serde(default)]
 pub struct Logging {
     pub level: LogLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Timer {
+    pub enabled: bool,
+}
+
+impl Default for Timer {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -314,6 +328,10 @@ pub fn set_pinned(text: &str, pinned: &[String]) -> String {
     })
 }
 
+pub fn set_timer_enabled(text: &str, enabled: bool) -> String {
+    edit(text, |doc| doc["timer"]["enabled"] = value(enabled))
+}
+
 pub fn set_enabled(text: &str, enabled: bool) -> String {
     edit(text, |doc| doc["capsule_bar"]["enabled"] = value(enabled))
 }
@@ -394,6 +412,15 @@ mod tests {
         let t = set_hyper_enabled(DEFAULT_TEXT, false);
         assert!(t.contains("# Hold CapsLock"));
         assert!(!parse(&t).unwrap().hyper.enabled);
+    }
+
+    #[test]
+    fn timer_section() {
+        assert!(parse("").unwrap().timer.enabled);
+        let t = set_timer_enabled(DEFAULT_TEXT, false);
+        assert!(t.contains("# Every 20 minutes"));
+        assert!(!parse(&t).unwrap().timer.enabled);
+        assert!(parse(&set_timer_enabled(&t, true)).unwrap().timer.enabled);
     }
 
     #[test]
