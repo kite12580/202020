@@ -6,8 +6,8 @@ use ab_glyph::{Font as _, FontRef, GlyphId, PxScale, VariableFont, point};
 use capsule_core::layout::Rect;
 use capsule_core::shell_proto::Bitmap;
 use tiny_skia::{
-    FillRule, GradientStop, IntSize, LinearGradient, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Point,
-    SpreadMode, Transform,
+    FillRule, FilterQuality, GradientStop, IntSize, LinearGradient, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
+    Point, SpreadMode, Transform,
 };
 use windows::Win32::Foundation::{GENERIC_READ, HWND};
 use windows::Win32::Graphics::Gdi::{
@@ -573,12 +573,22 @@ impl Surface {
         }
     }
 
-    /// Draws `img` centered on `(cx, cy)` at its native pixel size.
-    pub fn image(&mut self, img: &Image, cx: f32, cy: f32) {
+    /// Draws `img` `size` DIPs wide, centered on `(cx, cy)`, resampling it
+    /// when it was made for another scale.
+    pub fn image(&mut self, img: &Image, cx: f32, cy: f32, size: f32) {
         let s = self.scale();
-        let half = img.px as f32 / 2.0;
+        let px = (size * s).round();
+        let half = px / 2.0;
         let (x, y) = ((cx * s - half).round() as i32, (cy * s - half).round() as i32);
-        self.pixmap().draw_pixmap(x, y, (*img.pixmap).as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        let src = (*img.pixmap).as_ref();
+        if px as u32 == img.px {
+            self.pixmap().draw_pixmap(x, y, src, &PixmapPaint::default(), Transform::identity(), None);
+            return;
+        }
+        let k = px / img.px as f32;
+        let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
+        let t = Transform::from_row(k, 0.0, 0.0, k, x as f32, y as f32);
+        self.pixmap().draw_pixmap(0, 0, src, &paint, t, None);
     }
 
     pub fn end(&mut self) {

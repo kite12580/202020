@@ -3,6 +3,7 @@ use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, WM_RBUTTONDOW
 
 use super::{App, TIMER_KEYBOARD, cursor, with_app};
 use crate::capsule::keyboard;
+use crate::capsule::launcher;
 use crate::capsule::menu::{self, Item};
 
 const MENU_RESTART: u32 = 1;
@@ -13,6 +14,8 @@ pub(super) enum DeferredMenu {
     App,
     Keyboard,
     Tray(usize),
+    /// The Explorer context menu of a pinned app.
+    Pin(String),
 }
 
 pub(super) fn run_deferred() {
@@ -21,6 +24,7 @@ pub(super) fn run_deferred() {
             DeferredMenu::App => app_menu(),
             DeferredMenu::Keyboard => keyboard_menu(),
             DeferredMenu::Tray(i) => tray_menu(i),
+            DeferredMenu::Pin(name) => pin_menu(&name),
         }
     }
 }
@@ -95,4 +99,10 @@ fn tray_menu(icon: usize) {
             _ => {}
         }
     });
+}
+
+fn pin_menu(name: &str) {
+    let Some(owner) = with_app(|a| a.hwnd) else { return };
+    let p = cursor();
+    launcher::context_menu(owner, name, p.x, p.y);
 }

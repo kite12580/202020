@@ -9,11 +9,10 @@ use crate::capsule::gfx::Image;
 use crate::capsule::hook;
 use crate::capsule::tray::TrayKey;
 use crate::capsule::util::{apps_folder, class_name};
-use crate::capsule::windows_list::{self as winlist, IconRank};
+use crate::capsule::windows_list::{self as winlist, FRAME_CLASS, IconRank};
 
-const WINDOW_ICON: f32 = 20.0;
-const TRAY_ICON: f32 = 16.0;
-const FRAME_CLASS: &str = "ApplicationFrameWindow";
+pub(super) const WINDOW_ICON: f32 = 20.0;
+pub(super) const TRAY_ICON: f32 = 16.0;
 
 type IconKey = (String, u32);
 

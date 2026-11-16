@@ -1,3 +1,4 @@
+use capsule_core::config::{SIZE_MAX, SIZE_MIN};
 use capsule_core::layout::{self, Hit};
 use capsule_core::taskband::Task;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
@@ -15,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, w};
 
 use super::menus::DeferredMenu;
-use super::{App, cursor};
+use super::{App, TIMER_SIZE, cursor};
 use crate::capsule::input;
 use crate::capsule::keyboard;
 use crate::capsule::launcher;
@@ -23,6 +24,8 @@ use crate::capsule::util::{from_wide, lparam_point, own_window, primary_monitor,
 use crate::capsule::windows_list::{self as winlist};
 
 const SNAP: f32 = 12.0;
+const SIZE_STEP: f32 = 0.05;
+const MK_SHIFT: usize = 0x0004;
 
 pub(super) struct Drag {
     cursor: POINT,
@@ -125,17 +128,14 @@ impl App {
             return;
         };
         match (msg, hit) {
-            (WM_MBUTTONUP, Hit::Task(i)) => {
-                if let Some(h) = self.task_window(i) {
-                    winlist::close(h);
-                }
-            }
-            (WM_RBUTTONUP, Hit::Task(i)) => {
-                if let Some(h) = self.task_window(i) {
+            (WM_MBUTTONUP, Hit::Task(i)) => self.launch_task(i),
+            (WM_RBUTTONUP, Hit::Task(i)) => match self.tasks[i] {
+                Task::Window(w) => {
                     let p = cursor();
-                    winlist::system_menu(h, p.x, p.y);
+                    winlist::system_menu(self.windows.items[w].hwnd, p.x, p.y);
                 }
-            }
+                Task::Pin(p) => self.deferred.push_back(DeferredMenu::Pin(self.pins[p].parsing_name.clone())),
+            },
             (WM_RBUTTONUP, Hit::Start) => input::press_win(b'X'),
             (WM_RBUTTONUP, Hit::Keyboard) => self.deferred.push_back(DeferredMenu::Keyboard),
             (WM_RBUTTONUP, Hit::Clock) => self.deferred.push_back(DeferredMenu::App),
@@ -213,7 +213,7 @@ impl App {
         let mon = primary_monitor();
         let b = self.bounds;
         let (cx, gap) = layout::anchor(mon, b.left, b.top, b.right - b.left, b.bottom - b.top);
-        self.cfg.save_position(cx, self.to_dip(gap));
+        self.cfg.save_position(cx, gap as f32 * 96.0 / self.dpi as f32);
         self.publish_tray_rects();
     }
 
@@ -223,14 +223,37 @@ impl App {
         unsafe {
             let _ = ScreenToClient(self.hwnd, &mut p);
         }
-        if self.layout.hit(self.to_dip(p.x)) != Some(Hit::Volume) {
+        let resize = wparam.0 & MK_SHIFT != 0;
+        if !resize && self.layout.hit(self.to_dip(p.x)) != Some(Hit::Volume) {
             return;
         }
         self.wheel += (wparam.0 >> 16) as i16 as i32;
         let notches = self.wheel / 120;
         self.wheel %= 120;
-        if notches != 0 {
+        if notches == 0 {
+            return;
+        }
+        if resize {
+            self.step_size(notches);
+        } else {
             self.volume.change(notches as f32 * self.cfg.config.volume.step as f32 / 100.0);
         }
+    }
+
+    fn step_size(&mut self, notches: i32) {
+        let size = &mut self.cfg.config.appearance.size;
+        let next = (((*size / SIZE_STEP).round() + notches as f32) * SIZE_STEP).clamp(SIZE_MIN, SIZE_MAX);
+        if next == *size {
+            return;
+        }
+        *size = next;
+        self.apply_scale();
+        self.set_timer(TIMER_SIZE, 500);
+    }
+
+    pub(super) fn settle_size(&mut self) {
+        self.cfg.save_size();
+        self.refetch_icons();
+        self.invalidate();
     }
 }

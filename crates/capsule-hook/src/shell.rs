@@ -118,6 +118,10 @@ unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
                 open(&file, &params, &dir);
                 continue;
             }
+            Request::Launch { names } => {
+                launch(&names);
+                continue;
+            }
         };
         crate::answer(from, &answer.encode());
     }
@@ -213,6 +217,17 @@ fn open(file: &str, params: &str, dir: &str) {
         ..Default::default()
     };
     let _ = unsafe { ShellExecuteExW(&mut info) };
+}
+
+fn launch(names: &[String]) {
+    let parses = |n: &String| {
+        let w = wide(n);
+        unsafe { SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(w.as_ptr()), None) }.is_ok()
+    };
+    if let Some(name) = names.iter().find(|n| parses(n)) {
+        let dir = name.get(1..3).filter(|s| *s == ":\\").and(name.rsplit_once('\\')).map_or("", |(d, _)| d);
+        open(name, "", dir);
+    }
 }
 
 fn icon(name: &str, px: u32) -> Option<Bitmap> {

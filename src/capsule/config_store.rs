@@ -164,6 +164,11 @@ impl ConfigStore {
         self.write(text);
     }
 
+    pub fn save_size(&mut self) {
+        let text = config::set_size(&self.last_text, self.config.appearance.size);
+        self.write(text);
+    }
+
     pub fn save_pinned(&mut self) {
         let text = config::set_pinned(&self.last_text, &self.config.tray.pinned);
         self.write(text);

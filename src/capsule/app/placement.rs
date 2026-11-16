@@ -3,7 +3,7 @@ use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos};
 
 use super::{App, WM_APP_REPOSITION};
-use crate::capsule::util::primary_monitor;
+use crate::capsule::util::{primary_monitor, scale};
 
 impl App {
     pub(super) fn relayout(&mut self) {
@@ -50,7 +50,7 @@ impl App {
             (self.bounds.left, self.bounds.top)
         } else {
             let p = &self.cfg.config.position;
-            layout::place(mon, w, h, p.center_x, self.px(p.bottom_gap))
+            layout::place(mon, w, h, p.center_x, scale(p.bottom_gap, self.dpi))
         };
         self.bounds = RECT { left: x, top: y, right: x + w, bottom: y + h };
         unsafe {
@@ -83,13 +83,16 @@ impl App {
             return;
         }
         self.dpi = dpi;
-        if let Some(s) = &mut self.surface {
-            s.set_dpi(dpi);
-        }
-        if let Some(s) = &mut self.popup.surface {
-            s.set_dpi(dpi);
-        }
+        self.apply_scale();
         self.refetch_icons();
+    }
+
+    /// Icons keep their resolution until refetched.
+    pub(super) fn apply_scale(&mut self) {
+        let dpi = self.bar_dpi();
+        for s in [&mut self.surface, &mut self.popup.surface].into_iter().flatten() {
+            s.set_dpi(dpi);
+        }
         self.reposition();
         self.invalidate();
     }

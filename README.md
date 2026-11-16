@@ -4,7 +4,7 @@ Windows tray app for the 20-20-20 rule: every 20 minutes, a fullscreen overlay a
 
 ## Capsule bar
 
-The capsule bar replaces the Windows 11 taskbar with a floating capsule you can drag anywhere, holding Start, pinned programs, open windows, tray icons, keyboard layout, volume and clock.
+The capsule bar replaces the Windows 11 taskbar with a floating capsule you can drag anywhere, holding Start, pinned programs, open windows, tray icons, keyboard layout, volume and clock. Hold Shift and scroll over it to resize it, and middle-click an app to open another instance.
 
 ## Launcher
 

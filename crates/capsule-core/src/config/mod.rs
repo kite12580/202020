@@ -105,11 +105,16 @@ pub enum Backdrop {
 pub struct Appearance {
     pub backdrop: Backdrop,
     pub opacity: f32,
+    /// Scale of the capsule, `SIZE_MIN` – `SIZE_MAX`.
+    pub size: f32,
 }
+
+pub const SIZE_MIN: f32 = 0.75;
+pub const SIZE_MAX: f32 = 2.0;
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { backdrop: Backdrop::None, opacity: 0.8 }
+        Self { backdrop: Backdrop::None, opacity: 0.8, size: 1.0 }
     }
 }
 
@@ -292,6 +297,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
     c.position.center_x = c.position.center_x.clamp(0.0, 1.0);
     c.position.bottom_gap = c.position.bottom_gap.max(0.0);
     c.appearance.opacity = c.appearance.opacity.clamp(0.0, 1.0);
+    c.appearance.size = c.appearance.size.clamp(SIZE_MIN, SIZE_MAX);
     c.volume.step = c.volume.step.clamp(1, 20);
     c.keyboard.labels =
         std::mem::take(&mut c.keyboard.labels).into_iter().map(|(k, v)| (k.to_ascii_lowercase(), v)).collect();
@@ -317,6 +323,10 @@ pub fn set_position(text: &str, center_x: f32, bottom_gap: f32) -> String {
         doc["capsule_bar"]["position"]["center_x"] = value((f64::from(center_x) * 10_000.0).round() / 10_000.0);
         doc["capsule_bar"]["position"]["bottom_gap"] = value((f64::from(bottom_gap) * 10.0).round() / 10.0);
     })
+}
+
+pub fn set_size(text: &str, size: f32) -> String {
+    edit(text, |doc| doc["capsule_bar"]["appearance"]["size"] = value((f64::from(size) * 100.0).round() / 100.0))
 }
 
 /// Rewrites the pinned tray list, preserving everything else in the file.
@@ -376,6 +386,11 @@ mod tests {
         let c = parse(&t).unwrap().capsule_bar;
         assert_eq!(c.position.center_x, 0.1235);
         assert_eq!(c.position.bottom_gap, 12.3);
+
+        let t = set_size(&t, 1.254);
+        assert!(t.contains("# Opacity of the background tint"));
+        assert_eq!(parse(&t).unwrap().capsule_bar.appearance.size, 1.25);
+        assert_eq!(parse(&set_size(&t, 9.0)).unwrap().capsule_bar.appearance.size, SIZE_MAX);
 
         let t = set_pinned(&t, &["a.exe|1".into(), "guid:{X}".into()]);
         assert!(t.contains("# Tray icons shown"));

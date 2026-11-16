@@ -194,7 +194,7 @@ impl Launcher {
         let rcy = r.y + r.h / 2.0;
         let icx = r.x + 12.0 + ICON / 2.0;
         if let Some(Some(img)) = row.icon.as_ref().and_then(|k| self.images.get(k)) {
-            s.image(img, icx, rcy);
+            s.image(img, icx, rcy, ICON);
         } else if let Some(g) = &row.glyph {
             s.text(g, icx - g.width / 2.0, rcy - g.height / 2.0, dim);
         }

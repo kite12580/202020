@@ -8,7 +8,7 @@ mod search;
 mod sources;
 mod view;
 
-pub(crate) use launch::open;
+pub(crate) use launch::{context_menu, forward_menu_message, open};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

@@ -168,6 +168,10 @@ impl App {
             theme::apply(self.hwnd, c.appearance.backdrop, &self.theme);
             theme::apply(self.popup.hwnd, c.appearance.backdrop, &self.theme);
         }
+        if c.appearance.size != old.appearance.size {
+            self.apply_scale();
+            self.refetch_icons();
+        }
         if c.keyboard.labels != old.keyboard.labels {
             self.measure_keyboard_slot();
             self.refresh_keyboard();

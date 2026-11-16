@@ -24,6 +24,10 @@ pub enum Request {
         params: String,
         dir: String,
     },
+    /// Opens the first of `names` that parses, without an answer.
+    Launch {
+        names: Vec<String>,
+    },
 }
 
 /// A program pinned to the native taskbar.
@@ -62,6 +66,7 @@ const PINS: u32 = 0;
 const ICON: u32 = 1;
 const APPS: u32 = 2;
 const OPEN: u32 = 3;
+const LAUNCH: u32 = 4;
 const NONE: u32 = u32::MAX;
 
 #[derive(Default)]
@@ -87,6 +92,11 @@ impl Writer {
             Some(s) => self.str(s),
             None => self.u32(NONE),
         }
+    }
+
+    fn strs(&mut self, v: &[String]) {
+        self.u32(v.len() as u32);
+        v.iter().for_each(|s| self.str(s));
     }
 }
 
@@ -124,6 +134,10 @@ impl Reader<'_> {
             n => self.units(n).map(Some),
         }
     }
+
+    fn strs(&mut self) -> Option<Vec<String>> {
+        (0..self.u32()?).map(|_| self.str()).collect()
+    }
 }
 
 impl Request {
@@ -137,6 +151,10 @@ impl Request {
                 w.str(file);
                 w.str(params);
                 w.str(dir);
+            }
+            Request::Launch { names } => {
+                w.u32(LAUNCH);
+                w.strs(names);
             }
             Request::Icon { id, px, name } => {
                 w.u32(ICON);
@@ -154,6 +172,7 @@ impl Request {
             PINS => Some(Request::Pins),
             APPS => Some(Request::Apps),
             OPEN => Some(Request::Open { file: r.str()?, params: r.str()?, dir: r.str()? }),
+            LAUNCH => Some(Request::Launch { names: r.strs()? }),
             ICON => Some(Request::Icon { id: r.u64()?, px: r.u32()?, name: r.str()? }),
             _ => None,
         }
@@ -247,9 +266,15 @@ mod tests {
     #[test]
     fn requests_round_trip() {
         let open = Request::Open { file: r"C:\a b\c.exe".into(), params: String::new(), dir: r"C:\a b".into() };
-        for req in
-            [Request::Pins, Request::Apps, Request::Icon { id: 7, px: 30, name: r"shell:AppsFolder\微信".into() }, open]
-        {
+        let launch = Request::Launch { names: vec![r"shell:AppsFolder\Chrome".into(), "".into()] };
+        for req in [
+            Request::Pins,
+            Request::Apps,
+            Request::Icon { id: 7, px: 30, name: r"shell:AppsFolder\微信".into() },
+            open,
+            launch,
+            Request::Launch { names: Vec::new() },
+        ] {
             assert_eq!(Request::decode(&req.encode()), Some(req));
         }
     }
@@ -276,6 +301,7 @@ mod tests {
         let req = Request::Icon { id: 1, px: 16, name: "abc".into() }.encode();
         assert_eq!(Request::decode(&req[..req.len() - 2]), None);
         assert_eq!(Request::decode(&9u32.to_le_bytes()), None);
+        assert_eq!(Request::decode(&[LAUNCH.to_le_bytes(), 1u32.to_le_bytes()].concat()), None);
         assert_eq!(Answer::decode(&[]), None);
     }
 }

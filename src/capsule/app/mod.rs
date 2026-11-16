@@ -52,6 +52,7 @@ use crate::capsule::gfx::{Gfx, Surface};
 use crate::capsule::hook::{Hook, Rects, TrayShared};
 use crate::capsule::input;
 use crate::capsule::keyhook::{self, KeyHook};
+use crate::capsule::launcher;
 use crate::capsule::menu;
 use crate::capsule::pinned::{self, PinnedApp};
 use crate::capsule::popup::Popup;
@@ -113,6 +114,7 @@ const TIMER_WIN_DIGIT: usize = 7;
 const TIMER_REVEAL: usize = 8;
 const TIMER_PINS: usize = 9;
 const TIMER_ICONS: usize = 10;
+const TIMER_SIZE: usize = 11;
 
 const ABN_FULLSCREENAPP: usize = 2;
 const WTS_SESSION_LOCK: usize = 7;
@@ -299,6 +301,9 @@ unsafe extern "system" fn bar_proc(h: HWND, msg: u32, wparam: WPARAM, lparam: LP
         WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
         WM_ERASEBKGND => return LRESULT(1),
         _ => {}
+    }
+    if let Some(r) = launcher::forward_menu_message(msg, wparam, lparam) {
+        return r;
     }
     let r = with_app(|a| a.bar_message(msg, wparam, lparam)).flatten();
     run_deferred();
@@ -545,12 +550,16 @@ impl App {
         }
     }
 
+    fn bar_dpi(&self) -> u32 {
+        (self.dpi as f32 * self.cfg.config.appearance.size).round() as u32
+    }
+
     fn px(&self, dip: f32) -> i32 {
-        scale(dip, self.dpi)
+        scale(dip, self.bar_dpi())
     }
 
     fn to_dip(&self, px: i32) -> f32 {
-        px as f32 * 96.0 / self.dpi as f32
+        px as f32 * 96.0 / self.bar_dpi() as f32
     }
 
     fn on_timer(&mut self, id: usize) {
@@ -571,6 +580,7 @@ impl App {
             TIMER_REVEAL => self.conceal_when_idle(),
             TIMER_PINS => self.request_pins(),
             TIMER_ICONS => self.refresh_window_icons(),
+            TIMER_SIZE => self.settle_size(),
             TIMER_AUDIO => {
                 self.volume.attach();
                 self.refresh_volume();

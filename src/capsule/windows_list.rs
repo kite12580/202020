@@ -14,18 +14,19 @@ use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyS
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GCLP_HICON, GCLP_HICONSM, GW_OWNER, GWL_EXSTYLE, GetClassLongPtrW, GetForegroundWindow, GetWindow,
     GetWindowLongW, GetWindowTextW, ICON_BIG, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-    SW_MINIMIZE, SW_RESTORE, SendMessageCallbackW, SetForegroundWindow, ShowWindowAsync, WM_CLOSE, WM_GETICON,
-    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    SW_MINIMIZE, SW_RESTORE, SendMessageCallbackW, SetForegroundWindow, ShowWindowAsync, WM_GETICON, WS_EX_APPWINDOW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
 use crate::capsule::gfx::Image;
 use crate::capsule::util::{
-    OwnedHandle, PKEY_APP_USER_MODEL_ID, class_name, hwnd, image_path, make_long, open_process, own_window,
-    take_string, window_ids,
+    OwnedHandle, PKEY_APP_USER_MODEL_ID, apps_folder, class_name, hwnd, image_path, make_long, open_process,
+    own_window, take_string, window_ids,
 };
 
 const WM_POPUPSYSTEMMENU: u32 = 0x0313;
+pub const FRAME_CLASS: &str = "ApplicationFrameWindow";
 
 /// Icon sources, best last.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -53,6 +54,16 @@ pub struct Window {
 impl Window {
     fn order(&self) -> (usize, u64) {
         (self.slot, self.seq)
+    }
+
+    pub fn pin(&self) -> Option<usize> {
+        (self.slot != usize::MAX).then_some(self.slot)
+    }
+
+    /// Shell names that open or pin the window's app, best first.
+    pub fn app_names(&self) -> Vec<String> {
+        let exe = self.exe.clone().filter(|_| class_name(self.hwnd) != FRAME_CLASS);
+        self.aumids.iter().map(|id| apps_folder(id)).chain(exe).collect()
     }
 }
 
@@ -275,12 +286,6 @@ pub fn force_foreground(h: HWND) {
     unsafe {
         let _ = SetForegroundWindow(h);
         let _ = AttachThreadInput(me, fg, false);
-    }
-}
-
-pub fn close(h: HWND) {
-    unsafe {
-        let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
 }
 

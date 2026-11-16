@@ -5,6 +5,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
+use super::icons::{TRAY_ICON, WINDOW_ICON};
 use super::{App, TIMER_CLOCK};
 use crate::capsule::gfx::{Color, Font, Surface, Text};
 use crate::capsule::theme::Palette;
@@ -95,7 +96,7 @@ impl App {
     }
 
     fn new_surface(&self, hwnd: HWND, w: i32, h: i32) -> Option<Surface> {
-        let s = Surface::new(hwnd, w as u32, h as u32, self.dpi);
+        let s = Surface::new(hwnd, w as u32, h as u32, self.bar_dpi());
         if s.is_none() {
             log::error!("surface creation failed");
         }
@@ -146,7 +147,7 @@ impl App {
             Hit::Chevron => centered(s, &self.texts.chevron),
             Hit::Tray(i) => {
                 if let Some(img) = &self.tray.icons[self.bar_tray[i]].image {
-                    s.image(img, r.center_x(), cy);
+                    s.image(img, r.center_x(), cy, TRAY_ICON);
                 }
             }
             Hit::Keyboard => centered(s, &self.texts.keyboard),
@@ -172,7 +173,7 @@ impl App {
         };
         let icon_y = METRICS.height / 2.0 - TASK_ICON_LIFT;
         match image {
-            Some(img) => s.image(img, r.center_x(), icon_y),
+            Some(img) => s.image(img, r.center_x(), icon_y, WINDOW_ICON),
             None => s.dot(r.center_x(), icon_y, 3.0, pal.text.alpha(0.5)),
         }
     }
@@ -212,7 +213,7 @@ impl App {
             }
             let i = &self.tray.icons[icon];
             if let Some(img) = &i.image {
-                s.image(img, r.center_x(), r.y + r.h / 2.0 - 1.0);
+                s.image(img, r.center_x(), r.y + r.h / 2.0 - 1.0, TRAY_ICON);
             }
             if pins.contains(&i.pin) {
                 s.dot(r.center_x(), r.y + r.h - 5.0, 1.5, pal.text.alpha(0.7));

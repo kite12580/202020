@@ -4,7 +4,7 @@ use capsule_core::shell_proto::{Answer, PinInfo, Request};
 use capsule_core::taskband::{Pin, Task};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow, PostMessageW};
 
 use super::system::shell_flyout;
 use super::{
@@ -163,10 +163,24 @@ impl App {
         self.relayout();
     }
 
-    pub(super) fn task_window(&self, i: usize) -> Option<HWND> {
-        match self.tasks[i] {
-            Task::Window(w) => Some(self.windows.items[w].hwnd),
-            Task::Pin(_) => None,
+    pub(super) fn launch_task(&self, i: usize) {
+        let (pin, names) = match self.tasks[i] {
+            Task::Window(w) => {
+                let w = &self.windows.items[w];
+                (w.pin(), w.app_names())
+            }
+            Task::Pin(p) => (Some(p), Vec::new()),
+        };
+        let pin = pin.map(|p| self.pins[p].parsing_name.clone()).filter(|n| !n.is_empty());
+        let names: Vec<String> = pin.into_iter().chain(names).collect();
+        if names.is_empty() {
+            return;
+        }
+        unsafe {
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+        }
+        if !hook::request(self.hwnd, &Request::Launch { names }) {
+            log::warn!("launch: hook not attached");
         }
     }
 }

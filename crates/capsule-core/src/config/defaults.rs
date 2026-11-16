@@ -125,6 +125,8 @@ bottom_gap = 0.0
 backdrop = "none"
 # Opacity of the background tint (0.0 – 1.0).
 opacity = 0.8
+# Scale of the capsule (0.75 – 2.0). Updated when you hold Shift and scroll over it.
+size = 1.0
 
 [capsule_bar.volume]
 # Volume change per wheel notch, in percent.
