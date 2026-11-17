@@ -18,6 +18,10 @@ Tap CapsLock for `Esc`, or hold it with another key for navigation, editing and 
 
 Tap ``Win+` `` to switch between two desktops, or hold it to send the active window to the other one. Hidden windows come back when 202020 quits, crashes or is killed.
 
+## Keep awake
+
+The tray menu's Keep awake submenu stops the PC from sleeping and the screen from turning off for 30 minutes to 8 hours, or until turned off, and shows the time left the next time the menu opens.
+
 ## Running
 
 `202020.exe` is portable: `config.toml` and logs live next to it, so put it in a writable folder with `capsule_hook.dll`. To start at login, put a shortcut in `shell:startup`. `--safe` keeps the native taskbar visible.

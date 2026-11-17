@@ -22,7 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 use app::App;
-use capsule::launcher::{self, AppCommand};
+use capsule::launcher;
 use capsule_core::config::Config;
 use gdi::paint_overlay;
 use tray_menu::{run_command, show_menu};
@@ -34,7 +34,7 @@ const WM_DISMISS: u32 = WM_APP + 2;
 const WM_BAR_EXITED: u32 = WM_APP + 3;
 const WM_BAR_DISABLE: u32 = WM_APP + 4;
 const WM_BAR_RESTART: u32 = WM_APP + 5;
-const WM_LAUNCHER_CMD: u32 = WM_APP + 6;
+const WM_COMMAND_ID: u32 = WM_APP + 6;
 const WM_DESKTOP: u32 = WM_APP + 7;
 const TRAY_ID: u32 = 1;
 const HOTKEY_TOGGLE: i32 = 1;
@@ -42,6 +42,7 @@ const HOTKEY_LAUNCHER: i32 = 2;
 const TIMER_TICK: usize = 1;
 const TIMER_FRAME: usize = 2;
 const TIMER_BREAK_END: usize = 3;
+const TIMER_AWAKE: usize = 4;
 const CMD_TOGGLE: i32 = 1;
 const CMD_BREAK: i32 = 2;
 const CMD_RESET: i32 = 3;
@@ -52,17 +53,9 @@ const CMD_RELOAD_CONFIG: i32 = 7;
 const CMD_LAUNCHER: i32 = 8;
 const CMD_HYPER: i32 = 9;
 const CMD_TIMER: i32 = 10;
-
-const LAUNCHER_COMMANDS: &[AppCommand] = &[
-    AppCommand { id: CMD_TIMER as u32, name: "Toggle 20-20-20 timer  切换 20-20-20 计时" },
-    AppCommand { id: CMD_TOGGLE as u32, name: "Pause or resume timer  暂停 继续计时" },
-    AppCommand { id: CMD_BREAK as u32, name: "Break now  立即休息" },
-    AppCommand { id: CMD_RESET as u32, name: "Reset timer  重置计时" },
-    AppCommand { id: CMD_BAR as u32, name: "Toggle capsule bar  切换胶囊栏" },
-    AppCommand { id: CMD_HYPER as u32, name: "Toggle CapsLock hyper  切换 CapsLock 超级键" },
-    AppCommand { id: CMD_EDIT_CONFIG as u32, name: "Edit config  编辑配置" },
-    AppCommand { id: CMD_RELOAD_CONFIG as u32, name: "Reload config  重新加载配置" },
-];
+const CMD_AWAKE_OFF: i32 = 11;
+/// Plus an index into `app::AWAKE_MINUTES`.
+const CMD_AWAKE: i32 = 12;
 
 static MAIN_HWND: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -95,6 +88,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 TIMER_TICK => app.tick(),
                 TIMER_FRAME => app.advance_overlay(),
                 TIMER_BREAK_END => app.dismiss_break(),
+                TIMER_AWAKE => app.check_awake(),
                 _ => {}
             });
         }
@@ -106,7 +100,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_HOTKEY => {
             with_app(App::toggle_pause);
         }
-        WM_LAUNCHER_CMD => run_command(wparam.0 as i32),
+        WM_COMMAND_ID => run_command(wparam.0 as i32),
         WM_DESKTOP => capsule::desktops::on_request(wparam.0),
         WM_QUERYENDSESSION => {
             capsule::desktops::restore_all();
@@ -126,7 +120,10 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             with_app(App::restart_bar);
         }
         WM_POWERBROADCAST if wparam.0 == PBT_APMRESUMEAUTOMATIC as usize => {
-            with_app(App::reset_timer);
+            with_app(|app| {
+                app.reset_timer();
+                app.check_awake();
+            });
         }
         WM_TRAY => {
             if matches!(lparam.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP) {
@@ -206,15 +203,10 @@ fn start_features(hwnd: HWND, cfg: Config) {
     if cfg.capsule_bar.enabled {
         with_app(App::start_bar);
     }
-    launcher::init(launcher::Options {
-        owner: hwnd.0 as isize,
-        command_msg: WM_LAUNCHER_CMD,
-        commands: LAUNCHER_COMMANDS,
-    });
     with_app(|app| app.apply_launcher(cfg.launcher));
     capsule::hyper::init(capsule::hyper::Options {
         owner: hwnd.0 as isize,
-        command_msg: WM_LAUNCHER_CMD,
+        command_msg: WM_COMMAND_ID,
         reload_command: CMD_RELOAD_CONFIG as u32,
         desktop_msg: WM_DESKTOP,
     });

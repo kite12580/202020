@@ -5,7 +5,6 @@ use capsule_core::launcher::Source;
 use capsule_core::launcher::haystack::Keys;
 use capsule_core::launcher::history::key;
 
-use super::AppCommand;
 use super::index::{Action, Entry, exe_stem};
 use crate::capsule::util::{process_path, window_ids};
 use crate::capsule::windows_list::{self as winlist, qualifies};
@@ -68,12 +67,11 @@ fn command(id: &str, name: &str, glyph: char, action: Action) -> Entry {
     }
 }
 
-pub fn commands(app: &[AppCommand], custom: &[CustomCommand]) -> Vec<Entry> {
-    let app = app.iter().map(|c| command(&format!("app:{}", c.id), c.name, '\u{E916}', Action::App(c.id)));
+pub fn commands(custom: &[CustomCommand]) -> Vec<Entry> {
     let system = SYSTEM.iter().map(|b| command(&format!("sys:{}", b.id), b.name, b.glyph, b.action.clone()));
     let custom = custom.iter().filter(|c| !c.name.is_empty() && !c.command.is_empty()).map(|c| {
         let action = Action::Run { command: c.command.clone(), args: c.args.clone() };
         command(&format!("custom:{}", c.name), &c.name, '\u{E756}', action)
     });
-    app.chain(system).chain(custom).collect()
+    system.chain(custom).collect()
 }

@@ -10,7 +10,7 @@ mod view;
 
 pub(crate) use launch::{context_menu, forward_menu_message, open};
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,24 +43,10 @@ use crate::capsule::config_store;
 use crate::capsule::gfx::{Font, Gfx, Image, Surface, Text};
 use crate::capsule::hook::{Hook, HookEvent};
 use crate::capsule::theme::{self, Theme};
-use crate::capsule::util::{hwnd, post, register_class, scale};
+use crate::capsule::util::{hwnd, register_class, scale};
 use crate::capsule::windows_list as winlist;
 use index::{Action, Batch, Entry};
 use search::Row;
-
-/// A 202020 action offered as a command; `id` is posted as the wparam of
-/// `Options::command_msg`.
-pub struct AppCommand {
-    pub id: u32,
-    pub name: &'static str,
-}
-
-#[derive(Clone, Copy)]
-pub struct Options {
-    pub owner: isize,
-    pub command_msg: u32,
-    pub commands: &'static [AppCommand],
-}
 
 const CLASS: PCWSTR = w!("202020Launcher");
 const HISTORY_FILE: &str = "launcher_history.tsv";
@@ -82,7 +68,6 @@ fn list_of(source: Source) -> usize {
 }
 
 thread_local! {
-    static OPTS: Cell<Option<Options>> = const { Cell::new(None) };
     static STATE: RefCell<Option<Launcher>> = const { RefCell::new(None) };
     static HISTORY: RefCell<Option<History>> = const { RefCell::new(None) };
 }
@@ -107,17 +92,13 @@ fn with_history<R>(f: impl FnOnce(&mut History) -> R) -> R {
     })
 }
 
-pub fn init(opts: Options) {
-    OPTS.set(Some(opts));
-}
-
 pub fn toggle() {
     if with_launcher(|l| l.visible) == Some(true) {
         hide();
         return;
     }
     if STATE.with(|s| s.borrow().is_none()) {
-        let Some(l) = OPTS.get().and_then(Launcher::create) else { return };
+        let Some(l) = Launcher::create() else { return };
         STATE.with(|s| *s.borrow_mut() = Some(l));
     }
     with_launcher(Launcher::show);
@@ -154,7 +135,6 @@ enum Deferred {
 }
 
 struct Launcher {
-    opts: Options,
     hwnd: HWND,
     dpi: u32,
     gfx: Gfx,
@@ -205,7 +185,7 @@ struct Scan {
 }
 
 impl Launcher {
-    fn create(opts: Options) -> Option<Launcher> {
+    fn create() -> Option<Launcher> {
         register_class(WNDCLASSEXW { lpfnWndProc: Some(launcher_proc), lpszClassName: CLASS, ..Default::default() });
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -234,7 +214,6 @@ impl Launcher {
         let cfg = config_store::launcher();
         let gfx = Gfx::new();
         Some(Launcher {
-            opts,
             hwnd,
             dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
             placeholder: gfx.text("Search apps, files, windows and commands", Font::Search),
@@ -329,11 +308,8 @@ impl Launcher {
             self.theme = Some(theme);
         }
         self.lists[list_of(Source::Window)] = if self.cfg.windows.enabled { sources::windows() } else { Vec::new() };
-        self.lists[list_of(Source::Command)] = if self.cfg.commands.enabled {
-            sources::commands(self.opts.commands, &self.cfg.commands.custom)
-        } else {
-            Vec::new()
-        };
+        self.lists[list_of(Source::Command)] =
+            if self.cfg.commands.enabled { sources::commands(&self.cfg.commands.custom) } else { Vec::new() };
         self.list_changed(list_of(Source::Window));
         self.list_changed(list_of(Source::Command));
         if rescan && let Some(scan) = self.scan.take() {
@@ -458,8 +434,6 @@ impl Launcher {
         let e = self.entry(self.rows.get(row)?);
         Some(Pick {
             hwnd: self.hwnd,
-            owner: self.opts.owner,
-            command_msg: self.opts.command_msg,
             action: e.action.clone(),
             target: e.target(),
             key: e.key.clone(),
@@ -483,8 +457,6 @@ impl Drop for Launcher {
 
 struct Pick {
     hwnd: HWND,
-    owner: isize,
-    command_msg: u32,
     action: Action,
     target: Option<String>,
     key: String,
@@ -505,10 +477,6 @@ fn run_deferred() {
         (None, Action::Run { command, args }, None) => launch::open(p.hwnd, command, args),
         (None, Action::Window { hwnd: h, .. }, None) => {
             winlist::activate_or_minimize(hwnd(*h), HWND::default());
-            true
-        }
-        (None, Action::App(id), None) => {
-            post(p.owner, p.command_msg, *id as usize);
             true
         }
         (None, Action::EmptyRecycleBin, None) => {

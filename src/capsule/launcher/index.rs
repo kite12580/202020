@@ -32,8 +32,6 @@ pub enum Action {
         hwnd: isize,
         exe: String,
     },
-    /// A 202020 command, posted to the owner window.
-    App(u32),
     Run {
         command: String,
         args: String,
@@ -86,7 +84,6 @@ impl Entry {
     pub fn subtitle(&self) -> Cow<'_, str> {
         match &self.action {
             Action::Window { exe, .. } => exe_stem(exe).into(),
-            Action::App(_) => "202020".into(),
             Action::Run { command, args } if args.is_empty() => command.as_str().into(),
             Action::Run { command, args } => format!("{command} {args}").into(),
             _ => self.folder_path().and_then(|p| p.rsplit_once('\\')).map_or("", |(parent, _)| parent).into(),

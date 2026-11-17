@@ -5,6 +5,7 @@ use capsule_core::launcher::hotkey;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Power::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::*;
@@ -15,8 +16,8 @@ use crate::capsule::{self, launcher};
 use crate::gdi::create_icon;
 use crate::render::{self, Digits, IconFace, Overlay};
 use crate::{
-    HOTKEY_LAUNCHER, OVERLAY_CLASS, TIMER_BREAK_END, TIMER_FRAME, TIMER_TICK, TRAY_ID, WM_BAR_DISABLE, WM_BAR_EXITED,
-    WM_BAR_RESTART, WM_TRAY, keyboard_hook,
+    HOTKEY_LAUNCHER, OVERLAY_CLASS, TIMER_AWAKE, TIMER_BREAK_END, TIMER_FRAME, TIMER_TICK, TRAY_ID, WM_BAR_DISABLE,
+    WM_BAR_EXITED, WM_BAR_RESTART, WM_TRAY, keyboard_hook,
 };
 
 const WORK_SECONDS: f64 = 20.0 * 60.0;
@@ -24,6 +25,8 @@ const BREAK_SECONDS: f64 = 20.0;
 const COUNTDOWN_SECONDS: u32 = 10;
 const SLEEP_GAP_THRESHOLD: f64 = 30.0;
 const STARTUP_BAR_DELAY: f64 = 4.0;
+/// Keep-awake durations offered in the tray menu; `None` lasts until turned off.
+pub(super) const AWAKE_MINUTES: [Option<u32>; 6] = [Some(30), Some(60), Some(120), Some(240), Some(480), None];
 const STARTUP_PROGRESS: [(f64, f32); 15] = [
     (0.0, 0.00),
     (STARTUP_BAR_DELAY, 0.00),
@@ -98,8 +101,16 @@ pub(super) struct App {
     bar_opts: capsule::Options,
     pub(super) bar: BarState,
     pub(super) launcher: LauncherState,
+    pub(super) awake: Option<Awake>,
     restarting: bool,
     quitting: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Awake {
+    /// Index into `AWAKE_MINUTES`.
+    pub(super) choice: usize,
+    pub(super) until: Option<f64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,6 +150,7 @@ impl App {
             },
             bar: BarState::Off,
             launcher: LauncherState::Off,
+            awake: None,
             restarting: false,
             quitting: false,
         }
@@ -424,6 +436,39 @@ impl App {
             self.quit();
         } else if std::mem::take(&mut self.restarting) {
             self.start_bar();
+        }
+    }
+
+    pub(super) fn keep_awake(&mut self, choice: usize) {
+        let Some(&minutes) = AWAKE_MINUTES.get(choice) else { return };
+        unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+        }
+        self.awake = Some(Awake { choice, until: minutes.map(|m| now() + f64::from(m) * 60.0) });
+        self.check_awake();
+    }
+
+    pub(super) fn check_awake(&mut self) {
+        let Some(Awake { until: Some(until), .. }) = self.awake else {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_AWAKE);
+            }
+            return;
+        };
+        let left = until - now();
+        if left <= 0.0 {
+            return self.stop_awake();
+        }
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_AWAKE, (left * 1000.0).ceil() as u32 + 20, None);
+        }
+    }
+
+    pub(super) fn stop_awake(&mut self) {
+        self.awake = None;
+        unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS);
+            let _ = KillTimer(Some(self.hwnd), TIMER_AWAKE);
         }
     }
 
